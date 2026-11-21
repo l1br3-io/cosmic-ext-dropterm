@@ -26,15 +26,52 @@
 //! (flat, `.lua` files only, sorted by name) and loads each script; a
 //! load error or a handler raise costs exactly one log line and never
 //! takes a sibling script or the host down with it.
+//!
+//! The lifecycle machine (task L2): every unit of Lua work runs under
+//! a soft bound and a hard cap, enforced by a debug hook that counts
+//! VM instructions. Past the soft bound a dispatch is stale — one log
+//! line at the moment, its eventual result discarded at the drain once
+//! query surfaces exist to ask for one. Past the hard cap the
+//! interpreter is torn down and recreated: registrations lost by
+//! design, scripts reloaded lazily on the next command — the
+//! runaway-script escape hatch. The bounds cover Lua running on the
+//! host's main thread; a script blocked inside a C call (`io.read` on
+//! a pipe) or spinning inside a coroutine it created executes no
+//! main-thread VM instructions to trip the hook. Full trust means the
+//! docs say so plainly rather than claim a sandbox.
 
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
-use mlua::{Function, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value};
+use mlua::{
+    Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, VmState,
+};
+
+/// The soft bound every dispatch runs under (task L2): past it the
+/// dispatch is stale — one log line at the moment, and the eventual
+/// result, once query surfaces exist to ask, is discarded at the drain
+/// so the asking surface keeps its prior value (stale-degrade, never
+/// block). A constant, not a config key (spec assumption 3).
+const SOFT_BOUND: Duration = Duration::from_millis(100);
+
+/// The hard cap past which the interpreter is torn down and recreated:
+/// registrations lost by design (spec assumption 7), scripts reloaded
+/// lazily on the next command — the runaway-script escape hatch. One
+/// log line; the host thread and the terminal never notice.
+const HARD_CAP: Duration = Duration::from_secs(1);
+
+/// How often the debug hook gets a look: every N VM instructions the
+/// frame's clock is checked against the bounds. Small enough that the
+/// bounds land within slack of their marks, large enough that the
+/// check is noise next to the work between fires.
+const HOOK_EVERY_N_INSTRUCTIONS: u32 = 2_000;
 
 /// One item of work for the host thread. The UI never blocks on the
 /// answer: a dispatch is fire-and-forget, and a future query
@@ -157,41 +194,203 @@ impl LuaHost {
     }
 }
 
-/// The host thread's whole life: build the interpreter, install the
-/// port, pay the first scan, then serve commands in arrival order —
-/// one thread, one interpreter, strictly serial (spec assumption 8),
-/// so no dispatch can race another. Returns when the handle drops
-/// (the command channel dies) and drops the interpreter on the way
-/// out.
+/// The host thread's whole life: generations of interpreter, each
+/// built, ported, bounded, then served strictly in arrival order — one
+/// thread, one interpreter at a time, no dispatch racing another (spec
+/// assumption 8). Generation 1 pays the first scan eagerly (the spawn
+/// was itself the first work); every later generation arrives by hard
+/// cap with the script reload deferred to the next command, so a
+/// load-time runaway costs one interpreter cycle per command, never a
+/// free-spinning reload loop. Returns when the handle drops (the
+/// command channel dies) and drops the interpreter on the way out.
 fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Sender<HostEvent>) {
-    // SAFETY: `StdLib::ALL` loads the unsafe io/os/debug libraries.
-    // That is the spec's ratified trust model (assumption 2): plugins
-    // are the user's own config executing as the user, no sandbox
-    // claimed anywhere — the docs state it plainly. Nothing untrusted
-    // crosses this state from the host's side.
-    let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
-    let registry = match install_port(&lua, events) {
-        Ok(registry) => registry,
-        Err(err) => {
-            log(
-                events,
-                format!("the dropterm port would not install: {err}"),
-            );
+    let frame = Rc::new(TimeoutFrame::new());
+    let mut first_generation = true;
+    // Set by a hard cap: the next command rescans and reloads the
+    // scripts before it dispatches — the lazy half of the escape
+    // hatch.
+    let mut reload_pending = false;
+    loop {
+        let Some(generation) = Generation::build(events, &frame) else {
+            return;
+        };
+        if first_generation {
+            log(events, "host thread up");
+            load_scripts(&generation.lua, plugins_dir, events, &frame);
+            first_generation = false;
+            if frame.hard_tripped.get() {
+                reload_pending = true;
+                continue;
+            }
+        }
+        while let Ok(command) = commands.recv() {
+            let HostCommand::Emit { event, payload } = command;
+            if reload_pending {
+                load_scripts(&generation.lua, plugins_dir, events, &frame);
+                reload_pending = false;
+                if frame.hard_tripped.get() {
+                    break;
+                }
+            }
+            match generation.lua.to_value(&payload) {
+                Ok(value) => {
+                    frame.begin(true, format_args!("a handler for '{event}'"));
+                    dispatch(events, &generation.registry, &event, &value, &frame);
+                }
+                Err(err) => log(
+                    events,
+                    format!("payload for '{event}' would not convert: {err}"),
+                ),
+            }
+            if frame.hard_tripped.get() {
+                break;
+            }
+        }
+        // The inner loop exits only on a tripped hard cap (recreate)
+        // or a dead command channel (the handle dropped: shut down).
+        if !frame.hard_tripped.get() {
             return;
         }
-    };
-    log(events, "host thread up");
-    load_scripts(&lua, plugins_dir, events);
-    while let Ok(command) = commands.recv() {
-        let HostCommand::Emit { event, payload } = command;
-        match lua.to_value(&payload) {
-            Ok(value) => dispatch(events, &registry, &event, &value),
-            Err(err) => log(
-                events,
-                format!("payload for '{event}' would not convert: {err}"),
-            ),
+        reload_pending = true;
+    }
+}
+
+/// One timeout frame per top-level unit of Lua work — a command's
+/// dispatch, a file's load — shared between the host loop that begins
+/// it and the debug hook that watches it. Same thread, an `Rc`:
+/// interior mutability only, no synchronization (the serial host, spec
+/// assumption 8).
+#[derive(Debug)]
+struct TimeoutFrame {
+    /// When this unit of work began.
+    started: Cell<Instant>,
+    /// What the timeout lines call the work ("a handler for 'x'",
+    /// "loading x.lua").
+    label: RefCell<String>,
+    /// The stale line fires once per unit.
+    soft_logged: Cell<bool>,
+    /// Set by the hook at the hard cap; the host loop's signal to
+    /// recreate the interpreter.
+    hard_tripped: Cell<bool>,
+    /// Dispatches arm the soft bound; loads run under the hard cap
+    /// only — a slow load has no result to go stale.
+    soft_armed: Cell<bool>,
+}
+
+impl TimeoutFrame {
+    fn new() -> Self {
+        Self {
+            started: Cell::new(Instant::now()),
+            label: RefCell::new(String::new()),
+            soft_logged: Cell::new(false),
+            hard_tripped: Cell::new(false),
+            soft_armed: Cell::new(false),
         }
     }
+
+    /// Begin one unit of work: restart the clock, reset the flags,
+    /// name the unit for the timeout lines.
+    fn begin(&self, soft_armed: bool, label: impl fmt::Display) {
+        self.started.set(Instant::now());
+        self.soft_armed.set(soft_armed);
+        self.soft_logged.set(false);
+        self.hard_tripped.set(false);
+        *self.label.borrow_mut() = label.to_string();
+    }
+}
+
+/// One interpreter generation: the `Lua` instance plus its port's
+/// registry. Generation 1 is born at spawn; every later one is a
+/// hard-cap recreate — fresh state, no registrations (spec assumption
+/// 7).
+struct Generation {
+    lua: Lua,
+    registry: Table,
+}
+
+impl Generation {
+    /// Build a fresh interpreter with the port and the timeout bounds
+    /// installed. `None` is the nothing-scriptable-remains case: the
+    /// port or the bounds refusing to install costs one line and ends
+    /// the host thread.
+    fn build(events: &Sender<HostEvent>, frame: &Rc<TimeoutFrame>) -> Option<Generation> {
+        // SAFETY: `StdLib::ALL` loads the unsafe io/os/debug libraries.
+        // That is the spec's ratified trust model (assumption 2):
+        // plugins are the user's own config executing as the user, no
+        // sandbox claimed anywhere — the docs state it plainly.
+        // Nothing untrusted crosses this state from the host's side.
+        let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
+        let registry = match install_port(&lua, events, frame) {
+            Ok(registry) => registry,
+            Err(err) => {
+                log(
+                    events,
+                    format!("the dropterm port would not install: {err}"),
+                );
+                return None;
+            }
+        };
+        if let Err(err) = install_bounds(&lua, events, frame) {
+            log(
+                events,
+                format!("the timeout bounds would not install: {err}"),
+            );
+            return None;
+        }
+        Some(Generation { lua, registry })
+    }
+}
+
+/// Arm the lifecycle machine on the interpreter (task L2): a debug
+/// hook fires every [`HOOK_EVERY_N_INSTRUCTIONS`] VM instructions and
+/// checks the frame's clock. Past the soft bound (when armed) it logs
+/// the stale line once and lets the work run on; past the hard cap it
+/// logs the reload line and raises, the error propagating out of the
+/// executing Lua — `mlua` documents exactly this execution-limit
+/// technique. Instruction counting is the mechanism the chunk named
+/// as sound: cooperative bounds cannot stop `while true do end`. Its
+/// honest limits — a script blocked inside a C call, or spinning
+/// inside a coroutine it created, runs no main-thread VM instructions
+/// to trip the hook — belong to the full-trust model and are stated in
+/// the docs, not solved here.
+fn install_bounds(
+    lua: &Lua,
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) -> mlua::Result<()> {
+    let hook_events = events.clone();
+    let hook_frame = frame.clone();
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(HOOK_EVERY_N_INSTRUCTIONS),
+        move |_lua, _debug| {
+            let elapsed = hook_frame.started.get().elapsed();
+            if elapsed >= HARD_CAP {
+                hook_frame.hard_tripped.set(true);
+                log(
+                    &hook_events,
+                    format!(
+                        "{} ran past the hard cap ({HARD_CAP:?}), reloading the interpreter",
+                        hook_frame.label.borrow(),
+                    ),
+                );
+                return Err(mlua::Error::RuntimeError(
+                    "the dropterm hard cap was exceeded".into(),
+                ));
+            }
+            if hook_frame.soft_armed.get() && !hook_frame.soft_logged.get() && elapsed >= SOFT_BOUND
+            {
+                hook_frame.soft_logged.set(true);
+                log(
+                    &hook_events,
+                    format!(
+                        "{} ran past the soft bound ({SOFT_BOUND:?}), going stale",
+                        hook_frame.label.borrow(),
+                    ),
+                );
+            }
+            Ok(VmState::Continue)
+        },
+    )
 }
 
 /// Install the `dropterm` port into the interpreter: the registry
@@ -200,7 +399,11 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
 /// `require('dropterm')` through `package.loaded` (the stdlib's own
 /// module cache — no require-path widening), and the `print`
 /// forwarder. Returns the registry for host-side dispatch.
-fn install_port(lua: &Lua, events: &Sender<HostEvent>) -> mlua::Result<Table> {
+fn install_port(
+    lua: &Lua,
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) -> mlua::Result<Table> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
@@ -221,8 +424,9 @@ fn install_port(lua: &Lua, events: &Sender<HostEvent>) -> mlua::Result<Table> {
 
     let emit_registry = registry.clone();
     let emit_events = events.clone();
+    let emit_frame = frame.clone();
     let emit = lua.create_function(move |_lua, (event, payload): (String, Value)| {
-        dispatch(&emit_events, &emit_registry, &event, &payload);
+        dispatch(&emit_events, &emit_registry, &event, &payload, &emit_frame);
         Ok(())
     })?;
 
@@ -240,8 +444,18 @@ fn install_port(lua: &Lua, events: &Sender<HostEvent>) -> mlua::Result<Table> {
 /// Deliver one event to every handler registered under it, on this
 /// thread, in registration order. An event nobody registered for
 /// dispatches to nobody, silently (the bus contract). A raising
-/// handler costs one log line and never stops its siblings.
-fn dispatch(events: &Sender<HostEvent>, registry: &Table, event: &str, payload: &Value) {
+/// handler costs one log line and never stops its siblings — unless
+/// the raise is the hard cap's abort, which the hook already logged
+/// and which unwinds every nested dispatch: a scripted `emit` inside a
+/// handler shares the enclosing dispatch's frame, so the bounds
+/// measure the whole command's work, nested emits included.
+fn dispatch(
+    events: &Sender<HostEvent>,
+    registry: &Table,
+    event: &str,
+    payload: &Value,
+    frame: &TimeoutFrame,
+) {
     let handlers: Option<Table> = match registry.get(event) {
         Ok(handlers) => handlers,
         Err(err) => {
@@ -267,6 +481,11 @@ fn dispatch(events: &Sender<HostEvent>, registry: &Table, event: &str, payload: 
             }
         };
         if let Err(err) = handler.call::<()>(payload.clone()) {
+            if frame.hard_tripped.get() {
+                // The hook logged the reload line; this interpreter is
+                // about to be torn down and the abort unwinds silently.
+                return;
+            }
             log(events, format!("a handler for '{event}' raised: {err}"));
         }
     }
@@ -310,8 +529,11 @@ fn display_value(lua: &Lua, value: Value) -> String {
 /// deterministic. The loader is read-only — nothing under the dir is
 /// written, moved, or renamed — and a missing dir is the silent
 /// first run. A script that fails to parse or raises at load costs
-/// one log line and never stops its siblings.
-fn load_scripts(lua: &Lua, dir: &Path, events: &Sender<HostEvent>) {
+/// one log line and never stops its siblings. Each file's load runs
+/// under the hard cap (never the soft bound — a load has no result to
+/// go stale); a tripped cap aborts the remaining files, which load
+/// with the recreated interpreter's deferred reload.
+fn load_scripts(lua: &Lua, dir: &Path, events: &Sender<HostEvent>, frame: &TimeoutFrame) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return,
@@ -338,9 +560,16 @@ fn load_scripts(lua: &Lua, dir: &Path, events: &Sender<HostEvent>) {
                 continue;
             }
         };
+        frame.begin(false, format_args!("loading {name}"));
         match lua.load(text).set_name(name.clone()).exec() {
             Ok(()) => log(events, format!("loaded {name}")),
-            Err(err) => log(events, format!("skipped {name}: {err}")),
+            Err(err) => {
+                if frame.hard_tripped.get() {
+                    // The hook logged the reload line already.
+                    return;
+                }
+                log(events, format!("skipped {name}: {err}"));
+            }
         }
     }
 }
@@ -358,7 +587,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc::RecvTimeoutError;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -412,6 +641,30 @@ mod tests {
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return lines,
             }
         }
+    }
+
+    /// Collect the host's log lines until one matches `wanted`
+    /// (everything collected so far, the match included) or `timeout`
+    /// passes. The quiet-window drain above cannot bridge the gap
+    /// between the soft bound and the hard cap — 900 ms of expected
+    /// silence — so the runaway tests wait for the line that ends the
+    /// phase instead of waiting for silence.
+    fn logs_until(host: &LuaHost, wanted: impl Fn(&str) -> bool, timeout: Duration) -> Vec<String> {
+        let mut lines = Vec::new();
+        let deadline = Instant::now() + timeout;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            match host.events.recv_timeout(remaining) {
+                Ok(HostEvent::Log(line)) => {
+                    if wanted(&line) {
+                        lines.push(line);
+                        return lines;
+                    }
+                    lines.push(line);
+                }
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return lines,
+            }
+        }
+        lines
     }
 
     fn emit(host: &LuaHost, event: &str) {
@@ -582,6 +835,176 @@ mod tests {
         assert!(
             second.iter().any(|line| line.contains("still here")),
             "the host must survive the raise: {second:?}"
+        );
+    }
+
+    // --- the lifecycle machine (task L2: soft stale, hard reload) ---
+
+    /// A marker file the runaway fixtures check: absent, the fixture
+    /// spins; present, it behaves. The interpreter cannot carry state
+    /// across a reload (registrations lost by design, spec assumption
+    /// 7), so the file is the only thing that survives to tell the
+    /// re-run script the runaway was already paid for. Extension-less,
+    /// so the scan never tries to load it.
+    fn marker(dir: &TempDir) -> PathBuf {
+        dir.join("marker")
+    }
+
+    #[test]
+    fn a_runaway_handler_goes_stale_reloads_and_answers_again() {
+        let dir = TempDir::new("runaway");
+        let marker = marker(&dir);
+        script(
+            &dir,
+            "runaway.lua",
+            &format!(
+                "{PORT}\n\
+                 local recovered = io.open('{}', 'r')\n\
+                 if recovered then recovered:close() end\n\
+                 d.on('x', function()\n\
+                   if not recovered then while true do end end\n\
+                   print('recovered')\n\
+                 end)",
+                marker.display(),
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let first = logs_until(
+            &host,
+            |line| line.contains("ran past the hard cap"),
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|line| line.contains("ran past the soft bound"))
+                .count(),
+            1,
+            "the soft bound costs exactly one stale line: {first:?}"
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|line| line.contains("ran past the hard cap"))
+                .count(),
+            1,
+            "the hard cap costs exactly one reload line: {first:?}"
+        );
+        let soft = first
+            .iter()
+            .position(|line| line.contains("ran past the soft bound"))
+            .expect("counted above");
+        let hard = first
+            .iter()
+            .position(|line| line.contains("ran past the hard cap"))
+            .expect("counted above");
+        assert!(
+            soft < hard,
+            "the stale line lands before the reload line: {first:?}"
+        );
+        assert!(
+            !first.iter().any(|line| line.contains("raised")),
+            "the hard cap's abort must not double as a raise line: {first:?}"
+        );
+        assert!(
+            !first.iter().any(|line| line.contains("recovered")),
+            "the runaway handler must never finish: {first:?}"
+        );
+        // The escape hatch: with the runaway paid for, the next
+        // dispatch re-runs the registration scripts and succeeds.
+        fs::write(&marker, "").expect("write recovery marker");
+        emit(&host, "x");
+        let second = logs_until_quiet(&host);
+        assert!(
+            second
+                .iter()
+                .any(|line| line.contains("loaded runaway.lua")),
+            "the reload re-runs the registration scripts: {second:?}"
+        );
+        assert!(
+            second.iter().any(|line| line.contains("recovered")),
+            "the recovered handler answers on the next dispatch: {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_handler_under_the_soft_bound_costs_no_line() {
+        let dir = TempDir::new("swift");
+        script(
+            &dir,
+            "swift.lua",
+            &format!(
+                "{PORT}\n\
+                 d.on('x', function()\n\
+                   local deadline = os.clock() + 0.03\n\
+                   while os.clock() < deadline do end\n\
+                   print('swift done')\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("swift done")),
+            "the sub-bound handler still runs to completion: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("soft bound") || line.contains("hard cap")),
+            "a sub-bound handler costs no timeout line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_runaway_load_hits_the_hard_cap_and_the_host_answers_again() {
+        let dir = TempDir::new("loopload");
+        let marker = marker(&dir);
+        script(
+            &dir,
+            "loopload.lua",
+            &format!(
+                "if not io.open('{}', 'r') then while true do end end\n\
+                 {PORT}\n\
+                 d.on('x', function() print('load recovered') end)",
+                marker.display(),
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let first = logs_until(
+            &host,
+            |line| line.contains("ran past the hard cap"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            first
+                .iter()
+                .any(|line| line.contains("ran past the hard cap") && line.contains("loopload")),
+            "a runaway load must hit the hard cap by name: {first:?}"
+        );
+        assert!(
+            !first
+                .iter()
+                .any(|line| line.contains("ran past the soft bound")),
+            "loads carry no stale concept (no result to discard): {first:?}"
+        );
+        assert!(
+            !first.iter().any(|line| line.contains("loaded loopload")),
+            "the runaway load never completes: {first:?}"
+        );
+        fs::write(&marker, "").expect("write recovery marker");
+        emit(&host, "x");
+        let second = logs_until_quiet(&host);
+        assert!(
+            second.iter().any(|line| line.contains("loaded loopload")),
+            "the reload loads the recovered script: {second:?}"
+        );
+        assert!(
+            second.iter().any(|line| line.contains("load recovered")),
+            "the recovered script's handler answers: {second:?}"
         );
     }
 }
