@@ -4,6 +4,8 @@
 
 **Date:** 2026-11-21
 
+**TL;DR:** No mainstream terminal ships a VS Code-style plugin API; the four real architectures are embedded interpreters (WezTerm/kitty/Hyper/Tabby), out-of-process APIs (iTerm2/kitty's socket), sandboxed WASM (Zellij), and config-only (Ghostty/rio/tmux) — and Warp, REA-inspected at 0.2026.11.18, ships no in-process plugin system at all, extending through files and protocols (workflows, skills, hooks.json, MCP, ACP). Verdict (owner, 2026-11-21): tiered, Lua-first — the WezTerm blueprint (mlua with vendored Lua 5.4, event bus, compute-strings-host-renders) powering status segments, tab titles, script commands, and event hooks; data files first; WASM deferred; native dylibs never; completions stay builtin.
+
 ## Findings
 
 ### Warp ships no third-party plugin/extension API as of 2026 — extensibility is workflows, MCP servers, rules, themes, and a cloud-agent HTTP API
@@ -102,6 +104,40 @@
 - **WASM URLs**: Zellij (`file:`, `http(s)`, built-in `zellij:` aliases — no compiled install step, permission-cached per location).
 - **Filesystem dirs**: kitty kittens and `tab_bar.py` (`~/.config/kitty/`), Warp workflows (`~/.warp/workflows/` + repo-local `.warp/workflows`), iTerm2 (`Scripts/AutoLaunch`).
 - **None**: Ghostty, rio, tmux — the extension surface is the config file itself (actions, formats, templates), which is also why their docs need no plugin chapter.
+
+## Recommendation
+
+**Adopted (owner ruling, 2026-11-21): tiered, Lua-first — the WezTerm blueprint.**
+
+Tier 0 data files (theme packs from the config dir) ship first; Tier 1 is an
+embedded Lua runtime — mlua with vendored Lua 5.4, WezTerm's exact engine
+choice — running trusted scripts from the user's config directory against an
+event bus, contributing status-bar segments, tab-title providers, bindable
+named commands, and event hooks (bell/title/exit/focus), always on the
+compute-strings-host-renders model. One deliberate adaptation for DropTerm:
+the interpreter lives on a dedicated host thread talking to the gpui
+executor over channels, where WezTerm runs Lua on the GUI thread under a
+slow-handler warning — DropTerm's executor is sensitive to foreign-thread
+wakes (see [pty-test-gate](pty-test-gate.md)) and the UI thread must never
+wait on a script. WASM plugins on the Zellij/wasmi model are deferred, not
+rejected: they earn their keep only when third-party plugin demand appears.
+Specced as the `plugins` initiative (`/spec`, 2026-11-21).
+
+Rejected alternatives:
+
+- **Native dylib plugins** — no stable Rust ABI; the portability plan's
+  backend ruling generalizes to feature plugins.
+- **WASM-first (Zellij/wasmi)** — the heaviest build (runtime, WASI surface,
+  capability system, structured-UI vocabulary) for a demand that doesn't
+  exist yet; deferred, not rejected.
+- **Completion plugins** — no peer ships them (Warp's 2024 "in progress"
+  never landed); the suggest menu is the app's most latency-sensitive
+  surface; the TOML tiers already carry the data-pack case.
+- **Nothing (the Ghostty/rio stance)** — leaves the status bar and
+  agent-adjacent surfaces static; WezTerm proves the Lua tier is cheap to
+  carry in a Rust terminal.
+- **Main-thread Lua exactly as WezTerm** — rejected for the thread-model
+  reason above; the one accuracy-for-feasibility trade in the adaptation.
 
 ## Sources
 
