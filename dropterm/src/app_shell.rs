@@ -4440,14 +4440,18 @@ impl Shell {
     /// The drag edge's grab strip: the reference bar's `BAR_HEIGHT`
     /// (8 px) at the drawer's free edge — thin enough to read as a
     /// handle's footprint rather than chrome, tall enough to grab.
-    /// The press arms the drag; the strip paints nothing itself (the
-    /// band's border hairline already draws the edge).
-    fn drag_edge_strip(cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// The press arms the drag; the strip paints the band chrome it
+    /// merges into (`strip`, the pair the status band and the tab
+    /// strip ride) — an unpainted slot would show the desktop behind
+    /// the drawer through the border as a free-edge gap, and the
+    /// adjacent band's border hairline still draws the chrome seam.
+    fn drag_edge_strip(cx: &mut Context<Self>, strip: gpui::Hsla) -> gpui::AnyElement {
         let shell = cx.entity();
         gpui::div()
             .w_full()
             .flex_none()
             .h(gpui::px(DRAG_EDGE_PX))
+            .bg(strip)
             .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
                 queue_shell_actions(&shell, cx, |shell, actions| {
                     shell.drag_edge_press(event.position.y.as_f32(), actions);
@@ -4653,7 +4657,7 @@ impl Shell {
         // press arming the machine's drag; the live move and release
         // ride the column itself so the drag tracks the pointer
         // wherever it roams — the reference bar's own capture shape.
-        let drag_edge = Self::drag_edge_strip(cx);
+        let drag_edge = Self::drag_edge_strip(cx, strip);
         if self.inputs.geometry.edge == Edge::Bottom {
             children.insert(0, drag_edge);
         } else {
@@ -5910,6 +5914,34 @@ mod tests {
                 "the Kit's window frame must not paint over the slide's canvas"
             );
         });
+    }
+
+    #[test]
+    fn the_drag_edge_strip_paints_the_bands_chrome() {
+        // The free-edge gap's pin: the grab strip is 8 px of column
+        // height the drawer's frame overlay borders on both ends —
+        // built without a background it paints nothing, and the
+        // desktop behind the dropdown shows through the border's
+        // inner side as a gap. The strip must carry the band chrome
+        // it merges into (the same strip pair the status band and the
+        // tab strip paint), a GPUI-side fact with no headless paint
+        // assertion — so the builder's body is pinned, the manifest
+        // pins' own idiom.
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app_shell.rs"))
+                .expect("the shell source beside the crate root");
+        let start = source
+            .find("fn drag_edge_strip(")
+            .expect("the drag edge's builder beside its doc");
+        let body = &source[start
+            ..source[start..]
+                .find("\n    fn ")
+                .map(|at| start + at)
+                .expect("the next method closes the builder's slice")];
+        assert!(
+            body.contains(".bg("),
+            "the grab strip paints chrome — a transparent slot shows what is behind the drawer:\n{body}"
+        );
     }
 
     #[test]
