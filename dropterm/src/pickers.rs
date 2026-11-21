@@ -7,8 +7,9 @@
 //! in its own family (the font-picker spec's ruling — the row shows
 //! the real thing, not a name-as-proxy), a scheme row is the scheme
 //! itself (the background and foreground chips plus the sixteen ANSI
-//! colors the terminal renders with, resolved through
-//! [`scheme_previews`]).
+//! colors the terminal renders with, resolved through the merged
+//! preview table — [`merged_scheme_previews`] over the registry plus
+//! the loaded user schemes, theme-files F3).
 //!
 //! The pickers deliver their picks as values through the handles'
 //! callbacks; the write contract is the host's (the settings drawer,
@@ -19,7 +20,8 @@
 //! dropdown's selected/write) with the planned-write layer left to
 //! its owning task.
 //!
-//! [`scheme_previews`]: dropterm::core::theme_source::scheme_previews
+//! [`merged_scheme_previews`]:
+//! dropterm::core::theme_source::merged_scheme_previews
 
 // The components await their host (the settings drawer, Task 2) —
 // the same holding pattern `input.rs`'s `action_id` sat in: the
@@ -29,7 +31,8 @@
 
 use std::rc::Rc;
 
-use dropterm::core::theme_source::{SchemePreview, scheme_names, scheme_previews};
+use dropterm::core::theme_files::UserScheme;
+use dropterm::core::theme_source::{SchemePreview, merged_scheme_names, merged_scheme_previews};
 use gpui::prelude::*;
 use gpui::{App, Entity, SharedString, px};
 use gpui_component::IndexPath;
@@ -76,17 +79,19 @@ pub(crate) fn font_pick(families: &[String], stored: &str, index: usize) -> Opti
 }
 
 /// The scheme picker's selection row for a stored scheme name: the
-/// registry row when the name resolves, else none — the closed
+/// merged-registry row when the name resolves, else none — the closed
 /// control shows the stored name as its placeholder rather than
-/// inventing a position for a name the registry lacks.
-pub(crate) fn scheme_selected(stored: &str) -> Option<usize> {
-    scheme_names().iter().position(|name| *name == stored)
+/// inventing a position for a name the merged list lacks.
+pub(crate) fn scheme_selected(stored: &str, user_schemes: &[UserScheme]) -> Option<usize> {
+    merged_scheme_names(user_schemes)
+        .iter()
+        .position(|name| name == stored)
 }
 
-/// The registry name a scheme-picker pick commits; `None` for an
+/// The scheme name a scheme-picker pick commits; `None` for an
 /// out-of-range row (stale popover, the `dropdown_write` rule).
-pub(crate) fn scheme_pick(index: usize) -> Option<&'static str> {
-    scheme_names().into_iter().nth(index)
+pub(crate) fn scheme_pick(index: usize, user_schemes: &[UserScheme]) -> Option<String> {
+    merged_scheme_names(user_schemes).into_iter().nth(index)
 }
 
 // --- the delegates ---
@@ -171,10 +176,12 @@ impl SearchableListDelegate for FontFamilies {
     }
 }
 
-/// One scheme row: the registry name, carried beside the preview
-/// that draws it.
+/// One scheme row: the scheme's name (a builtin's or a loaded user
+/// scheme's), carried beside the preview that draws it — owned, so a
+/// user scheme's name rows no differently than a builtin's
+/// (theme-files F3).
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct SchemeRow(pub &'static str);
+pub(crate) struct SchemeRow(pub String);
 
 /// The scheme strip's chip footprint: a full strip is the background
 /// and foreground chips plus the sixteen ANSI colors — eighteen
@@ -207,17 +214,18 @@ fn scheme_strip_px() -> f32 {
         + (SCHEME_CHIP_COUNT - 1) as f32 * SCHEME_CHIP_GAP_PX
 }
 
-/// The scheme picker's delegate: the registry's rows in registry
-/// order, each with its preview resolved once at build.
+/// The scheme picker's delegate: the merged registry's rows — the
+/// builtins in registry order, the user schemes behind — each with
+/// its preview resolved once at build.
 #[derive(Clone, Default)]
 pub(crate) struct Schemes(Vec<(SchemeRow, SchemePreview)>);
 
 impl Schemes {
-    /// The registry's rows, previews resolved — one pass over
-    /// [`scheme_previews`], the same table the rows draw from.
-    pub(crate) fn from_registry() -> Self {
+    /// The merged registry's rows, previews resolved — one pass over
+    /// [`merged_scheme_previews`], the same table the rows draw from.
+    pub(crate) fn from_merged(user_schemes: &[UserScheme]) -> Self {
         Self(
-            scheme_previews()
+            merged_scheme_previews(user_schemes)
                 .into_iter()
                 .map(|(name, preview)| (SchemeRow(name), preview))
                 .collect(),
@@ -293,7 +301,12 @@ impl SearchableListDelegate for Schemes {
             // The name truncates with an ellipsis inside its room
             // rather than clipping away — the row always identifies
             // its scheme.
-            .child(gpui::div().min_w_0().truncate().child(item.0));
+            .child(
+                gpui::div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(item.0.clone())),
+            );
         if checked {
             row = row.child("✓");
         }
@@ -302,13 +315,13 @@ impl SearchableListDelegate for Schemes {
 }
 
 impl SearchableListItem for SchemeRow {
-    type Value = &'static str;
+    type Value = String;
 
     fn title(&self) -> SharedString {
-        SharedString::from(self.0)
+        SharedString::from(self.0.clone())
     }
 
-    fn value(&self) -> &&'static str {
+    fn value(&self) -> &String {
         &self.0
     }
 }
@@ -318,8 +331,8 @@ impl SearchableListItem for SchemeRow {
 /// The font pick callback's shape: the family chosen.
 pub(crate) type FontPickFn = Rc<dyn Fn(String, &mut App)>;
 
-/// The scheme pick callback's shape: the registry name chosen.
-pub(crate) type SchemePickFn = Rc<dyn Fn(&'static str, &mut App)>;
+/// The scheme pick callback's shape: the scheme name chosen.
+pub(crate) type SchemePickFn = Rc<dyn Fn(String, &mut App)>;
 
 /// The font picker's handle: the Kit select's state with the pick
 /// subscription owned beside it (a dropped subscription is a dead
@@ -367,21 +380,23 @@ pub(crate) fn font_picker(
     }
 }
 
-/// The scheme picker: the Kit select over the registry's rows,
-/// seeded on the stored name when the registry knows it, every
+/// The scheme picker: the Kit select over the merged registry's rows,
+/// seeded on the stored name when the merged list knows it, every
 /// confirm delivered through `on_pick`.
 pub(crate) fn scheme_picker(
     stored: &str,
+    user_schemes: &[UserScheme],
     on_pick: &SchemePickFn,
     window: &mut gpui::Window,
     cx: &mut App,
 ) -> SchemePickerHandle {
-    let selected = scheme_selected(stored).map(|row| IndexPath::default().row(row));
-    let state = cx.new(|cx| SelectState::new(Schemes::from_registry(), selected, window, cx));
+    let selected = scheme_selected(stored, user_schemes).map(|row| IndexPath::default().row(row));
+    let state =
+        cx.new(|cx| SelectState::new(Schemes::from_merged(user_schemes), selected, window, cx));
     let on_pick = Rc::clone(on_pick);
     let subscription = cx.subscribe(&state, move |_, event: &SelectEvent<Schemes>, cx| {
         if let SelectEvent::Confirm(Some(name)) = event {
-            on_pick(name, cx);
+            on_pick(name.clone(), cx);
         }
     });
     SchemePickerHandle {
@@ -393,6 +408,8 @@ pub(crate) fn scheme_picker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use dropterm::core::theme_source::scheme_names;
 
     // --- the pure model ---
 
@@ -473,32 +490,89 @@ mod tests {
     #[test]
     fn scheme_selected_resolves_the_registry_row_exactly() {
         let names = scheme_names();
-        assert_eq!(scheme_selected(names[0]), Some(0));
-        // A name the registry lacks selects nothing — the control
+        assert_eq!(scheme_selected(names[0], &[]), Some(0));
+        // A name the merged list lacks selects nothing — the control
         // falls to its placeholder, never an invented position.
-        assert_eq!(scheme_selected("not a scheme"), None);
+        assert_eq!(scheme_selected("not a scheme", &[]), None);
     }
 
     #[test]
     fn scheme_pick_commits_the_registry_name_and_rejects_past_the_registry() {
         let names = scheme_names();
-        assert_eq!(scheme_pick(0), Some(names[0]));
-        assert_eq!(scheme_pick(names.len()), None);
+        assert_eq!(scheme_pick(0, &[]), Some(names[0].to_string()));
+        assert_eq!(scheme_pick(names.len(), &[]), None);
     }
 
     #[test]
     fn the_schemes_delegate_lists_the_whole_registry_in_registry_order() {
         let names = scheme_names();
-        let delegate = Schemes::from_registry();
+        let delegate = Schemes::from_merged(&[]);
         assert_eq!(delegate.items_count(0), names.len());
         for (row, name) in names.iter().enumerate() {
             assert_eq!(
                 delegate
                     .item(IndexPath::default().row(row))
-                    .map(|item| item.0),
+                    .map(|item| item.0.as_str()),
                 Some(*name)
             );
         }
+    }
+
+    /// One loaded user scheme through the loader's own public path
+    /// (the twin's palette type stays lib-private).
+    fn user_scheme(name: &str, background: &str) -> dropterm::core::theme_files::UserScheme {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dropterm-f3-pickers-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        std::fs::write(
+            dir.join(format!("{name}.ron")),
+            format!("(foreground: \"#e6edf3\", background: \"{background}\")"),
+        )
+        .expect("write fixture scheme");
+        let schemes = dropterm::core::theme_files::load_dir(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        schemes
+            .into_iter()
+            .next()
+            .expect("the fixture scheme loads")
+    }
+
+    #[test]
+    fn the_schemes_delegate_lists_user_schemes_behind_the_registry() {
+        // F3's pin at the delegate: a loaded user scheme rows behind
+        // every builtin, its preview resolved through the same merged
+        // table the rows draw from.
+        let schemes = vec![user_scheme("Evening", "#1a1b26")];
+        let delegate = Schemes::from_merged(&schemes);
+        let builtin_count = scheme_names().len();
+        assert_eq!(delegate.items_count(0), builtin_count + 1);
+        let last = IndexPath::default().row(builtin_count);
+        assert_eq!(
+            delegate.item(last).map(|item| item.0.as_str()),
+            Some("Evening")
+        );
+    }
+
+    #[test]
+    fn scheme_selected_marks_a_user_scheme_row_and_unknowns_mark_none() {
+        let schemes = vec![user_scheme("Evening", "#1a1b26")];
+        assert_eq!(
+            scheme_selected("Evening", &schemes),
+            Some(scheme_names().len())
+        );
+        // A name the merged list lacks selects nothing — the control
+        // falls to its placeholder, never an invented position.
+        assert_eq!(scheme_selected("not a scheme", &schemes), None);
+        assert_eq!(
+            scheme_selected("Evening", &[]),
+            None,
+            "without the list the name is unknown"
+        );
     }
 
     // --- the components (the Kit's own test harness) ---
@@ -548,19 +622,22 @@ mod tests {
         cx.update(gpui_component::init);
         let cx = cx.add_empty_window();
         let names = scheme_names();
-        let picked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<&'static str>::new()));
+        let picked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let sink = std::rc::Rc::clone(&picked);
-        let on_pick: SchemePickFn = std::rc::Rc::new(move |name: &'static str, _| {
+        let on_pick: SchemePickFn = std::rc::Rc::new(move |name: String, _| {
             sink.borrow_mut().push(name);
         });
-        let handle = cx.update(|window, cx| scheme_picker(names[0], &on_pick, window, cx));
+        let handle = cx.update(|window, cx| scheme_picker(names[0], &[], &on_pick, window, cx));
         cx.run_until_parked();
         cx.update(|_, cx| {
-            assert_eq!(handle.state.read(cx).selected_value(), Some(&names[0]));
+            assert_eq!(
+                handle.state.read(cx).selected_value(),
+                Some(&names[0].to_string())
+            );
             handle.state.update(cx, |_, cx| {
-                cx.emit(SelectEvent::Confirm(Some(names[1])));
+                cx.emit(SelectEvent::Confirm(Some(names[1].to_string())));
             });
         });
-        assert_eq!(*picked.borrow(), vec![names[1]]);
+        assert_eq!(*picked.borrow(), vec![names[1].to_string()]);
     }
 }

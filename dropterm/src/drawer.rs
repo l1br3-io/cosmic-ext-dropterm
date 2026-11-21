@@ -545,6 +545,9 @@ impl SettingsDrawer {
         cx: &mut App,
     ) -> DropdownMap {
         let mut dropdowns = Vec::new();
+        // The merged scheme vocabulary the scheme-keyed arms resolve
+        // against (theme-files F3): the shell's holder at build time.
+        let user_schemes = shell.read(cx).user_schemes.clone();
         for key in [
             ConfigKey::HAlign,
             ConfigKey::Edge,
@@ -556,10 +559,11 @@ impl SettingsDrawer {
             ConfigKey::ThemePreference,
         ] {
             let options = dropdown_options(key);
-            let selected = Some(dropdown_selected(key, config).unwrap_or(0))
+            let selected = Some(dropdown_selected(key, config, &user_schemes).unwrap_or(0))
                 .map(|row| gpui_component::IndexPath::default().row(row));
             let state = cx.new(|cx| SelectState::new(options, selected, window, cx));
             let target = shell.clone();
+            let dropdown_user_schemes = user_schemes.clone();
             cx.subscribe(
                 &state,
                 move |_emitter: Entity<SelectState<Vec<SharedString>>>,
@@ -569,7 +573,8 @@ impl SettingsDrawer {
                         let row = dropdown_row_of(key, label);
                         target.update(cx, |shell, _| {
                             if let Some(write) =
-                                settings::dropdown_write(key, row).map(|w| w.clamped())
+                                settings::dropdown_write(key, row, &dropdown_user_schemes)
+                                    .map(|w| w.clamped())
                             {
                                 shell.write_settings(&write);
                             }
@@ -611,14 +616,13 @@ impl SettingsDrawer {
         let target = shell.clone();
         let on_pick: pickers::SchemePickFn = Rc::new(move |name, cx| {
             let write = match key {
-                ConfigKey::ColorSchemeDark => {
-                    settings::PlannedWrite::ColorSchemeDark(name.to_string())
-                }
-                _ => settings::PlannedWrite::ColorSchemeLight(name.to_string()),
+                ConfigKey::ColorSchemeDark => settings::PlannedWrite::ColorSchemeDark(name),
+                _ => settings::PlannedWrite::ColorSchemeLight(name),
             };
             target.update(cx, |shell, _| shell.write_settings(&write));
         });
-        pickers::scheme_picker(stored, &on_pick, window, cx)
+        let user_schemes = shell.read(cx).user_schemes.clone();
+        pickers::scheme_picker(stored, &user_schemes, &on_pick, window, cx)
     }
 
     /// The shell field's control: the `/etc/shells` picker beside the
@@ -1313,12 +1317,20 @@ impl SettingsDrawer {
             let value = input(&row.value, ProfileField::EnvValue(env.len()), window, cx);
             env.push((key, value));
         }
-        let scheme_options: Vec<SharedString> = once("Inherit")
-            .chain(dropterm::core::theme_source::scheme_names())
+        // The scheme select's vocabulary is the merged registry
+        // (theme-files F3): Inherit, then the builtins, then the
+        // loaded user schemes — the shell's holder at form-build time.
+        let scheme_user_schemes = shell.read(cx).user_schemes.clone();
+        let scheme_options: Vec<SharedString> = once("Inherit".to_string())
+            .chain(dropterm::core::theme_source::merged_scheme_names(
+                &scheme_user_schemes,
+            ))
             .map(SharedString::from)
             .collect();
-        let scheme_selected = gpui_component::IndexPath::default()
-            .row(profile_scheme_selected(draft.scheme.as_deref()));
+        let scheme_selected = gpui_component::IndexPath::default().row(profile_scheme_selected(
+            draft.scheme.as_deref(),
+            &scheme_user_schemes,
+        ));
         let scheme =
             cx.new(|cx| SelectState::new(scheme_options, Some(scheme_selected), window, cx));
         let scheme_target = shell.clone();
@@ -1329,11 +1341,12 @@ impl SettingsDrawer {
                   event: &SelectEvent<Vec<SharedString>>,
                   cx: &mut Context<Self>| {
                 if let SelectEvent::Confirm(Some(label)) = event {
-                    // Row 0 is Inherit; the registry rows offset by
+                    // Row 0 is Inherit; the scheme rows offset by
                     // one — the model's own row space, resolved
-                    // against the registry (never the popover's
-                    // snapshot).
-                    let names = dropterm::core::theme_source::scheme_names();
+                    // against the merged registry (never the
+                    // popover's snapshot).
+                    let names =
+                        dropterm::core::theme_source::merged_scheme_names(&scheme_user_schemes);
                     let row = if label.as_ref() == "Inherit" {
                         Some(0)
                     } else {

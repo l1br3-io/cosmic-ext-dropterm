@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::BTreeMap;
 
+use crate::core::theme_source::scheme_names;
+
 fn section_keys() -> Vec<ConfigKey> {
     Section::ALL
         .iter()
@@ -725,15 +727,15 @@ fn dropdown_selections_round_trip_through_their_options() {
         ConfigKey::ThemePreference,
         ConfigKey::NewTabCwd,
     ] {
-        let selected =
-            dropdown_selected(key, &config).unwrap_or_else(|| panic!("{key:?} has no selection"));
+        let selected = dropdown_selected(key, &config, &[])
+            .unwrap_or_else(|| panic!("{key:?} has no selection"));
         let write =
-            dropdown_write(key, selected).unwrap_or_else(|| panic!("{key:?} pick vanished"));
+            dropdown_write(key, selected, &[]).unwrap_or_else(|| panic!("{key:?} pick vanished"));
         // Re-selecting the current index reproduces the current
         // config value — the dropdown can never invent one.
-        let back = dropdown_selected(key, &config).unwrap();
+        let back = dropdown_selected(key, &config, &[]).unwrap();
         assert_eq!(
-            dropdown_write(key, back).unwrap(),
+            dropdown_write(key, back, &[]).unwrap(),
             write,
             "{key:?} round trip"
         );
@@ -752,7 +754,7 @@ fn dropdown_picks_out_of_range_reject_instead_of_panicking() {
         ConfigKey::ColorSchemeLight,
         ConfigKey::ThemePreference,
     ] {
-        assert!(dropdown_write(key, 99).is_none(), "{key:?}");
+        assert!(dropdown_write(key, 99, &[]).is_none(), "{key:?}");
     }
 }
 
@@ -762,9 +764,9 @@ fn dropdown_writes_reject_keys_without_dropdowns() {
     // its own planner — so it is no longer among the static-table
     // rejections; the other text and slider keys stay off the
     // dropdown paths entirely.
-    assert!(dropdown_write(ConfigKey::FontName, 0).is_none());
-    assert!(dropdown_write(ConfigKey::Opacity, 0).is_none());
-    assert!(dropdown_selected(ConfigKey::FontName, &DropTermConfig::default()).is_none());
+    assert!(dropdown_write(ConfigKey::FontName, 0, &[]).is_none());
+    assert!(dropdown_write(ConfigKey::Opacity, 0, &[]).is_none());
+    assert!(dropdown_selected(ConfigKey::FontName, &DropTermConfig::default(), &[]).is_none());
 }
 
 // --- the shell picker (default-spawn DS-2) ---
@@ -1264,15 +1266,15 @@ fn new_tab_cwd_picks_round_trip_and_out_of_range_rejects() {
     // invent a value; indices past the table (including exactly
     // len) reject instead of panicking.
     assert_eq!(
-        dropdown_write(ConfigKey::NewTabCwd, 0),
+        dropdown_write(ConfigKey::NewTabCwd, 0, &[]),
         Some(PlannedWrite::NewTabCwd(NewTabCwd::Inherit))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::NewTabCwd, 1),
+        dropdown_write(ConfigKey::NewTabCwd, 1, &[]),
         Some(PlannedWrite::NewTabCwd(NewTabCwd::Default))
     );
-    assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 2), None);
-    assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 99), None);
+    assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 2, &[]), None);
+    assert_eq!(dropdown_write(ConfigKey::NewTabCwd, 99, &[]), None);
     assert_eq!(
         PlannedWrite::NewTabCwd(NewTabCwd::Default).key(),
         ConfigKey::NewTabCwd
@@ -1285,9 +1287,15 @@ fn new_tab_cwd_selection_mirrors_the_config_value() {
     // re-selects its own position, so the dropdown opens on the
     // file's current value.
     let mut config = DropTermConfig::default();
-    assert_eq!(dropdown_selected(ConfigKey::NewTabCwd, &config), Some(0));
+    assert_eq!(
+        dropdown_selected(ConfigKey::NewTabCwd, &config, &[]),
+        Some(0)
+    );
     config.new_tab_cwd = NewTabCwd::Default;
-    assert_eq!(dropdown_selected(ConfigKey::NewTabCwd, &config), Some(1));
+    assert_eq!(
+        dropdown_selected(ConfigKey::NewTabCwd, &config, &[]),
+        Some(1)
+    );
 }
 
 // --- the Terminal default-directory row (default-spawn DS-1) ---
@@ -1378,19 +1386,19 @@ fn theme_preference_picks_round_trip_and_out_of_range_rejects() {
     // invent a value; indices past the table (including exactly
     // len) reject instead of panicking.
     assert_eq!(
-        dropdown_write(ConfigKey::ThemePreference, 0),
+        dropdown_write(ConfigKey::ThemePreference, 0, &[]),
         Some(PlannedWrite::ThemePreference(ThemePreference::System))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::ThemePreference, 1),
+        dropdown_write(ConfigKey::ThemePreference, 1, &[]),
         Some(PlannedWrite::ThemePreference(ThemePreference::Dark))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::ThemePreference, 2),
+        dropdown_write(ConfigKey::ThemePreference, 2, &[]),
         Some(PlannedWrite::ThemePreference(ThemePreference::Light))
     );
-    assert_eq!(dropdown_write(ConfigKey::ThemePreference, 3), None);
-    assert_eq!(dropdown_write(ConfigKey::ThemePreference, 99), None);
+    assert_eq!(dropdown_write(ConfigKey::ThemePreference, 3, &[]), None);
+    assert_eq!(dropdown_write(ConfigKey::ThemePreference, 99, &[]), None);
 }
 
 #[test]
@@ -1399,17 +1407,17 @@ fn theme_preference_selection_mirrors_the_config_value() {
     // variant re-selects its own position.
     let mut config = DropTermConfig::default();
     assert_eq!(
-        dropdown_selected(ConfigKey::ThemePreference, &config),
+        dropdown_selected(ConfigKey::ThemePreference, &config, &[]),
         Some(0)
     );
     config.theme_preference = ThemePreference::Dark;
     assert_eq!(
-        dropdown_selected(ConfigKey::ThemePreference, &config),
+        dropdown_selected(ConfigKey::ThemePreference, &config, &[]),
         Some(1)
     );
     config.theme_preference = ThemePreference::Light;
     assert_eq!(
-        dropdown_selected(ConfigKey::ThemePreference, &config),
+        dropdown_selected(ConfigKey::ThemePreference, &config, &[]),
         Some(2)
     );
 }
@@ -1452,19 +1460,19 @@ fn tab_position_picks_round_trip_and_out_of_range_rejects() {
     // invent a value; indices past the table (including exactly
     // len) reject instead of panicking.
     assert_eq!(
-        dropdown_write(ConfigKey::TabPosition, 0),
+        dropdown_write(ConfigKey::TabPosition, 0, &[]),
         Some(PlannedWrite::TabPosition(TabPosition::Auto))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabPosition, 1),
+        dropdown_write(ConfigKey::TabPosition, 1, &[]),
         Some(PlannedWrite::TabPosition(TabPosition::Top))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabPosition, 2),
+        dropdown_write(ConfigKey::TabPosition, 2, &[]),
         Some(PlannedWrite::TabPosition(TabPosition::Bottom))
     );
-    assert_eq!(dropdown_write(ConfigKey::TabPosition, 3), None);
-    assert_eq!(dropdown_write(ConfigKey::TabPosition, 99), None);
+    assert_eq!(dropdown_write(ConfigKey::TabPosition, 3, &[]), None);
+    assert_eq!(dropdown_write(ConfigKey::TabPosition, 99, &[]), None);
 }
 
 #[test]
@@ -1472,11 +1480,20 @@ fn tab_position_selection_mirrors_the_config_value() {
     // Default config → Auto → Some(0); every committed variant
     // re-selects its own position.
     let mut config = DropTermConfig::default();
-    assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(0));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabPosition, &config, &[]),
+        Some(0)
+    );
     config.tab_position = TabPosition::Top;
-    assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(1));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabPosition, &config, &[]),
+        Some(1)
+    );
     config.tab_position = TabPosition::Bottom;
-    assert_eq!(dropdown_selected(ConfigKey::TabPosition, &config), Some(2));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabPosition, &config, &[]),
+        Some(2)
+    );
 }
 
 // --- the Behavior tab-titles dropdown ---
@@ -1543,27 +1560,27 @@ fn tab_title_mode_picks_round_trip_and_out_of_range_rejects() {
     // invent a value; indices past the table (including exactly
     // len) reject instead of panicking.
     assert_eq!(
-        dropdown_write(ConfigKey::TabTitleMode, 0),
+        dropdown_write(ConfigKey::TabTitleMode, 0, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::Shell))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabTitleMode, 1),
+        dropdown_write(ConfigKey::TabTitleMode, 1, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::AbbreviatedPath))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabTitleMode, 2),
+        dropdown_write(ConfigKey::TabTitleMode, 2, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::LastSegment))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabTitleMode, 3),
+        dropdown_write(ConfigKey::TabTitleMode, 3, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::Numbered))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::TabTitleMode, 4),
+        dropdown_write(ConfigKey::TabTitleMode, 4, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::Profile))
     );
-    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 5), None);
-    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 99), None);
+    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 5, &[]), None);
+    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 99, &[]), None);
     // The write targets exactly its own key, nothing else.
     assert_eq!(
         PlannedWrite::TabTitleMode(TabTitleMode::Numbered).key(),
@@ -1577,13 +1594,25 @@ fn tab_title_mode_selection_mirrors_the_config_value() {
     // re-selects its own position, so the dropdown opens on the
     // file's current value.
     let mut config = DropTermConfig::default();
-    assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(0));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabTitleMode, &config, &[]),
+        Some(0)
+    );
     config.tab_title_mode = TabTitleMode::AbbreviatedPath;
-    assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(1));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabTitleMode, &config, &[]),
+        Some(1)
+    );
     config.tab_title_mode = TabTitleMode::LastSegment;
-    assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(2));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabTitleMode, &config, &[]),
+        Some(2)
+    );
     config.tab_title_mode = TabTitleMode::Numbered;
-    assert_eq!(dropdown_selected(ConfigKey::TabTitleMode, &config), Some(3));
+    assert_eq!(
+        dropdown_selected(ConfigKey::TabTitleMode, &config, &[]),
+        Some(3)
+    );
 }
 
 #[test]
@@ -1615,17 +1644,17 @@ fn scheme_dropdown_picks_commit_registry_names_only() {
     // A pick commits exactly the option's name — the control can
     // never invent or misspell a value.
     assert_eq!(
-        dropdown_write(ConfigKey::ColorSchemeDark, 0),
+        dropdown_write(ConfigKey::ColorSchemeDark, 0, &[]),
         Some(PlannedWrite::ColorSchemeDark("GitHub Dark".to_string()))
     );
     assert_eq!(
-        dropdown_write(ConfigKey::ColorSchemeLight, 4),
+        dropdown_write(ConfigKey::ColorSchemeLight, 4, &[]),
         Some(PlannedWrite::ColorSchemeLight("Dracula".to_string()))
     );
     // Out of range (including exactly len) rejects instead of
     // panicking — no index past the table commits anything.
     let len = crate::core::theme_source::scheme_names().len();
-    assert_eq!(dropdown_write(ConfigKey::ColorSchemeDark, len), None);
+    assert_eq!(dropdown_write(ConfigKey::ColorSchemeDark, len, &[]), None);
 }
 
 #[test]
@@ -1634,24 +1663,27 @@ fn scheme_selection_opens_on_the_config_name_and_unknowns_select_nothing() {
     // Defaults are the GitHub pair — the registry's first two
     // entries — so both dropdowns open on a real selection.
     assert_eq!(
-        dropdown_selected(ConfigKey::ColorSchemeDark, &config),
+        dropdown_selected(ConfigKey::ColorSchemeDark, &config, &[]),
         Some(0)
     );
     assert_eq!(
-        dropdown_selected(ConfigKey::ColorSchemeLight, &config),
+        dropdown_selected(ConfigKey::ColorSchemeLight, &config, &[]),
         Some(1)
     );
     // A committed name selects its registry position.
     config.color_scheme_dark = "Dracula".to_string();
     assert_eq!(
-        dropdown_selected(ConfigKey::ColorSchemeDark, &config),
+        dropdown_selected(ConfigKey::ColorSchemeDark, &config, &[]),
         Some(4)
     );
     // An unknown name (stale, hand-typed, renamed upstream) shows
     // no selection — the control never invents one, while
     // `active_colors` keeps serving the GitHub fallback.
     config.color_scheme_dark = "Tokyo Night".to_string();
-    assert_eq!(dropdown_selected(ConfigKey::ColorSchemeDark, &config), None);
+    assert_eq!(
+        dropdown_selected(ConfigKey::ColorSchemeDark, &config, &[]),
+        None
+    );
 }
 
 #[test]
@@ -1979,12 +2011,12 @@ fn profile_scheme_selection_maps_unset_and_unknown_to_the_inherit_row() {
     // a name the registry lacks (hand-edited) falls back to row 0 —
     // the control shows the fallback the resolution chain is already
     // serving, never a value it would invent.
-    assert_eq!(profile_scheme_selected(None), 0);
+    assert_eq!(profile_scheme_selected(None, &[]), 0);
     assert_eq!(
-        profile_scheme_selected(Some("Dracula")),
+        profile_scheme_selected(Some("Dracula"), &[]),
         registry_row("Dracula") + 1
     );
-    assert_eq!(profile_scheme_selected(Some("Catppuccin Frappe")), 0);
+    assert_eq!(profile_scheme_selected(Some("Catppuccin Frappe"), &[]), 0);
 }
 
 #[test]
@@ -1993,12 +2025,12 @@ fn profile_scheme_picks_resolve_to_the_field_value_or_reject() {
     // registry row commits its name; anything else is stale and
     // rejects — a pick can never invent a value (the
     // `dropdown_write` rule).
-    assert_eq!(profile_scheme_write(0), Some(ProfileSchemePick::None));
+    assert_eq!(profile_scheme_write(0, &[]), Some(ProfileSchemePick::None));
     assert_eq!(
-        profile_scheme_write(registry_row("Nord") + 1),
+        profile_scheme_write(registry_row("Nord") + 1, &[]),
         Some(ProfileSchemePick::Scheme("Nord".to_string()))
     );
-    assert_eq!(profile_scheme_write(scheme_names().len() + 1), None);
+    assert_eq!(profile_scheme_write(scheme_names().len() + 1, &[]), None);
 }
 
 #[test]
@@ -2008,14 +2040,16 @@ fn a_scheme_pick_round_trips_through_apply_edit() {
     // None, write back, and the field returns to its start.
     let profiles = [sourced_profile()];
     let mut edited = profiles[0].clone();
-    edited.color_scheme = profile_scheme_write(registry_row("Dracula") + 1)
+    edited.color_scheme = profile_scheme_write(registry_row("Dracula") + 1, &[])
         .expect("a registry row")
         .field_value();
     let written = apply_edit(&profiles, 0, edited);
     assert_eq!(written[0].color_scheme, Some("Dracula".to_string()));
 
     let mut cleared = written[0].clone();
-    cleared.color_scheme = profile_scheme_write(0).expect("the None row").field_value();
+    cleared.color_scheme = profile_scheme_write(0, &[])
+        .expect("the None row")
+        .field_value();
     let restored = apply_edit(&written, 0, cleared);
     assert_eq!(restored[0].color_scheme, None);
 }
@@ -2378,7 +2412,7 @@ fn a_valid_add_save_plans_one_append_and_no_default_write() {
     let ProfileSavePlan::Write {
         profiles: written,
         default_after_rename,
-    } = plan_profile_save(&draft, &profiles, Some("ssh"))
+    } = plan_profile_save(&draft, &profiles, Some("ssh"), &[])
     else {
         panic!("a valid add saves");
     };
@@ -2412,7 +2446,7 @@ fn a_valid_edit_save_replaces_every_field_in_one_write() {
     let ProfileSavePlan::Write {
         profiles: written,
         default_after_rename,
-    } = plan_profile_save(&draft, &profiles, None)
+    } = plan_profile_save(&draft, &profiles, None, &[])
     else {
         panic!("a valid edit saves");
     };
@@ -2441,7 +2475,7 @@ fn an_edit_save_cascades_only_when_the_rename_hits_the_default() {
     let ProfileSavePlan::Write {
         default_after_rename: hit,
         ..
-    } = plan_profile_save(&draft, &profiles, Some("ssh"))
+    } = plan_profile_save(&draft, &profiles, Some("ssh"), &[])
     else {
         panic!("a valid rename saves");
     };
@@ -2450,7 +2484,7 @@ fn an_edit_save_cascades_only_when_the_rename_hits_the_default() {
     let ProfileSavePlan::Write {
         default_after_rename: missed,
         ..
-    } = plan_profile_save(&draft, &profiles, Some("top"))
+    } = plan_profile_save(&draft, &profiles, Some("top"), &[])
     else {
         panic!("a valid rename saves");
     };
@@ -2459,7 +2493,7 @@ fn an_edit_save_cascades_only_when_the_rename_hits_the_default() {
     let ProfileSavePlan::Write {
         default_after_rename: absent,
         ..
-    } = plan_profile_save(&draft, &profiles, None)
+    } = plan_profile_save(&draft, &profiles, None, &[])
     else {
         panic!("a valid rename saves");
     };
@@ -2478,7 +2512,7 @@ fn an_invalid_save_names_every_offending_field_at_once() {
     draft.command = "   ".to_string();
     draft.env_rows = vec![env_row("A=B", "v"), env_row("", ""), env_row("", "orphan")];
     assert_eq!(
-        plan_profile_save(&draft, &profiles, None),
+        plan_profile_save(&draft, &profiles, None, &[]),
         ProfileSavePlan::Invalid {
             errors: vec![
                 (ProfileField::Name, ProfileFieldError::BlankName),
@@ -2501,7 +2535,7 @@ fn a_duplicate_name_errors_alongside_its_fellow_offenders() {
     draft.command = "btop".to_string();
     draft.env_rows = vec![env_row("", "orphan")];
     assert_eq!(
-        plan_profile_save(&draft, &profiles, None),
+        plan_profile_save(&draft, &profiles, None, &[]),
         ProfileSavePlan::Invalid {
             errors: vec![
                 (ProfileField::Name, ProfileFieldError::DuplicateName),
@@ -2520,7 +2554,7 @@ fn an_unchanged_edit_save_plans_no_write() {
     let profiles = [sourced_profile()];
     let draft = ProfileDraft::edit(0, &profiles[0]);
     assert_eq!(
-        plan_profile_save(&draft, &profiles, Some("web-prod")),
+        plan_profile_save(&draft, &profiles, Some("web-prod"), &[]),
         ProfileSavePlan::Unchanged
     );
 }
@@ -2535,7 +2569,7 @@ fn a_stale_edit_save_plans_a_drop() {
         ..ProfileDraft::add()
     };
     assert_eq!(
-        plan_profile_save(&draft, &profiles, None),
+        plan_profile_save(&draft, &profiles, None, &[]),
         ProfileSavePlan::StaleEdit
     );
 }
@@ -2628,7 +2662,7 @@ fn a_clone_save_writes_the_rows_not_the_source_map() {
     draft.env_rows[1].value = "edited".to_string();
     let ProfileSavePlan::Write {
         profiles: written, ..
-    } = plan_profile_save(&draft, std::slice::from_ref(&source), None)
+    } = plan_profile_save(&draft, std::slice::from_ref(&source), None, &[])
     else {
         panic!("expected a write plan");
     };
@@ -2659,7 +2693,7 @@ fn a_save_never_loses_the_override_fields_the_seed_carried() {
     edit.name = "renamed".to_string();
     let ProfileSavePlan::Write {
         profiles: edited, ..
-    } = plan_profile_save(&edit, &profiles, None)
+    } = plan_profile_save(&edit, &profiles, None, &[])
     else {
         panic!("a valid edit saves");
     };
@@ -2669,7 +2703,7 @@ fn a_save_never_loses_the_override_fields_the_seed_carried() {
     let clone = ProfileDraft::clone_of(&profiles[0], &profiles);
     let ProfileSavePlan::Write {
         profiles: cloned, ..
-    } = plan_profile_save(&clone, &profiles, None)
+    } = plan_profile_save(&clone, &profiles, None, &[])
     else {
         panic!("a valid clone saves");
     };
@@ -2681,7 +2715,7 @@ fn a_save_never_loses_the_override_fields_the_seed_carried() {
     typed.command = "htop".to_string();
     let ProfileSavePlan::Write {
         profiles: added, ..
-    } = plan_profile_save(&typed, &[], None)
+    } = plan_profile_save(&typed, &[], None, &[])
     else {
         panic!("a valid add saves");
     };
@@ -2699,14 +2733,14 @@ fn an_edit_save_rejects_a_duplicate_name_self_excluded() {
     let mut draft = ProfileDraft::edit(0, &profiles[0]);
     draft.name = "top".to_string();
     assert_eq!(
-        plan_profile_save(&draft, &profiles, None),
+        plan_profile_save(&draft, &profiles, None, &[]),
         ProfileSavePlan::Invalid {
             errors: vec![(ProfileField::Name, ProfileFieldError::DuplicateName)],
         }
     );
     let seeded = ProfileDraft::edit(0, &profiles[0]);
     assert_eq!(
-        plan_profile_save(&seeded, &profiles, None),
+        plan_profile_save(&seeded, &profiles, None, &[]),
         ProfileSavePlan::Unchanged
     );
 }
@@ -2722,7 +2756,7 @@ fn env_rows_round_trip_through_a_save_and_reopen() {
     draft.env_rows.push(env_row("EXTRA", "1"));
     let ProfileSavePlan::Write {
         profiles: written, ..
-    } = plan_profile_save(&draft, &profiles, None)
+    } = plan_profile_save(&draft, &profiles, None, &[])
     else {
         panic!("expected a write plan");
     };
@@ -2765,7 +2799,7 @@ fn the_override_fields_ride_the_save_and_empty_persists_none() {
     draft.scrollback = "50000".to_string();
     let ProfileSavePlan::Write {
         profiles: written, ..
-    } = plan_profile_save(&draft, &profiles, None)
+    } = plan_profile_save(&draft, &profiles, None, &[])
     else {
         panic!("a valid save");
     };
@@ -2780,7 +2814,7 @@ fn the_override_fields_ride_the_save_and_empty_persists_none() {
     cleared_draft.scrollback = String::new();
     let ProfileSavePlan::Write {
         profiles: cleared, ..
-    } = plan_profile_save(&cleared_draft, &written, None)
+    } = plan_profile_save(&cleared_draft, &written, None, &[])
     else {
         panic!("a valid save");
     };
@@ -2797,7 +2831,7 @@ fn an_unknown_scheme_fails_save_alone() {
     let mut draft = ProfileDraft::edit(0, &profiles[0]);
     draft.scheme = Some("No such scheme".to_string());
     assert_eq!(
-        plan_profile_save(&draft, &profiles, None),
+        plan_profile_save(&draft, &profiles, None, &[]),
         ProfileSavePlan::Invalid {
             errors: vec![(ProfileField::Scheme, ProfileFieldError::UnknownScheme)],
         }
@@ -2815,7 +2849,7 @@ fn an_out_of_band_font_fails_save_alone_and_the_edges_pass() {
         let mut draft = ProfileDraft::edit(0, &profiles[0]);
         draft.font_size = bad.to_string();
         assert_eq!(
-            plan_profile_save(&draft, &profiles, None),
+            plan_profile_save(&draft, &profiles, None, &[]),
             ProfileSavePlan::Invalid {
                 errors: vec![(ProfileField::FontSize, ProfileFieldError::FontOutOfRange)],
             },
@@ -2828,7 +2862,7 @@ fn an_out_of_band_font_fails_save_alone_and_the_edges_pass() {
         draft.font_size = text.to_string();
         let ProfileSavePlan::Write {
             profiles: written, ..
-        } = plan_profile_save(&draft, &profiles, None)
+        } = plan_profile_save(&draft, &profiles, None, &[])
         else {
             panic!("font {text:?} is in band");
         };
@@ -2847,7 +2881,7 @@ fn an_unparsable_scrollback_fails_save_alone_and_the_clamp_rules_ride() {
         let mut draft = ProfileDraft::edit(0, &profiles[0]);
         draft.scrollback = bad.to_string();
         assert_eq!(
-            plan_profile_save(&draft, &profiles, None),
+            plan_profile_save(&draft, &profiles, None, &[]),
             ProfileSavePlan::Invalid {
                 errors: vec![(
                     ProfileField::Scrollback,
@@ -2863,7 +2897,7 @@ fn an_unparsable_scrollback_fails_save_alone_and_the_clamp_rules_ride() {
         draft.scrollback = text.to_string();
         let ProfileSavePlan::Write {
             profiles: written, ..
-        } = plan_profile_save(&draft, &profiles, None)
+        } = plan_profile_save(&draft, &profiles, None, &[])
         else {
             panic!("scrollback {text:?} clamps, never rejects");
         };
@@ -2884,7 +2918,7 @@ fn the_override_errors_ride_a_rejected_save_in_form_order() {
     draft.scrollback = "lots".to_string();
     draft.env_rows = vec![env_row("", "orphan")];
     assert_eq!(
-        plan_profile_save(&draft, &[], None),
+        plan_profile_save(&draft, &[], None, &[]),
         ProfileSavePlan::Invalid {
             errors: vec![
                 (ProfileField::Name, ProfileFieldError::BlankName),
@@ -2931,13 +2965,96 @@ fn the_inherit_row_preview_resolves_the_global_scheme_for_the_mode() {
         color_scheme_light: "Solarized Light".to_string(),
         ..DropTermConfig::default()
     };
-    let dark = inherit_scheme_preview(&config, true).expect("the dark name resolves");
-    let light = inherit_scheme_preview(&config, false).expect("the light name resolves");
-    assert_eq!(dark, scheme_previews()[registry_row("Dracula")].1);
-    assert_eq!(light, scheme_previews()[registry_row("Solarized Light")].1);
+    let dark = inherit_scheme_preview(&config, true, &[]).expect("the dark name resolves");
+    let light = inherit_scheme_preview(&config, false, &[]).expect("the light name resolves");
+    assert_eq!(
+        dark,
+        crate::core::theme_source::scheme_previews()[registry_row("Dracula")].1
+    );
+    assert_eq!(
+        light,
+        crate::core::theme_source::scheme_previews()[registry_row("Solarized Light")].1
+    );
 
     config.color_scheme_dark = "No such scheme".to_string();
-    assert_eq!(inherit_scheme_preview(&config, true), None);
+    assert_eq!(inherit_scheme_preview(&config, true, &[]), None);
+}
+
+/// One user scheme for the merged-surface tests: fg/bg only, the
+/// file minimum (the palette type stays lib-internal and every
+/// consumer resolves through the merged tables).
+fn user_scheme(name: &str) -> crate::core::theme_files::UserScheme {
+    crate::core::theme_files::UserScheme {
+        name: name.to_string(),
+        scheme: crate::core::theme_source::ColorScheme {
+            foreground: Some(alacritty_terminal::vte::ansi::Rgb {
+                r: 0xE6,
+                g: 0xED,
+                b: 0xF3,
+            }),
+            background: Some(alacritty_terminal::vte::ansi::Rgb {
+                r: 0x1A,
+                g: 0x1B,
+                b: 0x26,
+            }),
+            cursor: None,
+            bright_foreground: None,
+            dim_foreground: None,
+            normal: crate::core::theme_source::ColorSchemeAnsi::default(),
+            bright: crate::core::theme_source::ColorSchemeAnsi::default(),
+            dim: crate::core::theme_source::ColorSchemeAnsi::default(),
+        },
+    }
+}
+
+#[test]
+fn the_scheme_dropdowns_serve_user_schemes_behind_the_registry() {
+    // F3's pin at the settings seams: the per-mode dropdown's options
+    // carry a loaded user scheme behind the registry, a stored
+    // user-scheme name selects its row, and the write commits the
+    // name — the unknown-name rules unchanged.
+    let schemes = vec![user_scheme("Evening")];
+    let last_row = crate::core::theme_source::scheme_names().len();
+    let config = DropTermConfig {
+        color_scheme_dark: "Evening".to_string(),
+        ..DropTermConfig::default()
+    };
+    assert_eq!(
+        dropdown_selected(ConfigKey::ColorSchemeDark, &config, &schemes),
+        Some(last_row)
+    );
+    assert_eq!(
+        dropdown_write(ConfigKey::ColorSchemeDark, last_row, &schemes),
+        Some(PlannedWrite::ColorSchemeDark("Evening".to_string()))
+    );
+    // Without the list the name is unknown: no row, no write.
+    assert_eq!(
+        dropdown_selected(ConfigKey::ColorSchemeDark, &config, &[]),
+        None
+    );
+    assert_eq!(
+        dropdown_write(ConfigKey::ColorSchemeDark, last_row, &[]),
+        None
+    );
+}
+
+#[test]
+fn the_inherit_row_preview_resolves_a_user_scheme() {
+    let config = DropTermConfig {
+        color_scheme_dark: "Evening".to_string(),
+        ..DropTermConfig::default()
+    };
+    let preview =
+        inherit_scheme_preview(&config, true, &[user_scheme("Evening")]).expect("resolves");
+    assert_eq!(
+        preview.background,
+        Some(alacritty_terminal::vte::ansi::Rgb {
+            r: 0x1A,
+            g: 0x1B,
+            b: 0x26
+        })
+    );
+    assert_eq!(inherit_scheme_preview(&config, true, &[]), None);
 }
 
 // --- the write path's on-disk contract (config-store T3) ---

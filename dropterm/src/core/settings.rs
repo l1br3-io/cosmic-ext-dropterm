@@ -23,7 +23,8 @@ use crate::core::config::{
 };
 use crate::core::profile::Profile;
 use crate::core::profile::command_line_parts;
-use crate::core::theme_source::{SchemePreview, scheme_names, scheme_previews};
+use crate::core::theme_files::UserScheme;
+use crate::core::theme_source::{SchemePreview, merged_scheme_names, merged_scheme_previews};
 
 /// The write kind a config change came from, deciding echo handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1131,17 +1132,24 @@ pub const THEME_PREFERENCE_OPTIONS: &[(ThemePreference, &str)] = &[
 ];
 
 /// A scheme dropdown's selection: the config name's position in the
-/// registry options. An unknown name selects nothing — the control
-/// never invents a value; `active_colors()` keeps serving the COSMIC
+/// merged options (the registry's names then the user schemes',
+/// behind). An unknown name selects nothing — the control never
+/// invents a value; `active_colors()` keeps serving the COSMIC
 /// fallback meanwhile.
-fn scheme_index(name: &str) -> Option<usize> {
-    scheme_names().iter().position(|option| *option == name)
+fn scheme_index(name: &str, user_schemes: &[UserScheme]) -> Option<usize> {
+    merged_scheme_names(user_schemes)
+        .iter()
+        .position(|option| option == name)
 }
 
 /// The currently-selected dropdown index for `key` under `config`, so
 /// the control opens on the file's value. `None` for keys without a
 /// dropdown.
-pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usize> {
+pub fn dropdown_selected(
+    key: ConfigKey,
+    config: &DropTermConfig,
+    user_schemes: &[UserScheme],
+) -> Option<usize> {
     match key {
         ConfigKey::HAlign => H_ALIGN_OPTIONS
             .iter()
@@ -1164,8 +1172,8 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.keyboard_mode),
-        ConfigKey::ColorSchemeDark => scheme_index(&config.color_scheme_dark),
-        ConfigKey::ColorSchemeLight => scheme_index(&config.color_scheme_light),
+        ConfigKey::ColorSchemeDark => scheme_index(&config.color_scheme_dark, user_schemes),
+        ConfigKey::ColorSchemeLight => scheme_index(&config.color_scheme_light, user_schemes),
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.theme_preference),
@@ -1176,7 +1184,11 @@ pub fn dropdown_selected(key: ConfigKey, config: &DropTermConfig) -> Option<usiz
 /// The write a dropdown pick commits (dropdowns commit on change).
 /// `None` when `key` has no dropdown or `index` is out of its range —
 /// a pick can never invent a value.
-pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
+pub fn dropdown_write(
+    key: ConfigKey,
+    index: usize,
+    user_schemes: &[UserScheme],
+) -> Option<PlannedWrite> {
     match key {
         ConfigKey::HAlign => H_ALIGN_OPTIONS
             .get(index)
@@ -1199,12 +1211,12 @@ pub fn dropdown_write(key: ConfigKey, index: usize) -> Option<PlannedWrite> {
         ConfigKey::KeyboardMode => KEYBOARD_MODE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::KeyboardMode(*value)),
-        ConfigKey::ColorSchemeDark => scheme_names()
+        ConfigKey::ColorSchemeDark => merged_scheme_names(user_schemes)
             .get(index)
-            .map(|name| PlannedWrite::ColorSchemeDark((*name).to_string())),
-        ConfigKey::ColorSchemeLight => scheme_names()
+            .map(|name| PlannedWrite::ColorSchemeDark(name.clone())),
+        ConfigKey::ColorSchemeLight => merged_scheme_names(user_schemes)
             .get(index)
-            .map(|name| PlannedWrite::ColorSchemeLight((*name).to_string())),
+            .map(|name| PlannedWrite::ColorSchemeLight(name.clone())),
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::ThemePreference(*value)),
@@ -1843,13 +1855,14 @@ pub fn plan_profile_save(
     draft: &ProfileDraft,
     profiles: &[Profile],
     default: Option<&str>,
+    user_schemes: &[UserScheme],
 ) -> ProfileSavePlan {
     match &draft.mode {
         ProfileDraftMode::Edit { index } => {
             let Some(base) = profiles.get(*index) else {
                 return ProfileSavePlan::StaleEdit;
             };
-            let errors = whole_draft_errors(profiles, draft, Some(*index));
+            let errors = whole_draft_errors(profiles, draft, Some(*index), user_schemes);
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1882,7 +1895,7 @@ pub fn plan_profile_save(
             }
         }
         ProfileDraftMode::Add | ProfileDraftMode::Clone { .. } => {
-            let errors = whole_draft_errors(profiles, draft, None);
+            let errors = whole_draft_errors(profiles, draft, None, user_schemes);
             if !errors.is_empty() {
                 return ProfileSavePlan::Invalid { errors };
             }
@@ -1909,13 +1922,15 @@ pub fn plan_profile_save(
 
 /// The whole-draft gate: every form rule evaluated at once — the
 /// name (blank, then unique), the command line, the scheme name
-/// (registry), the font size (the global band), the scrollback
+/// (the merged registry — a user scheme is a valid pick,
+/// theme-files F3), the font size (the global band), the scrollback
 /// text, and every env row — so one Save rejects with every
 /// offending field, in form order.
 fn whole_draft_errors(
     profiles: &[Profile],
     draft: &ProfileDraft,
     editing: Option<usize>,
+    user_schemes: &[UserScheme],
 ) -> Vec<(ProfileField, ProfileFieldError)> {
     let mut errors = Vec::new();
     let name = draft.name.trim();
@@ -1930,7 +1945,7 @@ fn whole_draft_errors(
     if draft
         .scheme
         .as_deref()
-        .is_some_and(|name| scheme_index(name).is_none())
+        .is_some_and(|name| scheme_index(name, user_schemes).is_none())
     {
         errors.push((ProfileField::Scheme, ProfileFieldError::UnknownScheme));
     }
@@ -2260,32 +2275,32 @@ pub enum PickerId {
 /// The Inherit row's swatch: the global scheme the terminal renders
 /// for the current system mode — the dark/light pair resolved for
 /// `is_dark`, the same resolution the terminal's color chain applies
-/// — previewed as the popover rows preview themselves. `None` when
-/// the configured global name is one the registry lacks (the closed
-/// control's unknown-name rule: no strip, never an invented
-/// palette).
-pub fn inherit_scheme_preview(config: &DropTermConfig, is_dark: bool) -> Option<SchemePreview> {
-    // The picker surfaces still resolve registry-only here (theme-files
-    // F3 threads the loaded user schemes into the settings previews;
-    // the seam's name resolution takes the list so F3's wiring is one
-    // argument).
+/// (user schemes included) — previewed as the popover rows preview
+/// themselves. `None` when the configured global name is one the
+/// merged registry lacks (the closed control's unknown-name rule: no
+/// strip, never an invented palette).
+pub fn inherit_scheme_preview(
+    config: &DropTermConfig,
+    is_dark: bool,
+    user_schemes: &[UserScheme],
+) -> Option<SchemePreview> {
     let name = crate::core::profile::effective_scheme_name(
         None,
         &config.color_scheme_dark,
         &config.color_scheme_light,
         is_dark,
-        &[],
+        user_schemes,
     );
-    scheme_preview_by_name(name)
+    scheme_preview_by_name(name, user_schemes)
 }
 
-/// The registry preview a name resolves to, `None` for a name the
-/// registry lacks — the picker's single find-by-name seam (the
-/// Inherit row's resolution and a picked scheme's strip share it).
-pub fn scheme_preview_by_name(name: &str) -> Option<SchemePreview> {
-    scheme_previews()
+/// The merged-registry preview a name resolves to, `None` for a name
+/// it lacks — the picker's single find-by-name seam (the Inherit
+/// row's resolution and a picked scheme's strip share it).
+pub fn scheme_preview_by_name(name: &str, user_schemes: &[UserScheme]) -> Option<SchemePreview> {
+    merged_scheme_previews(user_schemes)
         .iter()
-        .find(|(option, _)| *option == name)
+        .find(|(option, _)| option == name)
         .map(|(_, preview)| *preview)
 }
 
@@ -2294,19 +2309,19 @@ pub fn scheme_preview_by_name(name: &str) -> Option<SchemePreview> {
 /// config; the control shows the fallback the resolution chain is
 /// already serving, never a value it invents) — and the name's
 /// option row when set. Mirrors [`default_picker_selected`].
-pub fn profile_scheme_selected(scheme: Option<&str>) -> usize {
+pub fn profile_scheme_selected(scheme: Option<&str>, user_schemes: &[UserScheme]) -> usize {
     scheme
-        .and_then(|name| scheme_index(name).map(|position| position + 1))
+        .and_then(|name| scheme_index(name, user_schemes).map(|position| position + 1))
         .unwrap_or(0)
 }
 
-/// What a picker row resolves to: the cleared field, a registry
+/// What a picker row resolves to: the cleared field, a merged-registry
 /// name, or nothing for an out-of-range row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileSchemePick {
     /// Row 0 (Inherit): unset the field — follow the global scheme.
     None,
-    /// A registry row: the name to set.
+    /// A scheme row: the name to set.
     Scheme(String),
 }
 
@@ -2321,16 +2336,19 @@ impl ProfileSchemePick {
 }
 
 /// The field value a picker row commits: row 0 (Inherit) clears to
-/// `None` — follow the global pick — and a registry row sets its
+/// `None` — follow the global pick — and a scheme row sets its
 /// name. Any other index is stale and rejects — no write, never an
 /// invented value (the [`dropdown_write`] rule).
-pub fn profile_scheme_write(index: usize) -> Option<ProfileSchemePick> {
+pub fn profile_scheme_write(
+    index: usize,
+    user_schemes: &[UserScheme],
+) -> Option<ProfileSchemePick> {
     if index == 0 {
         return Some(ProfileSchemePick::None);
     }
-    scheme_names()
+    merged_scheme_names(user_schemes)
         .get(index - 1)
-        .map(|name| ProfileSchemePick::Scheme((*name).to_string()))
+        .map(|name| ProfileSchemePick::Scheme(name.clone()))
 }
 
 /// The fallback rows offered when `/etc/shells` cannot be read (or

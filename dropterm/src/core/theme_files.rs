@@ -141,6 +141,7 @@ impl SchemeFile {
 /// the built-ins ride. A file that fails the minimum never becomes
 /// one — it is skipped with a single `dropterm:` line, the file
 /// itself never touched.
+#[derive(Clone)]
 pub struct UserScheme {
     /// The scheme's display name — the trimmed file stem.
     pub name: String,

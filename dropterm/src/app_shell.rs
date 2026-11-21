@@ -347,8 +347,9 @@ pub(crate) struct Shell {
     /// The user schemes loaded from the config dir's `themes/`
     /// (theme-files F2): scanned at boot, rescanned on every config
     /// echo (the themes watch feeds the same channel), and read by
-    /// every spawn and theme resolution through the merged registry.
-    user_schemes: Vec<dropterm::core::theme_files::UserScheme>,
+    /// every spawn, theme resolution, and picker surface through the
+    /// merged registry.
+    pub(crate) user_schemes: Vec<dropterm::core::theme_files::UserScheme>,
     /// A scheme edit awaiting the tick's apply point (the Kit's
     /// tokens and the pane's colors re-apply before the next frame).
     pending_theme: Option<ResolvedTheme>,
@@ -2715,7 +2716,7 @@ impl Shell {
     /// A scheme pick buffers into the draft (the recolor lands on
     /// Save) and retires the scheme's stale error.
     pub(crate) fn profile_draft_scheme(&mut self, row: usize, cx: &mut Context<Self>) {
-        if let Some(pick) = dropterm::core::settings::profile_scheme_write(row)
+        if let Some(pick) = dropterm::core::settings::profile_scheme_write(row, &self.user_schemes)
             && let Some(draft) = self.settings.profile_draft.as_mut()
         {
             draft.scheme = pick.field_value();
@@ -2761,6 +2762,7 @@ impl Shell {
             &draft,
             &self.config.profiles,
             self.config.default_profile.as_deref(),
+            &self.user_schemes,
         );
         match plan {
             dropterm::core::settings::ProfileSavePlan::Write {

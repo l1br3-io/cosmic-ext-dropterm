@@ -40,15 +40,15 @@ pub struct Profile {
     /// cwd. Not existence-checked: a profile may be written before
     /// its directory exists; spawn-time fallback is `profile-launch`'s.
     pub cwd: Option<PathBuf>,
-    /// Color scheme the profile's tabs run: a built-in registry name
-    /// ([`crate::core::theme_source::scheme_names`]'s vocabulary,
-    /// the same one the global pickers offer), applied per tab at
-    /// spawn and in the live config-apply pass. `None` (the default)
-    /// follows the global scheme pick. One name, mode-independent —
-    /// a profile is a deliberate environment, not a theme follower.
-    /// An unknown name degrades to the global look at resolve time;
-    /// the chain never errors and the store is never rewritten to
-    /// strip it.
+    /// Color scheme the profile's tabs run: a merged-registry name —
+    /// a built-in ([`crate::core::theme_source::scheme_names`]'s
+    /// vocabulary) or a loaded user scheme's — the same vocabulary
+    /// the global pickers offer, applied per tab at spawn and in the
+    /// live config-apply pass. `None` (the default) follows the
+    /// global scheme pick. One name, mode-independent — a profile is
+    /// a deliberate environment, not a theme follower. An unknown
+    /// name degrades to the global look at resolve time; the chain
+    /// never errors and the store is never rewritten to strip it.
     #[serde(default)]
     pub color_scheme: Option<String>,
     /// Extra environment variables the profile's tabs carry, merged
