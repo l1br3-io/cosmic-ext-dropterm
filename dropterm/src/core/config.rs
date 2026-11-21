@@ -366,8 +366,9 @@ pub struct DropTermConfig {
     /// drag handle resets it to `None`.
     pub settings_drawer_width: Option<u16>,
     /// Whether the status band renders at the surface's free edge
-    /// (status-bar spec): the 28 px strip adjacent to the grab bar
-    /// narrating the active terminal. Defaults to `true` — the
+    /// (status-bar spec): the 28 px strip narrating the active
+    /// terminal, adjacent to the grab bar under `tab_position: Auto`
+    /// and one slot inward when a pin claims the grab side. Defaults to `true` — the
     /// identity feature should be seen; the Behavior toggle and
     /// `Ctrl+Shift+B` make it cheap to hide. Flips apply instantly:
     /// the band leaves the column and the terminal's pinned height

@@ -122,7 +122,7 @@ Scheme names come from the built-in registry - the same names the drawer's picke
 
 | Key | Values | Default | What it does |
 |---|---|---|---|
-| `tab_position` | `Auto`, `Top`, `Bottom` | `Auto` | Which side of the surface the tab strip sits on, independent of `edge`. `Auto` keeps it beside the grab bar. |
+| `tab_position` | `Auto`, `Top`, `Bottom` | `Auto` | Which slot the tab strip takes in the surface column, independent of `edge`. `Auto` keeps the historic layout - the strip beside the status band, the band adjacent to the grab bar. `Top`/`Bottom` pin the strip to the extreme slot on that side of the surface; when a pin claims the grab side, the status band yields one slot inward so the pin reads. All three entries differ on both anchor edges. |
 
 A change never resizes anything - the strip reorders immediately on a shown surface. Pick it in the Geometry section of the [settings drawer](settings.md).
 

@@ -4825,11 +4825,13 @@ impl Shell {
         let pane_area = self.pane_area(pane, cx);
 
         // The column through core's own stacking rule (gpui-status
-        // Task 1): the status band always takes the slot adjacent to
-        // the grab bar — the free-edge-most band, whatever the tab
-        // strip's own pinning. This drawer has no grab bar element
-        // (the layer surface's edges are its own), so the band takes
-        // that slot directly; the master key drops the band whole.
+        // Task 1, plus the pin ruling): the status band takes the
+        // slot adjacent to the grab bar under `Auto` — the
+        // free-edge-most band — and yields one slot inward when a
+        // `Top`/`Bottom` pin claims the grab side. This drawer has no
+        // grab bar element (the layer surface's edges are its own),
+        // so the band takes that slot directly; the master key drops
+        // the band whole.
         let mut bar = Some(bar);
         let mut pane_area = Some(pane_area);
         let status_band = (self.config.status_bar_enabled)

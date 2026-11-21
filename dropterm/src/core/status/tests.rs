@@ -209,13 +209,22 @@ fn scrolled_exists_only_off_the_bottom() {
 }
 
 #[test]
-fn column_stacking_keeps_the_band_at_the_free_edge() {
+fn column_stacking_pins_take_the_extreme_slot_and_auto_keeps_the_band_at_the_free_edge() {
+    // The pin ruling (owner, 2026-11-21): every dropdown entry must
+    // read differently on both edges. `Auto` keeps the historic layout
+    // — the strip beside the status band, the band free-edge-most —
+    // while a pin claims the extreme slot on its named side; when that
+    // side is the grab side the status band yields one slot rather
+    // than covering the pin (the old Auto|Bottom collapse made the
+    // free-side pin a no-op on the top edge, the "tab bar position
+    // doesn't work" report).
     let stacking = |edge, tabs| {
         column_stacking(edge, tabs)
             .iter()
             .map(|strip| format!("{strip:?}"))
             .collect::<Vec<_>>()
     };
+    // Top anchor: the grab edge sits at the column's bottom.
     assert_eq!(
         stacking(Edge::Top, TabPosition::Top),
         ["Tabs", "Terminal", "StatusBand", "GrabBar"]
@@ -225,7 +234,16 @@ fn column_stacking_keeps_the_band_at_the_free_edge() {
         ["Terminal", "Tabs", "StatusBand", "GrabBar"]
     );
     assert_eq!(
+        stacking(Edge::Top, TabPosition::Bottom),
+        ["Terminal", "StatusBand", "Tabs", "GrabBar"]
+    );
+    // Bottom anchor: the grab edge sits at the column's top.
+    assert_eq!(
         stacking(Edge::Bottom, TabPosition::Top),
+        ["GrabBar", "Tabs", "StatusBand", "Terminal"]
+    );
+    assert_eq!(
+        stacking(Edge::Bottom, TabPosition::Auto),
         ["GrabBar", "StatusBand", "Tabs", "Terminal"]
     );
     assert_eq!(
