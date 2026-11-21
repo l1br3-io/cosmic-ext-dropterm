@@ -8,6 +8,5 @@ Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;quake;yakuake;dropdown;
-NoDisplay=true
 StartupNotify=true
 StartupWMClass=io.github.l1br3_io.dropterm

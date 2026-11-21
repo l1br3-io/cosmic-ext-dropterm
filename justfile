@@ -141,8 +141,10 @@ dev-data-dir := env('XDG_DATA_HOME', home_directory() / '.local' / 'share')
 # contract has one source of truth. The stem
 # is the dev identity's app id — the window switcher matches the
 # clipboard-anchor toplevel (always mapped) by it, and without the
-# file the dev anchor lists as "unknown". NoDisplay stays set
-# (inherited): the dev build is a keybind app, not an app-grid entry.
+# file the dev anchor lists as "unknown". NoDisplay is set by the
+# generator itself (the res/ original lists the release icon, so it
+# carries no flag to inherit): the dev build stays a keybind app,
+# not a second app-grid entry beside the release icon.
 dev-desktop := dev-data-dir / 'applications' / (appid + '.Dev.desktop')
 
 # `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` +
@@ -472,7 +474,7 @@ dev-install: (build-debug dev-identity-args) dev-image-install
     EOF
     chmod 0755 {{dev-bin}}
     install -d {{dev-data-dir / 'applications'}}
-    sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{name}}-dev/' -e 's/^StartupWMClass=.*/StartupWMClass={{appid}}.Dev/' {{desktop-src}} > {{dev-desktop}}
+    sed -e 's/^Name=.*/Name=DropTerm (Dev)/' -e 's/^Exec=.*/Exec={{name}}-dev/' -e 's/^StartupWMClass=.*/StartupWMClass={{appid}}.Dev/' -e '$a NoDisplay=true' {{desktop-src}} > {{dev-desktop}}
     # The installed extended tier for the dev identity: both seats,
     # so the .Dev walk's primary and its un-suffixed fallback both
     # find what a release install stages.

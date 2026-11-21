@@ -417,6 +417,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_shipped_desktop_entry_lists_the_icon_and_pins_identity() {
+        // The icon-activation contract (Task I1): the shipped entry is
+        // what a launcher clicks. It may never silently regress to
+        // hidden — NoDisplay is the "icon does not work" bug in one
+        // line — nor to an identity the surface never claims: without
+        // StartupWMClass matching the surface's app id, a launcher
+        // cannot associate the booted windowless process back to its
+        // icon. Exec stays the bare toggle verb: a cold click
+        // boots-and-shows through the default startup action, a warm
+        // click forwards `toggle` and exits at the single-instance
+        // seam.
+        let entry = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../res/io.github.l1br3_io.dropterm.desktop"
+        ))
+        .expect("the shipped desktop entry beside the workspace root");
+        assert!(
+            !entry.lines().any(|l| l.starts_with("NoDisplay")),
+            "the entry must list in launchers — NoDisplay has no business here:\n{entry}"
+        );
+        for field in [
+            "Exec=dropterm",
+            "Type=Application",
+            "Terminal=false",
+            "StartupWMClass=io.github.l1br3_io.dropterm",
+        ] {
+            assert!(
+                entry.lines().any(|l| l == field),
+                "the entry must carry {field}:\n{entry}"
+            );
+        }
+        // The identity half of the pin runs in the release feature set
+        // only: under dev-identity APP_ID flips to the `.Dev` slot
+        // while this shipped entry keeps describing the release (the
+        // justfile's dev generator rewrites its own copy's WMClass).
+        #[cfg(not(feature = "dev-identity"))]
+        assert_eq!(
+            dropterm::core::APP_ID,
+            "io.github.l1br3_io.dropterm",
+            "the entry's StartupWMClass and the surface app id have drifted apart"
+        );
+    }
+
     /// Every `(package, version)` pair in this crate's normal
     /// dependency graph, deduplicated — `cargo tree --prefix none`
     /// emits one `name vX.Y.Z (source)` per node.
