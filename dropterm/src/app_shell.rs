@@ -5769,6 +5769,10 @@ pub(crate) fn boot(
         gpui::KeyBinding::new("escape", DismissSettings, Some("settings-drawer")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);
+    // The terminal pane's Tab claim (key-delivery B3): the pane's own
+    // context bindings, registered once beside the Kit init — the Kit
+    // Root's traversal binding eats an unclaimed bare Tab otherwise.
+    view::bind_pane_keys(cx);
     // The system-mode watch (theme-defaults td-2) spawns before the
     // boot theme apply: fallback-then-correct — the apply below reads
     // the cell (dark until the portal answers) and never blocks, and

@@ -49,6 +49,41 @@ use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
 use super::selection::{self, ClickKind};
 use super::suggest;
 
+gpui::actions!(dropterm_gpui, [TerminalTab, TerminalBackTab]);
+
+/// The pane's Tab claim (key-delivery B3): the Kit Root registers a
+/// global-path `"tab"`/`"shift-tab"` focus-traversal binding in its
+/// own Root context (gpui-base `root.rs:44`), and a consumed binding
+/// returns before any key listener runs — so a pane that claims
+/// nothing never sees bare Tab, whatever the compositor delivered
+/// (A1's ten silent presses). The pane is a text surface over a
+/// shell: it answers by binding the same keystrokes in its own
+/// deeper "Terminal" context and forwarding them into
+/// [`TerminalPane::on_key`] — the exact path letters take, so the
+/// suggest menu's Accept-first routing, the chord table, and every
+/// other rule apply unchanged, while non-terminal surfaces (settings
+/// inputs, dialogs) keep the Root's traversal.
+pub(crate) fn bind_pane_keys(cx: &mut App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("tab", TerminalTab, Some("Terminal")),
+        gpui::KeyBinding::new("shift-tab", TerminalBackTab, Some("Terminal")),
+    ]);
+}
+
+/// The keystroke a tab press arrives as when the claim forwards it:
+/// the platform's own construction shape (key "tab", shift carried on
+/// the modifiers, no `key_char` — a control character).
+fn tab_keystroke(shift: bool) -> gpui::Keystroke {
+    gpui::Keystroke {
+        key: "tab".to_string(),
+        modifiers: gpui::Modifiers {
+            shift,
+            ..Default::default()
+        },
+        key_char: None,
+    }
+}
+
 /// The walk evidence rows' dedup state (the last logged grid and
 /// caret cells — one row per change, not per frame).
 #[derive(Default)]
@@ -1565,6 +1600,7 @@ impl gpui::Render for TerminalPane {
         // default-styled child collapses; the first walk's lesson).
         let frame = div()
             .size_full()
+            .key_context("Terminal")
             .track_focus(&self.focus)
             .on_mouse_down(gpui::MouseButton::Left, {
                 let pane = pane.clone();
@@ -1682,6 +1718,27 @@ impl gpui::Render for TerminalPane {
                 pane.update(cx, |pane, cx| pane.on_kit_inspector(window, cx));
             }
         });
+        // The Tab claim's landing (key-delivery B3): the Root's
+        // traversal binding never yields once matched, so the pane
+        // answers the keystrokes in its own deeper "Terminal" context
+        // (depth precedence) and forwards them into on_key as the
+        // keystrokes the platform would have delivered — every
+        // downstream rule then applies exactly as it does for letters.
+        let frame = frame
+            .on_action({
+                let pane = pane.clone();
+                move |_: &TerminalTab, window: &mut gpui::Window, cx: &mut gpui::App| {
+                    pane.update(cx, |pane, cx| {
+                        pane.on_key(&tab_keystroke(false), window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let pane = pane.clone();
+                move |_: &TerminalBackTab, window: &mut gpui::Window, cx: &mut gpui::App| {
+                    pane.update(cx, |pane, cx| pane.on_key(&tab_keystroke(true), window, cx));
+                }
+            });
         frame.child(
             canvas(
                 move |bounds, _, _| bounds,
@@ -2877,9 +2934,19 @@ mod tests {
         // real dispatch, and the PTY's own child as the witness (a `cat`
         // persisting exactly what reached the shell). Letters and enter
         // must land (the clauses that already work); the tab bytes must
-        // land with them (the clauses the Root eats today).
+        // land with them (the fix's claim: the boot's registration, the
+        // pane's key context, and the forwarding action).
         cx.update(gpui_component::init);
-        let config = request_config();
+        cx.update(bind_pane_keys);
+        let mut config = request_config();
+        // The suggest machinery stays out of the pin: a typed letter in
+        // the repo cwd fires the git generators, whose unnamed waiter
+        // threads nudge the pane's pump off-thread — legal in the app,
+        // fatal under the gpui test scheduler's determinism gate (the
+        // generator cache is global, so the nudge can even land on
+        // another pane's test mid-suite).
+        config.autosuggestions_enabled = false;
+        config.autosuggestions_menu_enabled = false;
         let sink =
             std::env::temp_dir().join(format!("dropterm-tab-pin-{}.txt", std::process::id()));
         let _ = std::fs::remove_file(&sink);
@@ -2887,9 +2954,18 @@ mod tests {
             .update(|cx| {
                 let request = PaneRequest {
                     program: "/bin/sh".to_string(),
-                    args: vec!["-c".to_string(), format!("cat > '{}'", sink.display())],
+                    // Echo off: the witness is cat's stdin (fed either
+                    // way), and a silent pty keeps the engine's reader
+                    // thread parked — echoed bytes would wake the pane's
+                    // pump from a foreign thread and trip the gpui test
+                    // scheduler's determinism gate (the pasted_paths
+                    // ignore note's own failure shape).
+                    args: vec![
+                        "-c".to_string(),
+                        format!("stty -echo 2>/dev/null; cat > '{}'", sink.display()),
+                    ],
                     cwd: None,
-                    env: Default::default(),
+                    env: std::collections::HashMap::default(),
                     spawned_as: "sh".to_string(),
                     profile_id: None,
                     appearance: PaneAppearance {
@@ -2947,6 +3023,15 @@ mod tests {
             "the pane must answer dispatched tab and shift-tab exactly as it answers letters \
              (the Root's traversal binding eats them today: A1's ten silent presses)"
         );
+        // The engine outlives the pin on purpose: dropping it here
+        // closes the PTY, whose reader-thread exit then drops the event
+        // sender — tokio's disconnect wake fires the pump task (polled,
+        // so its waker is registered) from that foreign thread, and the
+        // gpui test scheduler reports the nondeterminism at teardown
+        // (pasted_paths' ignore note is this race). Leaking the Arc
+        // parks the reader for good — no exit, no wake — and the
+        // binary's own exit reaps the child.
+        std::mem::forget(_terminal);
         let _ = std::fs::remove_file(&sink);
     }
 
