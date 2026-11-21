@@ -50,6 +50,18 @@ mod terminal_walk;
     reason = "carried verbatim from the spike; only the test fixture stays unused"
 )]
 mod theme_gen;
+// The tray port (tray Task T1): the model lands before its consumer —
+// the spawn site is T3's, behind Checkpoint T-A — so outside the
+// tests nothing reaches the module yet. The allow comes off with
+// T3's wiring.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the tray spawn site lands in Task T3, behind Checkpoint T-A"
+    )
+)]
+mod tray;
 
 use std::sync::Arc;
 
