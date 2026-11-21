@@ -494,7 +494,7 @@ fn next_tick_delay_lands_on_the_minute_boundary() {
     // An on-boundary now waits a full minute.
     assert_eq!(
         next_tick_delay(&zoned("2026-11-14T14:32:00+00:00[UTC]")),
-        Duration::from_secs(60)
+        Duration::from_mins(1)
     );
     // Mid-minute arithmetic: the boundary minus the subsecond now.
     assert_eq!(

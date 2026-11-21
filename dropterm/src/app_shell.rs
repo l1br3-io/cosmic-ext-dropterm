@@ -109,7 +109,7 @@ const STATUS_COPY_FLASH: Duration = Duration::from_millis(800);
 /// The paste-refusal verdict's window (the audit's F7) — readable,
 /// unlike the copy flash: a verdict the user must read to learn
 /// their paste failed.
-const STATUS_REFUSAL_FLASH: Duration = Duration::from_millis(3000);
+const STATUS_REFUSAL_FLASH: Duration = Duration::from_secs(3);
 
 /// The drag edge's grab strip height: the reference grab bar's own
 /// `BAR_HEIGHT` — high enough to grab, thin enough to read as a
@@ -6783,7 +6783,7 @@ mod tests {
         use std::time::Duration;
         assert_eq!(
             exit_after_from_env(Some("4000")),
-            Some(Duration::from_millis(4000))
+            Some(Duration::from_secs(4))
         );
         assert_eq!(
             exit_after_from_env(Some("  4000\t")),
