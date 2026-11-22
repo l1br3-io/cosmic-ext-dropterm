@@ -2402,14 +2402,62 @@ fn resize_px(
     Some(px_size)
 }
 
-/// Paint one projected row: each run shaped alone, forced to its own
-/// cell span, and placed at its start column — every glyph sits on
-/// its grid columns whatever the wide chars before it did (the old
-/// whole-row shape let gpui's force-width snap place glyphs by
-/// count, one cell left per wide char — select-accuracy S2's
-/// defect). All run backgrounds land before any glyphs, so a spacer
-/// run's cell rect — the wide glyph's tail cell, at its own column —
-/// never covers the glyph it overlaps.
+/// Shape one projected run onto its own cells. The snap GPUI applies
+/// to a forced line steps glyphs by the FORCE WIDTH itself —
+/// `forced_x = glyph_index * force_width`, the snap's own "cell
+/// counter" — so the force passed here is the CELL width, never the
+/// run's total span: a span-force displaces every glyph past the
+/// run's half to multiples of the whole span (the overlapping-text
+/// regression's mechanism). Under the per-cell force a run's glyph
+/// *i* lands at `i * cell_width` from the run's origin, so the run's
+/// cells and its glyphs agree.
+fn shape_run(
+    run: &StyledRun,
+    font: &gpui::Font,
+    geometry: &GridGeometry,
+    text_system: &gpui::WindowTextSystem,
+) -> gpui::ShapedLine {
+    let mut run_font = font.clone();
+    if run.bold {
+        run_font.weight = FontWeight::BOLD;
+    }
+    if run.italic {
+        run_font.style = gpui::FontStyle::Italic;
+    }
+    let underline = run.underline.then(|| UnderlineStyle {
+        color: Some(run.fg),
+        thickness: px(1.),
+        wavy: false,
+    });
+    let strikethrough = run.strikethrough.then(|| gpui::StrikethroughStyle {
+        color: Some(run.fg),
+        thickness: px(1.),
+    });
+    let text_runs = [gpui::TextRun {
+        len: run.text.len(),
+        font: run_font,
+        color: run.fg,
+        background_color: run.bg,
+        underline,
+        strikethrough,
+    }];
+    text_system.shape_line(
+        run.text.as_str().into(),
+        geometry.font_size,
+        &text_runs,
+        Some(geometry.cell_width),
+    )
+}
+
+/// Paint one projected row: each run shaped alone onto its own cells
+/// and placed at its start column — every glyph sits on its grid
+/// columns whatever the wide chars before it did (the old whole-row
+/// shape stacked the shaper's natural advances, so a fallback-font
+/// emoji that does not advance exactly two cells pushed every glyph
+/// after it left — select-accuracy S2's defect). All run backgrounds
+/// land before any glyphs, so a spacer run's cell rect — the wide
+/// glyph's tail cell, at its own column — never covers the glyph it
+/// overlaps.
 fn paint_row(
     runs: &[StyledRun],
     skin: &PaneSkin,
@@ -2449,41 +2497,7 @@ fn paint_row(
             }
             continue;
         }
-        let mut font = skin.font.clone();
-        if run.bold {
-            font.weight = FontWeight::BOLD;
-        }
-        if run.italic {
-            font.style = gpui::FontStyle::Italic;
-        }
-        let underline = run.underline.then(|| UnderlineStyle {
-            color: Some(run.fg),
-            thickness: px(1.),
-            wavy: false,
-        });
-        let strikethrough = run.strikethrough.then(|| gpui::StrikethroughStyle {
-            color: Some(run.fg),
-            thickness: px(1.),
-        });
-        let text_runs = [gpui::TextRun {
-            len: run.text.len(),
-            font,
-            color: run.fg,
-            background_color: run.bg,
-            underline,
-            strikethrough,
-        }];
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a run's cell count is far below 2^24: exact in f32"
-        )]
-        let forced = geometry.cell_width * run.cell_len as f32;
-        let shaped = window.text_system().shape_line(
-            run.text.as_str().into(),
-            geometry.font_size,
-            &text_runs,
-            Some(forced),
-        );
+        let shaped = shape_run(run, &skin.font, geometry, window.text_system());
         // The background pass under this run's own glyphs.
         // `ShapedLine::paint` draws glyphs, underlines and strikes
         // only — a run's `background_color` reaches pixels solely
@@ -3695,5 +3709,118 @@ mod tests {
         // pump from a foreign thread and trips the gpui test
         // scheduler's determinism gate at teardown).
         std::mem::forget(terminal);
+    }
+
+    /// The probe window's root: gpui demands a Render entity.
+    struct PureApp;
+    impl gpui::Render for PureApp {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    // --- select-accuracy S2's regression: a run's glyphs must sit on
+    // its own cells under the per-cell force ---
+
+    #[gpui::test]
+    fn a_runs_glyphs_land_on_their_cells_under_the_per_cell_force(cx: &mut gpui::TestAppContext) {
+        // The owner's overlapping-text report, pinned at the seam it
+        // rode: a run shaped with its TOTAL span as the force steps
+        // every glyph past the run's half to multiples of that span —
+        // dense clumps at the left, fragments scattered right. The
+        // snap's force_width is the per-CELL step (its own source
+        // calls glyph_pos the "cell counter"), so a run must be
+        // forced with the cell width alone; then its glyph *i* sits
+        // at i*cell_width and the paint's column placement means what
+        // it paints.
+        cx.update(gpui_component::init);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(200.), px(60.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, cx| cx.new(|_| PureApp),
+                )
+            })
+            .expect("open the probe window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+        let (font, cell_width) = cx.update(|window, _| {
+            let text_system = window.text_system();
+            let family = crate::terminal::host::resolve_family(text_system, None);
+            let font = gpui::Font {
+                family: family.into(),
+                ..gpui::Font::default()
+            };
+            // The monospace cell: the natural advance between two Ms
+            // of an unforced shaping.
+            let probe = text_system.shape_line(
+                "MM".into(),
+                px(14.),
+                &[gpui::TextRun {
+                    len: 2,
+                    font: font.clone(),
+                    color: gpui::black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+            let glyphs: Vec<f32> = probe
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.position.x.as_f32())
+                .collect();
+            assert_eq!(glyphs.len(), 2, "the probe shapes two glyphs");
+            (font, px(glyphs[1] - glyphs[0]))
+        });
+        let geometry = GridGeometry {
+            font_size: px(14.),
+            cell_width,
+            cell_height: px(20.),
+        };
+        let run = StyledRun {
+            text: "hi  you".to_string(),
+            start_col: 0,
+            cell_len: 7,
+            fg: gpui::black(),
+            bg: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+        };
+        cx.update(|window, _| {
+            let shaped = shape_run(&run, &font, &geometry, window.text_system());
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a run's glyph count is far below 2^24: exact in f32"
+            )]
+            for (cell, x) in shaped
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.position.x)
+                .enumerate()
+            {
+                assert!(
+                    (x - cell_width * cell as f32).as_f32().abs() <= 1.,
+                    "glyph {cell} at {x:?} against cell {} — a run's glyphs must sit \
+                     on their own cells (a span-force steps glyphs past the half-span \
+                     to whole-span multiples: the overlapping-text regression)",
+                    cell_width * cell as f32
+                );
+            }
+        });
     }
 }
