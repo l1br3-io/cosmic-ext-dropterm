@@ -63,6 +63,10 @@ pub(crate) enum TermAction {
     Settings,
     ImagesPanel,
     ToggleStatusBar,
+    /// Open or dismiss the command palette (`Ctrl+Shift+O`) — the
+    /// shell-owned toggle (command-palette spec): the verb hands up
+    /// like every shell verb, the shell decides open vs. dismiss.
+    CommandPalette,
 }
 
 impl TermAction {
@@ -86,6 +90,7 @@ impl TermAction {
                 | TermAction::Settings
                 | TermAction::ImagesPanel
                 | TermAction::ToggleStatusBar
+                | TermAction::CommandPalette
         )
     }
 }
@@ -128,6 +133,7 @@ pub(crate) fn action_id(action: TermAction) -> Option<&'static str> {
         TermAction::Settings => Some("settings"),
         TermAction::ImagesPanel => Some("images_panel"),
         TermAction::ToggleStatusBar => Some("toggle_status_bar"),
+        TermAction::CommandPalette => Some("command_palette"),
     }
 }
 
@@ -166,6 +172,7 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "settings" => Some(TermAction::Settings),
         "images_panel" => Some(TermAction::ImagesPanel),
         "toggle_status_bar" => Some(TermAction::ToggleStatusBar),
+        "command_palette" => Some(TermAction::CommandPalette),
         // The numbered seats (`activate_tab_1` … `activate_tab_8`);
         // a seat past 8 is not this table's (9 is activate_last_tab).
         _ => id
@@ -241,7 +248,7 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     // (core `keybinds::BINDING_ROWS`), one chord for one verb, the
     // pane matching and the shell executing. The pair audit against
     // the pane's own fifteen above: every letter seat (t h d w r i
-    // p b) is fresh, the numbered seats ride Ctrl+Shift+1..9 where
+    // p b o) is fresh, the numbered seats ride Ctrl+Shift+1..9 where
     // only the Ctrl-held 0/-/=/+ cluster lives, and the PageUp/Down
     // seats split by modifier exactly as the reference does —
     // Ctrl+PageUp/Down cycles, Ctrl+Shift+PageUp/Down moves, the
@@ -251,6 +258,7 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     map.insert(chord(cs, "d"), TermAction::DuplicateTab);
     map.insert(chord(cs, "w"), TermAction::CloseTab);
     map.insert(chord(cs, "r"), TermAction::RenameTab);
+    map.insert(chord(cs, "o"), TermAction::CommandPalette);
     map.insert(
         chord(&[ModifierName::Ctrl], "pagedown"),
         TermAction::NextTab,
@@ -275,8 +283,9 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
 /// platform's (`"c"`, `"pageup"`, `"space"`, `"insert"`, …). Single
 /// ASCII letters canonicalize to lowercase (the default map's form;
 /// `Chord`'s derived equality is case-sensitive while matching
-/// presses arrive lowercase).
-fn gpui_key_name(name: &str) -> String {
+/// presses arrive lowercase). The palette's chord chips read the
+/// same table (one spelling authority per persisted name).
+pub(crate) fn gpui_key_name(name: &str) -> String {
     let mapped = match name {
         "Insert" => "insert",
         "Delete" => "delete",
@@ -773,6 +782,7 @@ mod tests {
             TermAction::Settings,
             TermAction::ImagesPanel,
             TermAction::ToggleStatusBar,
+            TermAction::CommandPalette,
         ] {
             let id = action_id(action).expect("the payload-less verbs carry ids");
             assert_eq!(action_from_id(id), Some(action));
@@ -806,10 +816,11 @@ mod tests {
         // clipboard pair, the primary paste, select-all,
         // clear-scrollback, the scroll-to-bottom jump, the zoom
         // cluster's six, the hide, the completion trigger) plus the
-        // shell family's twenty-three (the five letter verbs, the
+        // shell family's twenty-four (the six letter verbs, the
         // cycle pair's four, the moves' two, the eight numbered
-        // seats, the last seat, settings, images, the band).
-        assert_eq!(default_key_binds().len(), 38);
+        // seats, the last seat, settings, images, the band, the
+        // palette).
+        assert_eq!(default_key_binds().len(), 39);
     }
 
     #[test]

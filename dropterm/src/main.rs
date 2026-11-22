@@ -31,6 +31,7 @@ mod fonts;
 mod images_panel;
 mod kit_check;
 mod notify;
+mod palette;
 mod pickers;
 mod startup;
 mod status_bar;

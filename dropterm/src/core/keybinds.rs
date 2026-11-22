@@ -131,6 +131,11 @@ const BINDING_ROWS: &[BindingRow] = &[
         defaults: &[(CS, "Q")] },
     BindingRow { id: "settings", label: "Open settings", group: "Other",
         defaults: &[(CS, "I")] },
+    // The command palette's chord (command-palette spec): O, not the
+    // peers' P — `images_panel` holds it and the registry is
+    // one-chord-one-action (`capture_verdict` refuses a held chord).
+    BindingRow { id: "command_palette", label: "Open the command palette", group: "Other",
+        defaults: &[(CS, "O")] },
     BindingRow { id: "images_panel", label: "Open the images panel", group: "Other",
         defaults: &[(CS, "P")] },
     BindingRow { id: "toggle_status_bar", label: "Toggle the status bar", group: "Other",
@@ -383,6 +388,43 @@ mod registry_tests {
         assert_eq!(effective_binding("copy", &map), Some("Alt + X".to_string()));
         // An unknown id is None, matching the display's sentinel.
         assert_eq!(effective_binding("no_such_row", &empty), None);
+    }
+
+    #[test]
+    fn every_default_chord_collides_with_nothing() {
+        // The registry is one-chord-one-action: every row's every
+        // default chord resolves through the capture gate as Commit
+        // (a free chord) or Own (the row's own), never Conflict —
+        // the palette row's addition re-runs the whole registry
+        // through the same gate.
+        let empty = std::collections::BTreeMap::default();
+        for row in binding_rows() {
+            for (modifiers, key) in row.defaults {
+                let binding = Binding {
+                    modifiers: modifiers.to_vec(),
+                    key: (*key).to_string(),
+                };
+                let verdict = capture_verdict(row.id, &binding, &empty);
+                assert!(
+                    matches!(verdict, CaptureVerdict::Commit | CaptureVerdict::Own),
+                    "{}'s default {modifiers:?}+{key} conflicts: {verdict:?}",
+                    row.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_command_palette_row_defaults_to_ctrl_shift_o() {
+        let row = binding_rows()
+            .iter()
+            .find(|row| row.id == "command_palette")
+            .expect("the palette row is in the registry");
+        assert_eq!(row.group, "Other");
+        assert_eq!(
+            effective_binding_display("command_palette", &std::collections::BTreeMap::default()),
+            "Ctrl + Shift + O"
+        );
     }
 
     #[test]
