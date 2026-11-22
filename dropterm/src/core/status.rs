@@ -14,7 +14,7 @@
 //! as plain events, never parsed here: OSC stays engine-side.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::core::config::{Edge, StatusToggles, TabPosition};
 
@@ -233,6 +233,163 @@ pub struct ScriptSegmentValue {
     pub side: ScriptSide,
     /// The last shown text; `None` renders the segment absent.
     pub text: Option<String>,
+}
+
+/// One script segment's answer on a query trip (status-segments
+/// spec): the shown value (the chosen side and text) or a deliberate
+/// hide (nil). A raising or timing-out handler answers not at all —
+/// its id is omitted from the reply so the asking surface keeps the
+/// prior value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SegmentAnswer {
+    /// The handler answered: render this text on this side.
+    Shown {
+        id: String,
+        side: ScriptSide,
+        text: String,
+    },
+    /// The handler answered nil: render nothing (a fresh decision —
+    /// distinct from an omission, which keeps the prior value).
+    Hidden { id: String },
+}
+
+/// The interval fallback (status-segments spec): segments that poll
+/// their own state (io.popen, files) refresh even with no input diff
+/// — one interpreter trip per elapse, the soft bound covering the
+/// trip whole. A constant, not a config key (assumption 4's ruling,
+/// the lua-host timeout precedent).
+pub const SCRIPT_QUERY_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The shell's live script-segment state (status-segments spec, task
+/// SG2): the registry (the host's ordered sync reports), each id's
+/// last resolved slot, the outbound token, and the requery decision
+/// — pure state the shell owns, so the trigger rules are
+/// headless-testable beside the merge they feed. The stale-degrade
+/// story lives here: a slot keeps its prior text until a fresh
+/// answer lands, a raise omits its id (nothing applied), a nil
+/// clears the text, and a stale or superseded reply drops whole.
+#[derive(Debug, Default)]
+pub struct ScriptSegmentsState {
+    /// The live registry in registration order — the render order and
+    /// the requery gate (empty = no ctx build, no dispatch, today's
+    /// band).
+    ids: Vec<String>,
+    /// Each registered id's last resolved slot.
+    slots: std::collections::HashMap<String, (ScriptSide, Option<String>)>,
+    /// The ctx the last dispatch carried — the diff trigger's
+    /// comparison. `None` before the first dispatch and after an
+    /// emptied registry: the next query fires on the diff alone.
+    last_ctx: Option<serde_json::Value>,
+    /// The last dispatch's instant — the interval trigger's clock.
+    queried_at: Option<Instant>,
+    /// The outbound match key; replies carry it back, bumped per
+    /// dispatch so a superseded reply cannot apply.
+    token: u64,
+    /// A drained dirty request (the reserved emit's translation) —
+    /// spent by the next requery decision.
+    dirty: bool,
+}
+
+impl ScriptSegmentsState {
+    /// The live registry, in registration order.
+    pub fn registry(&self) -> &[String] {
+        &self.ids
+    }
+
+    /// The ctx the last dispatch carried — `None` when none ever did
+    /// (the no-bookkeeping pin's observation point).
+    pub fn last_query_ctx(&self) -> Option<&serde_json::Value> {
+        self.last_ctx.as_ref()
+    }
+
+    /// Apply a registry-sync report: the ordered live id set. Slots
+    /// for vanished ids sweep; survivors keep their text across the
+    /// reload gap (spec assumption 6). An emptied registry resets
+    /// whole — nothing renders, bookkeeping cleared — so the next
+    /// sync starts fresh.
+    pub fn note_sync(&mut self, ids: Vec<String>) {
+        if ids == self.ids {
+            return; // an idempotent re-report changes nothing
+        }
+        if ids.is_empty() {
+            *self = Self::default();
+            return;
+        }
+        self.slots.retain(|id, _| ids.contains(id));
+        self.ids = ids;
+    }
+
+    /// Apply a drained dirty request: the next requery decision fires
+    /// regardless of diff or interval.
+    pub fn note_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Apply a query reply: a stale flag or a superseded token drops
+    /// it whole; otherwise shown values fill their slots, a hidden
+    /// (nil) clears its text keeping its side, and omitted ids keep
+    /// their priors.
+    pub fn apply_reply(&mut self, token: u64, stale: bool, answers: Vec<SegmentAnswer>) {
+        if stale || token != self.token {
+            return;
+        }
+        for answer in answers {
+            match answer {
+                SegmentAnswer::Shown { id, side, text } => {
+                    self.slots.insert(id, (side, Some(text)));
+                }
+                SegmentAnswer::Hidden { id } => {
+                    self.slots
+                        .entry(id)
+                        .and_modify(|slot| slot.1 = None)
+                        .or_insert((ScriptSide::Left, None));
+                }
+            }
+        }
+    }
+
+    /// The render overlay: one slot per registry id, in registry
+    /// order — an unanswered id lays absent (text `None`); an empty
+    /// registry lays the empty vec (today's band, byte-identical).
+    pub fn render(&self) -> Vec<ScriptSegmentValue> {
+        self.ids
+            .iter()
+            .map(|id| {
+                let slot = self.slots.get(id);
+                ScriptSegmentValue {
+                    id: id.clone(),
+                    side: slot.map_or(ScriptSide::Left, |(side, _)| *side),
+                    text: slot.and_then(|(_, text)| text.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// The requery decision (the spec's three triggers): an empty
+    /// registry never fires and never touches bookkeeping; otherwise
+    /// a drained dirty request, an input diff, or the interval
+    /// ([`SCRIPT_QUERY_INTERVAL`] past the last dispatch) fires one
+    /// dispatch — the token bumps and the ctx becomes the comparison
+    /// baseline. Returns the dispatch's token for the send; the send
+    /// itself is the shell's (never on render, never blocking the
+    /// tick).
+    pub fn requery_due(&mut self, ctx: &serde_json::Value, now: Instant) -> Option<u64> {
+        if self.ids.is_empty() {
+            return None;
+        }
+        let interval_due = self
+            .queried_at
+            .is_none_or(|at| now >= at + SCRIPT_QUERY_INTERVAL);
+        let diff = self.last_ctx.as_ref() != Some(ctx);
+        if !self.dirty && !interval_due && !diff {
+            return None;
+        }
+        self.dirty = false;
+        self.queried_at = Some(now);
+        self.last_ctx = Some(ctx.clone());
+        self.token += 1;
+        Some(self.token)
+    }
 }
 
 /// The resolved segments of the active tab's status band, left

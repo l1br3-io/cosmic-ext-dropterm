@@ -1036,3 +1036,212 @@ fn script_slots_that_answer_nothing_change_no_laid_pixel() {
     assert!(niled.script_rows.is_empty());
     assert_eq!(niled, today, "no-answer script slots lay today's band");
 }
+
+// --- the shell-side trigger state (status-segments spec, task SG2) ---
+
+/// One tick's ctx stand-in: two distinct payloads are all the
+/// trigger's comparisons need.
+fn ctx_for(word: &str) -> serde_json::Value {
+    serde_json::json!({ "cwd": word })
+}
+
+#[test]
+fn an_empty_registry_gates_the_whole_requery_path() {
+    let mut state = ScriptSegmentsState::default();
+    let now = Instant::now();
+    // No registry: no fire, whatever the inputs, the clock, or a
+    // drained dirty request says — and no bookkeeping happens (the
+    // ctx comparison slot stays untouched for the first real query).
+    state.note_dirty();
+    assert!(
+        state.requery_due(&ctx_for("a"), now).is_none(),
+        "an empty registry never queries"
+    );
+    assert!(
+        state
+            .requery_due(&ctx_for("b"), now + SCRIPT_QUERY_INTERVAL * 2)
+            .is_none(),
+        "not even the interval fires an empty registry"
+    );
+    assert!(
+        state.last_query_ctx().is_none(),
+        "the gate means no ctx bookkeeping at all"
+    );
+}
+
+#[test]
+fn the_requery_fires_on_first_diff_interval_and_dirty() {
+    let mut state = ScriptSegmentsState::default();
+    let now = Instant::now();
+    state.note_sync(vec!["net".to_owned(), "git".to_owned()]);
+    // The first query fires on the diff alone (no prior ctx stands),
+    // and the token bumps per dispatch.
+    let first = state
+        .requery_due(&ctx_for("a"), now)
+        .expect("the first query fires");
+    let second_inputs = ctx_for("a");
+    assert!(
+        state
+            .requery_due(&second_inputs, now + Duration::from_millis(100))
+            .is_none(),
+        "same ctx inside the interval: no fire"
+    );
+    // The interval fires without a diff.
+    let interval = state
+        .requery_due(&ctx_for("a"), now + SCRIPT_QUERY_INTERVAL)
+        .expect("the interval fires an unchanged ctx");
+    assert!(interval > first, "the token bumps per dispatch");
+    // A diff fires inside the interval.
+    assert!(
+        state
+            .requery_due(
+                &ctx_for("b"),
+                now + SCRIPT_QUERY_INTERVAL + Duration::from_millis(100)
+            )
+            .is_some(),
+        "an input diff fires inside the interval"
+    );
+    // A drained dirty request fires with the same ctx.
+    state.note_dirty();
+    assert!(
+        state
+            .requery_due(
+                &ctx_for("b"),
+                now + SCRIPT_QUERY_INTERVAL + Duration::from_millis(200)
+            )
+            .is_some(),
+        "a drained dirty request fires an unchanged ctx"
+    );
+}
+
+#[test]
+fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
+    let mut state = ScriptSegmentsState::default();
+    state.note_sync(vec!["net".to_owned(), "git".to_owned()]);
+    let token = state
+        .requery_due(&ctx_for("a"), Instant::now())
+        .expect("the first query fires");
+    // A stale reply drops whole — the prior values (none yet) stand.
+    state.apply_reply(
+        token,
+        true,
+        vec![SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: ScriptSide::Right,
+            text: "stale".to_owned(),
+        }],
+    );
+    assert!(state.render().iter().all(|slot| slot.text.is_none()));
+    // A superseded token drops too.
+    state.apply_reply(
+        token + 7,
+        false,
+        vec![SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: ScriptSide::Right,
+            text: "superseded".to_owned(),
+        }],
+    );
+    assert!(state.render().iter().all(|slot| slot.text.is_none()));
+    // The matching fresh reply lands: shown values fill, a nil clears
+    // (a fresh hide), and an omitted id keeps its prior.
+    state.apply_reply(
+        token,
+        false,
+        vec![
+            SegmentAnswer::Shown {
+                id: "net".to_owned(),
+                side: ScriptSide::Right,
+                text: "▼ 1.2 MB/s".to_owned(),
+            },
+            SegmentAnswer::Shown {
+                id: "git".to_owned(),
+                side: ScriptSide::Left,
+                text: "main".to_owned(),
+            },
+        ],
+    );
+    let answered = state.render();
+    let answered: Vec<(&str, Option<&str>)> = answered
+        .iter()
+        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .collect();
+    assert_eq!(
+        answered,
+        vec![("net", Some("▼ 1.2 MB/s")), ("git", Some("main"))]
+    );
+    // The next trip hides git (nil) and says nothing of net: git
+    // clears, net keeps its prior — the stale-degrade contract.
+    let next = state
+        .requery_due(&ctx_for("b"), Instant::now() + SCRIPT_QUERY_INTERVAL)
+        .expect("the next query fires");
+    state.apply_reply(
+        next,
+        false,
+        vec![SegmentAnswer::Hidden {
+            id: "git".to_owned(),
+        }],
+    );
+    let degraded = state.render();
+    let degraded: Vec<(&str, Option<&str>)> = degraded
+        .iter()
+        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .collect();
+    assert_eq!(
+        degraded,
+        vec![("net", Some("▼ 1.2 MB/s")), ("git", None)],
+        "a hidden id clears; an omitted id keeps its prior"
+    );
+}
+
+#[test]
+fn registry_syncs_sweep_slots_reorder_and_reset() {
+    let mut state = ScriptSegmentsState::default();
+    state.note_sync(vec!["net".to_owned(), "git".to_owned()]);
+    let token = state
+        .requery_due(&ctx_for("a"), Instant::now())
+        .expect("the first query fires");
+    state.apply_reply(
+        token,
+        false,
+        vec![
+            SegmentAnswer::Shown {
+                id: "net".to_owned(),
+                side: ScriptSide::Right,
+                text: "v1".to_owned(),
+            },
+            SegmentAnswer::Shown {
+                id: "git".to_owned(),
+                side: ScriptSide::Left,
+                text: "main".to_owned(),
+            },
+        ],
+    );
+    // A reload's new order re-renders in the new registration order,
+    // and the vanished id's slot sweeps — while the surviving id
+    // keeps its prior text across the reload gap (spec assumption 6).
+    state.note_sync(vec!["git".to_owned(), "mem".to_owned()]);
+    let reloaded = state.render();
+    let reloaded: Vec<(&str, Option<&str>)> = reloaded
+        .iter()
+        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .collect();
+    assert_eq!(
+        reloaded,
+        vec![("git", Some("main")), ("mem", None)],
+        "the survivor keeps its text across the gap; the newcomer is absent until it answers"
+    );
+    // An emptied registry resets whole: nothing renders, and the next
+    // sync starts fresh (the first query fires on the diff alone).
+    state.note_sync(Vec::new());
+    assert!(state.render().is_empty());
+    assert!(
+        state.last_query_ctx().is_none(),
+        "the empty registry clears the diff bookkeeping with it"
+    );
+    state.note_sync(vec!["solo".to_owned()]);
+    assert!(
+        state.requery_due(&ctx_for("a"), Instant::now()).is_some(),
+        "the fresh registry fires its first query on the diff alone"
+    );
+}

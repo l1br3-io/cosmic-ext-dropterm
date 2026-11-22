@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 
 use notify::Watcher as _;
 
-use crate::core::status::{ScriptSide, StatusInputs};
+use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use mlua::{
     Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, VmState,
 };
@@ -166,24 +166,6 @@ pub enum HostEvent {
     /// every registry change, tab-titles and script-commands
     /// extending the same arm.
     RegistrySync { segments: Vec<String> },
-}
-
-/// One script segment's answer on a query trip (status-segments
-/// spec): the shown value (the chosen side and text) or a deliberate
-/// hide (nil). A raising or timing-out handler answers not at all —
-/// its id is omitted from the reply so the asking surface keeps the
-/// prior value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SegmentAnswer {
-    /// The handler answered: render this text on this side.
-    Shown {
-        id: String,
-        side: ScriptSide,
-        text: String,
-    },
-    /// The handler answered nil: render nothing (a fresh decision —
-    /// distinct from an omission, which keeps the prior value).
-    Hidden { id: String },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate

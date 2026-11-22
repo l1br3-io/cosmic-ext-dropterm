@@ -502,6 +502,13 @@ pub(crate) struct Shell {
     /// The command timer's last logged state (the boundary rows'
     /// change detector).
     status_timer_logged: (bool, Option<(String, std::time::Duration)>, Option<u32>),
+    /// The script segments' live state (status-segments spec): the
+    /// registry, the resolved slots, the outbound token, and the
+    /// requery decision — the tick's drain feeds it and
+    /// `refresh_status_band` renders and requeries through it. Empty
+    /// by construction with no plugins dir (the host never spawns,
+    /// the registry never reports, the band stays today's).
+    status_scripts: status::ScriptSegmentsState,
     /// The completions table's shared load (gpui-parity Task 1): the
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
@@ -773,6 +780,7 @@ impl Shell {
             status_menu: None,
             was_hidden: true,
             status_timer_logged: (false, None, None),
+            status_scripts: status::ScriptSegmentsState::default(),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -929,20 +937,12 @@ impl Shell {
         // The Lua host's outbound stream (lua-host Task L4): one
         // try_recv drain beside the tray/pane channels — the log
         // lines sink to println, the surface every other dropterm:
-        // line already uses. The query surfaces' replies
-        // (status-segments spec) land inert here until task SG2
-        // wires the shell's segment state; either way the drain
-        // never blocks. try_recv on the tick is the pty-test-gate
-        // pin: no waker ever crosses the host thread into the
-        // foreground executor's pump.
-        while let Some(event) = self.lua_host.try_event() {
-            match event {
-                dropterm::core::lua_host::HostEvent::Log(line) => println!("{line}"),
-                dropterm::core::lua_host::HostEvent::SegmentValues { .. }
-                | dropterm::core::lua_host::HostEvent::SegmentsDirty
-                | dropterm::core::lua_host::HostEvent::RegistrySync { .. } => {}
-            }
-        }
+        // line already uses, and the segment replies land in the
+        // shell's live state (status-segments spec, task SG2). Either
+        // way the drain never blocks; try_recv on the tick is the
+        // pty-test-gate pin: no waker ever crosses the host thread
+        // into the foreground executor's pump.
+        self.drain_lua_host(cx);
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
             self.measured(output, &mut actions);
@@ -4323,6 +4323,42 @@ impl Shell {
     /// progress, program status) ride Task 2's wiring; every seat
     /// the plain state feeds resolves today, and the profile seat
     /// stays honestly absent until a profile spawn path exists.
+    /// The Lua host's outbound drain (the L4 log drain,
+    /// status-segments spec riding it): log lines print, registry
+    /// syncs and segment replies land in [`Self::status_scripts`],
+    /// and a translated dirty request arms the next requery. Never
+    /// blocks — [`LuaHost::try_event`] on the tick, the
+    /// pty-test-gate pin.
+    fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
+        while let Some(event) = self.lua_host.try_event() {
+            match event {
+                dropterm::core::lua_host::HostEvent::Log(line) => println!("{line}"),
+                dropterm::core::lua_host::HostEvent::RegistrySync { segments } => {
+                    if segments.as_slice() != self.status_scripts.registry() {
+                        println!(
+                            "dropterm: plugins: segments registry {:?} at +{}ms",
+                            segments,
+                            self.boot.elapsed().as_millis()
+                        );
+                        self.status_scripts.note_sync(segments);
+                        cx.notify();
+                    }
+                }
+                dropterm::core::lua_host::HostEvent::SegmentsDirty => {
+                    self.status_scripts.note_dirty();
+                }
+                dropterm::core::lua_host::HostEvent::SegmentValues {
+                    token,
+                    stale,
+                    values,
+                } => {
+                    self.status_scripts.apply_reply(token, stale, values);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the reference app's own assembly shape: every seat's read beside its gate, one StatusInputs build"
@@ -4370,7 +4406,13 @@ impl Shell {
         };
         self.status_clock = clock;
         let Some(pane) = self.active_pane() else {
-            self.status = StatusSegments::default();
+            // The script overlay rides even the paneless floor: the
+            // segments are the session's, not a pane's
+            // (status-segments spec).
+            self.status = StatusSegments {
+                script: self.status_scripts.render(),
+                ..StatusSegments::default()
+            };
             return;
         };
         // Every engine read the inputs need, under one guard — then
@@ -4530,7 +4572,12 @@ impl Shell {
             attention_red,
             attention_bright_red,
         };
-        let resolved = status::resolve_segments(&inputs, toggles);
+        let mut resolved = status::resolve_segments(&inputs, toggles);
+        // The script segments' overlay (status-segments spec): the
+        // slots render over every resolve — the stale-keep store
+        // outlives each tick's fresh resolution, and an empty
+        // registry overlays the empty vec (today's band).
+        resolved.script = self.status_scripts.render();
         // The command timer's boundary rows (the duration rows' walk
         // evidence, the clock flip's own class): one row at each
         // start (the live elapsed's first stand) and each finish
@@ -4551,6 +4598,19 @@ impl Shell {
             self.status_timer_logged = timer_state;
         }
         self.status = resolved;
+        // The requery decision (status-segments spec, the three
+        // triggers — input diff, interval, drained dirty): one
+        // dispatch per fire, all segments together, never on render
+        // and never blocking the tick (the send crosses the channel
+        // and returns). The empty registry gates the ctx build
+        // itself: no registry, no payload, no dispatch.
+        if !self.status_scripts.registry().is_empty() {
+            let ctx = dropterm::core::lua_host::status_ctx(&inputs);
+            if let Some(token) = self.status_scripts.requery_due(&ctx, Instant::now()) {
+                self.lua_host
+                    .send(dropterm::core::lua_host::HostCommand::QuerySegments { token, ctx });
+            }
+        }
     }
 
     /// The strip element with every interaction wired (the strip is
@@ -8005,5 +8065,207 @@ mod tests {
                 .expect("open the shell probe window");
             (shell, handle)
         })
+    }
+
+    // --- the script-segment shell wiring (status-segments, SG2) ---
+
+    /// A per-test scratch dir under the system temp dir, removed
+    /// best-effort on drop (the lua-host suite's own shape).
+    struct ScratchDir(std::path::PathBuf);
+
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let unique = format!(
+                "dropterm-shell-segments-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&path).expect("create scratch dir");
+            Self(path)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A paneless Shell over a chosen plugins dir — the segment
+    /// wiring's own scaffold (the paste walk's construction minus the
+    /// window: no pane means no inputs, and the drain/state path
+    /// needs none).
+    fn shell_over_plugins(
+        plugins: std::path::PathBuf,
+        cx: &mut gpui::TestAppContext,
+    ) -> Entity<Shell> {
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let config = DropTermConfig::default();
+        cx.update(|cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tab_bar::TabList::default(),
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx,
+                    signals_rx,
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    dropterm::core::lua_host::LuaHost::new(plugins),
+                )
+            })
+        })
+    }
+
+    #[gpui::test]
+    fn the_drain_routes_real_host_events_into_the_band_state(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("segments");
+        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::write(
+            dir.0.join("plugins").join("net.lua"),
+            "local d = require('dropterm')\n\
+             d.status_segment('net', function(ctx)\n\
+               return { text = 'cwd:' .. tostring(ctx.cwd), side = 'right' }\n\
+             end)",
+        )
+        .expect("fixture script");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // Phase 1 — the registry lands: the first work item loads the
+        // script and reports the sync. The paneless floor never
+        // dispatches, so the test seeds the host by hand (its reply's
+        // token matches nothing yet — phase 2 drives the state's
+        // token the way the pane'd refresh does).
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::QuerySegments {
+                        token: 1,
+                        ctx: serde_json::json!({ "cwd": "/home/u/src" }),
+                    });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let synced = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    !shell.status_scripts.registry().is_empty()
+                })
+            });
+            if synced || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            cx.update(|cx| shell.update(cx, |shell, _| shell.status_scripts.registry().to_vec())),
+            vec!["net".to_owned()],
+            "the drain must route the load's sync report into the state"
+        );
+        // Phase 2 — the round trip: bump the state's token the way
+        // the pane'd refresh does, send the query by hand (the
+        // paneless floor builds no ctx), and drain the reply.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                let token = shell
+                    .status_scripts
+                    .requery_due(&serde_json::json!({ "cwd": "/x" }), Instant::now())
+                    .expect("a live registry fires");
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::QuerySegments {
+                        token,
+                        ctx: serde_json::json!({ "cwd": "/home/u/src" }),
+                    });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let answered = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    shell
+                        .status_scripts
+                        .render()
+                        .first()
+                        .is_some_and(|slot| slot.text.is_some())
+                })
+            });
+            if answered || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Phase 3 — the refresh lays the overlay into the band state
+        // (the paneless floor carries it too: the segments are the
+        // session's).
+        cx.update(|cx| shell.update(cx, Shell::refresh_status_band));
+        let laid = cx.update(|cx| shell.read(cx).status.script.clone());
+        assert_eq!(
+            laid,
+            vec![status::ScriptSegmentValue {
+                id: "net".to_owned(),
+                side: status::ScriptSide::Right,
+                text: Some("cwd:/home/u/src".to_owned()),
+            }],
+            "a real reply must land in the band state through the drain and the refresh overlay"
+        );
+    }
+
+    #[gpui::test]
+    fn an_empty_registry_costs_no_ctx_build_and_no_dispatch(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("empty");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        for _ in 0..3 {
+            cx.update(|cx| shell.update(cx, Shell::refresh_status_band));
+            cx.update(|cx| shell.update(cx, Shell::drain_lua_host));
+        }
+        cx.update(|cx| {
+            let shell = shell.read(cx);
+            assert!(
+                !shell.lua_host.spawned(),
+                "zero dispatches at the channel surface: the host never spawns"
+            );
+            assert!(
+                shell.status.script.is_empty(),
+                "the band lays today's output — the byte-identical pin"
+            );
+            assert!(
+                shell.status_scripts.last_query_ctx().is_none(),
+                "no ctx build, no diff bookkeeping — the gate is the empty registry"
+            );
+        });
     }
 }
