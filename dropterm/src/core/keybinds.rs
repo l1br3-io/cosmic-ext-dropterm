@@ -161,18 +161,17 @@ pub fn binding_display(binding: &Binding) -> String {
     chord_display(&binding.modifiers, &binding.key)
 }
 
-/// The row's effective binding display: its custom entry if one
-/// exists, else its defaults joined `" / "` in sorted order — the
-/// editor row's binding text.
-pub fn effective_binding_display(
+/// The row's effective binding in human form, or `None` when the row
+/// is unbound or unknown — the Option-shaped half of the display
+/// below, for consumers that render absence differently than the
+/// editor's `"None"` sentinel (the palette's chord hints).
+pub fn effective_binding(
     id: &str,
     custom: &std::collections::BTreeMap<String, Binding>,
-) -> String {
-    let Some(row) = binding_rows().iter().find(|row| row.id == id) else {
-        return "None".to_string();
-    };
+) -> Option<String> {
+    let row = binding_rows().iter().find(|row| row.id == id)?;
     if let Some(binding) = custom.get(id) {
-        return binding_display(binding);
+        return Some(binding_display(binding));
     }
     let mut chords: Vec<String> = row
         .defaults
@@ -180,10 +179,20 @@ pub fn effective_binding_display(
         .map(|(modifiers, key)| chord_display(modifiers, key))
         .collect();
     if chords.is_empty() {
-        return "None".to_string();
+        return None;
     }
     chords.sort();
-    chords.join(" / ")
+    Some(chords.join(" / "))
+}
+
+/// The row's effective binding display: its custom entry if one
+/// exists, else its defaults joined `" / "` in sorted order — the
+/// editor row's binding text. Unbound and unknown rows read `"None"`.
+pub fn effective_binding_display(
+    id: &str,
+    custom: &std::collections::BTreeMap<String, Binding>,
+) -> String {
+    effective_binding(id, custom).unwrap_or_else(|| "None".to_string())
 }
 
 /// Whether a row matches the editor's search — case-insensitive
@@ -356,6 +365,24 @@ mod registry_tests {
             effective_binding_display("scroll_to_bottom", &std::collections::BTreeMap::default()),
             "Ctrl + Shift + End"
         );
+    }
+
+    #[test]
+    fn effective_binding_is_the_option_shaped_twin_of_the_display() {
+        let empty = std::collections::BTreeMap::default();
+        // A bound row carries its joined defaults.
+        assert_eq!(
+            effective_binding("copy", &empty),
+            Some("Ctrl + Shift + C".to_string())
+        );
+        // The unbound row is None — the display's "None" sentinel,
+        // Option-shaped.
+        assert_eq!(effective_binding("copy_primary", &empty), None);
+        // A custom binding wins wholesale.
+        let map = custom(&[("copy", &[ModifierName::Alt], "X")]);
+        assert_eq!(effective_binding("copy", &map), Some("Alt + X".to_string()));
+        // An unknown id is None, matching the display's sentinel.
+        assert_eq!(effective_binding("no_such_row", &empty), None);
     }
 
     #[test]

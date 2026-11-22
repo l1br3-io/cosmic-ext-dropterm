@@ -40,6 +40,7 @@ pub mod intent;
 pub mod keybinds;
 pub mod lua_host;
 pub mod mem;
+pub mod palette;
 pub mod paste_cache;
 pub mod profile;
 pub mod session;
