@@ -431,6 +431,13 @@ pub(crate) struct Shell {
     /// repair hands the keyboard back to the active pane while the
     /// dead handle holds it — the rename input's own repair shape.
     palette_focus_repair: Option<gpui::FocusHandle>,
+    /// The open palette's list handle, captured once at open — the
+    /// close path's repair source. Captured there because the close
+    /// itself cannot read: the blur dismissal runs inside the
+    /// palette's own entity update, where a read panics (the walk's
+    /// `cannot read dropterm::palette::Palette while it is already
+    /// being updated` abort).
+    palette_focus: Option<gpui::FocusHandle>,
     exit_at: Option<Instant>,
     /// When an explicit quit landed (tray Task T2: a forwarded `quit`
     /// verb or the tray's Quit mapped onto it): the session already
@@ -801,6 +808,7 @@ impl Shell {
             respawn_focus_repair: None,
             palette: None,
             palette_focus_repair: None,
+            palette_focus: None,
             modal_focus,
             status: dropterm::core::status::StatusSegments::default(),
             status_clock: None,
@@ -2475,6 +2483,10 @@ impl Shell {
         let row_count = catalog.len();
         let palette = cx.new(|cx| crate::palette::Palette::new(shell, catalog, window, cx));
         palette.update(cx, |palette, cx| palette.focus(window, cx));
+        // The close path's repair handle, captured while the read is
+        // safe: construction is complete here, and the blur path that
+        // makes a close-time read panic has not armed yet.
+        self.palette_focus = Some(palette.read(cx).focus_handle(cx));
         println!(
             "dropterm: command palette opened ({row_count} rows) at +{}ms",
             self.boot.elapsed().as_millis()
@@ -2485,13 +2497,15 @@ impl Shell {
 
     /// The palette's dismissal — the pick's first act, the Esc/scrim/
     /// blur/toggle paths' common tail. The departed list handle rides
-    /// the repair slot; the render hands the keyboard back to the
-    /// active pane once the element is gone.
+    /// the repair slot, captured at open: this path can run inside
+    /// the palette's own entity update (the blur listener's shell
+    /// update), where reading the entity panics. The render hands the
+    /// keyboard back to the active pane once the element is gone.
     pub(crate) fn close_palette(&mut self, cx: &mut Context<Self>) {
-        let Some(palette) = self.palette.take() else {
+        if self.palette.take().is_none() {
             return;
-        };
-        self.palette_focus_repair = Some(palette.read(cx).focus_handle(cx));
+        }
+        self.palette_focus_repair = self.palette_focus.take();
         println!(
             "dropterm: command palette dismissed at +{}ms",
             self.boot.elapsed().as_millis()
