@@ -288,6 +288,11 @@ pub struct ScriptSegmentsState {
     /// A drained dirty request (the reserved emit's translation) —
     /// spent by the next requery decision.
     dirty: bool,
+    /// The config's ordered-id key: `None` renders the registry's
+    /// own order; `Some` renders exactly the listed ids, in list
+    /// order — the render-side filter (the registry itself stays
+    /// truthful to what scripts registered).
+    order: Option<Vec<String>>,
 }
 
 impl ScriptSegmentsState {
@@ -348,16 +353,37 @@ impl ScriptSegmentsState {
         }
     }
 
-    /// The render overlay: one slot per registry id, in registry
-    /// order — an unanswered id lays absent (text `None`); an empty
-    /// registry lays the empty vec (today's band, byte-identical).
+    /// Apply the config's ordered-id key: `None` renders the
+    /// registry's own order; `Some` renders exactly the listed ids,
+    /// in list order. Cheap when unchanged (one equality) — the
+    /// shell may call it every refresh.
+    pub fn configure(&mut self, order: Option<&[String]>) {
+        let order = order.map(<[String]>::to_vec);
+        if order != self.order {
+            self.order = order;
+        }
+    }
+
+    /// The render overlay: one slot per rendered id — the registry's
+    /// order, or the configured list filtered to it — an unanswered
+    /// id laying absent (text `None`); an empty registry (or one the
+    /// config empties) lays the empty vec (today's band,
+    /// byte-identical).
     pub fn render(&self) -> Vec<ScriptSegmentValue> {
-        self.ids
-            .iter()
+        let order: Vec<&str> = match &self.order {
+            Some(list) => list
+                .iter()
+                .filter(|id| self.ids.contains(id))
+                .map(String::as_str)
+                .collect(),
+            None => self.ids.iter().map(String::as_str).collect(),
+        };
+        order
+            .into_iter()
             .map(|id| {
                 let slot = self.slots.get(id);
                 ScriptSegmentValue {
-                    id: id.clone(),
+                    id: id.to_owned(),
                     side: slot.map_or(ScriptSide::Left, |(side, _)| *side),
                     text: slot.and_then(|(_, text)| text.clone()),
                 }

@@ -447,6 +447,15 @@ pub struct DropTermConfig {
     /// action chip). An in-memory grid read at view assembly; the
     /// toggle hides the chip outright.
     pub status_bar_show_scrollback: bool,
+    /// The script segments' ordered-id key (status-segments spec):
+    /// `None` (the default) renders every registered script segment
+    /// in registration order; `Some(list)` renders exactly the
+    /// listed ids, in list order — omission is the toggle, so an
+    /// unlisted registered segment hides without unregistering. A
+    /// listed id no script registers renders nothing and costs at
+    /// most one quiet log line at the sync that reveals it. Applies
+    /// live on the config echo.
+    pub status_script_segments: Option<Vec<String>>,
     /// Whether the tab strip renders its border hairline
     /// (bar-borders spec): a 1 px line on the strip's
     /// terminal-facing edge, in the pane-derived foreground at low
@@ -628,6 +637,7 @@ impl Default for DropTermConfig {
             status_bar_show_progress: true,
             status_bar_show_program_status: true,
             status_bar_show_scrollback: true,
+            status_script_segments: None,
             tab_bar_border: true,
             status_bar_border: true,
             status_bar_activity_mark: true,

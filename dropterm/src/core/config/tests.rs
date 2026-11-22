@@ -1323,6 +1323,38 @@ fn missing_autosuggestions_paths_key_loads_as_true() {
 }
 
 #[test]
+fn status_script_segments_loads_absent_as_all_and_present_as_the_list() {
+    // Absent (the default): `None` — every registered script segment
+    // renders in registration order.
+    let dir = TempDir::new("segments-absent");
+    write_section(&dir, store::SETTINGS_FILE, "(status_bar_enabled: true)");
+    let absent = load_config(&dir);
+    assert_eq!(absent.status_script_segments, None);
+    // Present: exactly the listed ids, order preserved — omission is
+    // the toggle.
+    let dir = TempDir::new("segments-present");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        r#"(status_script_segments: Some(["net", "git"]))"#,
+    );
+    let present = load_config(&dir);
+    assert_eq!(
+        present.status_script_segments,
+        Some(vec!["net".to_owned(), "git".to_owned()])
+    );
+    // An explicitly empty list is a valid state: hide every script
+    // segment without unregistering anything.
+    let dir = TempDir::new("segments-empty");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        "(status_script_segments: Some([]))",
+    );
+    assert_eq!(load_config(&dir).status_script_segments, Some(Vec::new()));
+}
+
+#[test]
 fn a_disabled_paths_toggle_round_trips_through_the_config_store() {
     // The off state persists — history-only behavior stays across a
     // write→load cycle (a present `false` key is honored, not

@@ -92,7 +92,7 @@ A fresh install has no files here at all - each appears the first time something
 | `autosuggestions_delay_ms` | `0` |
 | `images_enabled` | `true` |
 
-The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `settings_drawer_width` (unset until the drawer's drag handle first writes it). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
+The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), `settings_drawer_width` (unset until the drawer's drag handle first writes it), and `status_script_segments` (unset - every registered script segment renders, in registration order). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
 
 ## Geometry
 
@@ -172,6 +172,8 @@ The strip itself never hides either way - the corner affordances render at any c
 | `status_bar_show_scrollback` | Lines scrolled back from the bottom (`↑12`) - shown only while the viewport is off-bottom; clicking the chip jumps to the bottom. | `true` |
 
 All live. A hidden segment is never computed - hiding the branch stops the `.git` reads, hiding the clock stops its tick, hiding the duration stops its 1 s tick while a command runs, hiding the exit status stops its verdict sampling.
+
+`status_script_segments` (default unset) orders and filters the segments Lua plugins register through `dropterm.status_segment`. Unset, every registered segment renders in registration order - the order the plugin files load in. Set to a list of segment ids (`Some(["net", "git"])`), exactly the listed segments render, in the list's order, so leaving an id out hides its segment without unregistering it; a listed id no plugin has registered renders nothing and costs at most one log line. Changes apply live.
 
 ## Bar borders
 

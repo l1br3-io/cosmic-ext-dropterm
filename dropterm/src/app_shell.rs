@@ -4340,6 +4340,18 @@ impl Shell {
                             segments,
                             self.boot.elapsed().as_millis()
                         );
+                        // A listed id no script registers costs one
+                        // quiet line — a typo's only surface
+                        // (status-segments spec).
+                        if let Some(order) = self.config.status_script_segments.as_deref() {
+                            let unknown: Vec<&String> =
+                                order.iter().filter(|id| !segments.contains(id)).collect();
+                            if !unknown.is_empty() {
+                                println!(
+                                    "dropterm: plugins: segments configured but unregistered: {unknown:?}"
+                                );
+                            }
+                        }
                         self.status_scripts.note_sync(segments);
                         cx.notify();
                     }
@@ -4405,6 +4417,11 @@ impl Shell {
             None
         };
         self.status_clock = clock;
+        // The ordered-id key shapes the render (status-segments
+        // spec, task SG3): cheap when unchanged, so every refresh
+        // may carry it — the config echo needs no extra path.
+        self.status_scripts
+            .configure(self.config.status_script_segments.as_deref());
         let Some(pane) = self.active_pane() else {
             // The script overlay rides even the paneless floor: the
             // segments are the session's, not a pane's

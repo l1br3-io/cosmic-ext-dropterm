@@ -1245,3 +1245,60 @@ fn registry_syncs_sweep_slots_reorder_and_reset() {
         "the fresh registry fires its first query on the diff alone"
     );
 }
+
+#[test]
+fn the_ordered_key_filters_and_reorders_the_render() {
+    let mut state = ScriptSegmentsState::default();
+    state.note_sync(vec!["net".to_owned(), "git".to_owned(), "mem".to_owned()]);
+    let token = state
+        .requery_due(&ctx_for("a"), Instant::now())
+        .expect("the first query fires");
+    state.apply_reply(
+        token,
+        false,
+        vec![
+            SegmentAnswer::Shown {
+                id: "net".to_owned(),
+                side: ScriptSide::Right,
+                text: "n".to_owned(),
+            },
+            SegmentAnswer::Shown {
+                id: "git".to_owned(),
+                side: ScriptSide::Left,
+                text: "g".to_owned(),
+            },
+            SegmentAnswer::Shown {
+                id: "mem".to_owned(),
+                side: ScriptSide::Right,
+                text: "m".to_owned(),
+            },
+        ],
+    );
+    // Unset (the default): every registered id, in registration
+    // order.
+    state.configure(None);
+    let rendered = state.render();
+    let ids: Vec<&str> = rendered.iter().map(|slot| slot.id.as_str()).collect();
+    assert_eq!(ids, vec!["net", "git", "mem"]);
+    // Set: exactly the listed ids, in list order — an omitted
+    // registered id hides, and a listed-but-unregistered id skips
+    // whole (it renders nothing and disturbs nothing).
+    let order = vec!["zoom".to_owned(), "git".to_owned(), "net".to_owned()];
+    state.configure(Some(&order));
+    let ordered = state.render();
+    let pairs: Vec<(&str, &str)> = ordered
+        .iter()
+        .map(|slot| (slot.id.as_str(), slot.text.as_deref().unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![("git", "g"), ("net", "n")],
+        "the list orders and filters; the unregistered id costs nothing"
+    );
+    // Back to unset: the full registration order returns, the hidden
+    // id's slot intact beneath (its prior text stands).
+    state.configure(None);
+    let restored = state.render();
+    let ids: Vec<&str> = restored.iter().map(|slot| slot.id.as_str()).collect();
+    assert_eq!(ids, vec!["net", "git", "mem"]);
+}
