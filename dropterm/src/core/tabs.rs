@@ -8,6 +8,7 @@
 //! headless, without a live [`Terminal`] PTY. The app instantiates them
 //! with [`Tab`].
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -608,6 +609,123 @@ fn raw_report_or_default(shell_title: Option<&str>, id: TabId) -> String {
 /// empty report verbatim would blank the tab to its close icon.
 pub fn shell_title_from_report(report: String) -> Option<String> {
     (!report.is_empty()).then_some(report)
+}
+
+/// One entry of a tab-title ask (tab-titles spec): the wire form the
+/// shell sends the Lua host — the tab's id and its raw OSC 0/2
+/// report, the empty string when unset (assumption 2: the provider
+/// decides what an empty title means).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabTitleAsk {
+    /// The tab's id — the ctx's `tab` and the reply's match key.
+    pub tab: u32,
+    /// The raw report, `""` when none ever landed.
+    pub title: String,
+}
+
+/// One tab's answer off the host (tab-titles spec): `Some` is the
+/// provider's title — the empty string honored verbatim (spec OQ-1's
+/// pin) — and `None` is a nil, the no-opinion fall back to the
+/// default. A tab the provider raised on is absent from the reply,
+/// keeping its prior title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabTitleValue {
+    /// The asked tab's id.
+    pub tab: u32,
+    /// The provider's title, or `None` for nil.
+    pub title: Option<String>,
+}
+
+/// The shell's tab-title ask state (tab-titles spec): provider
+/// presence (the sync report's truth — the only source), spawn
+/// detection (a seen-id set; ids never repeat within a run, so a
+/// closed tab's entry lingering is inert), the outbound token, and
+/// the boot arm. Pure state the shell's tick drives, so the ask
+/// gating — change-gated, never per-tick — is headless-testable
+/// beside the drain it feeds.
+#[derive(Debug, Default)]
+pub struct TabTitleAsks {
+    /// Whether a provider is registered, per the last sync report.
+    provider: bool,
+    /// The ids already covered by an ask: an absent id is a spawn.
+    seen: HashSet<TabId>,
+    /// The outbound match key; replies carry it back, bumped per
+    /// dispatch so a superseded reply cannot apply.
+    token: u64,
+    /// Whether the boot ask is still armed — the shell arms it at
+    /// construction exactly when the plugins dir stood (the watcher
+    /// only wakes on dir *events*; without this one dispatch a
+    /// standing dir's provider would stay unknown, SG1's boot-query
+    /// shape instantiated for one provider).
+    boot_armed: bool,
+}
+
+impl TabTitleAsks {
+    /// Apply the host's provider-sync report — present at every
+    /// load/reload, absent included (a reload into no provider
+    /// clears the gate; the shell's titles keep their priors).
+    pub fn note_provider(&mut self, present: bool) {
+        self.provider = present;
+    }
+
+    /// Arm the boot ask — the shell does this at construction
+    /// exactly when the plugins dir stood at launch.
+    pub fn arm_boot_ask(&mut self) {
+        self.boot_armed = true;
+    }
+
+    /// The ask decision (the spec's three triggers behind one
+    /// provider gate): outside `Script` mode, or with no provider
+    /// known and the boot arm spent, nobody is asked. Otherwise one
+    /// batched dispatch covers every due tab — one whose retitle
+    /// input moved this tick (`changed`), any tab at all on a mode
+    /// flip, or one the shell has never asked (a spawn). The boot
+    /// arm spends itself on the first Script-mode call: that one
+    /// dispatch is the point (its trip wakes the host, whose load
+    /// delivers the sync that names the provider), asked even
+    /// before any provider is known.
+    pub fn ask_due(
+        &mut self,
+        mode: TabTitleMode,
+        flipped: bool,
+        tabs: &[(TabId, Option<String>, bool)],
+    ) -> Option<(u64, Vec<TabTitleAsk>)> {
+        if mode != TabTitleMode::Script {
+            return None;
+        }
+        let boot = self.boot_armed;
+        self.boot_armed = false;
+        if !self.provider && !boot {
+            return None;
+        }
+        let due: Vec<TabTitleAsk> = tabs
+            .iter()
+            .filter(|(id, _, changed)| flipped || *changed || !self.seen.contains(id))
+            .map(|(id, title, _)| TabTitleAsk {
+                tab: id.0,
+                title: title.clone().unwrap_or_default(),
+            })
+            .collect();
+        if due.is_empty() {
+            return None;
+        }
+        self.seen.extend(tabs.iter().map(|(id, _, _)| *id));
+        self.token += 1;
+        Some((self.token, due))
+    }
+
+    /// Apply a query reply: a stale flag or a superseded token drops
+    /// it whole (the stale ladder's keep — every asked tab keeps its
+    /// prior title); otherwise the values pass to the caller to land
+    /// per tab.
+    pub fn apply_reply(
+        &mut self,
+        token: u64,
+        stale: bool,
+        values: Vec<TabTitleValue>,
+    ) -> Option<Vec<TabTitleValue>> {
+        (token == self.token && !stale).then_some(values)
+    }
 }
 
 /// Guake's Last Segment value for a cwd: its final path component,

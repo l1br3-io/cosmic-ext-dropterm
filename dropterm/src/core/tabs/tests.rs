@@ -809,6 +809,159 @@ fn plan_respawn_in_script_mode_titles_from_the_fresh_terminal_number() {
     assert_eq!(renamed.title, "work");
 }
 
+// --- the ask gating (tab-titles, task TT2) ---
+
+/// One ask snapshot row: the tab, its raw report, and whether this
+/// tick's poll moved either retitle input.
+fn snap(rows: &[(u32, Option<&str>, bool)]) -> Vec<(TabId, Option<String>, bool)> {
+    rows.iter()
+        .map(|&(tab, title, changed)| (TabId(tab), title.map(str::to_owned), changed))
+        .collect()
+}
+
+#[test]
+fn asks_never_fire_without_a_provider_or_outside_script_mode() {
+    let mut asks = TabTitleAsks::default();
+    let due = snap(&[(0, Some("vim"), true), (1, None, true)]);
+    // The provider gate: no sync ever reported one, and the boot ask
+    // is not armed — a change, a flip, and a spawn all stay quiet.
+    assert!(
+        asks.ask_due(TabTitleMode::Script, true, &due).is_none(),
+        "no provider, no boot arm: no ask"
+    );
+    asks.note_provider(true);
+    assert!(
+        asks.ask_due(TabTitleMode::Shell, true, &due).is_none(),
+        "outside Script mode nobody is asked"
+    );
+}
+
+#[test]
+fn the_boot_ask_fires_once_without_a_provider_to_learn_one() {
+    // SG1's boot-query shape for one provider: a standing plugins dir
+    // must wake the host on the first Script-mode tick — the trip's
+    // load delivers the sync that names the provider — and the arm
+    // spends with that one dispatch.
+    let mut asks = TabTitleAsks::default();
+    asks.arm_boot_ask();
+    let due = snap(&[(0, Some("vim"), false)]);
+    let (token, entries) = asks
+        .ask_due(TabTitleMode::Script, false, &due)
+        .expect("the boot ask fires without a provider");
+    assert_eq!(token, 1, "the boot ask is the first dispatch");
+    assert_eq!(
+        entries,
+        vec![TabTitleAsk {
+            tab: 0,
+            title: "vim".to_owned()
+        }],
+        "an unseen tab is due at boot, change or not"
+    );
+    asks.note_provider(false);
+    assert!(
+        asks.ask_due(TabTitleMode::Script, false, &due).is_none(),
+        "the arm is spent: no provider, no further asks"
+    );
+}
+
+#[test]
+fn an_unchanged_tab_is_never_re_asked() {
+    let mut asks = TabTitleAsks::default();
+    asks.note_provider(true);
+    let steady = snap(&[(0, Some("vim"), false), (1, None, false)]);
+    let (_, first) = asks
+        .ask_due(TabTitleMode::Script, false, &steady)
+        .expect("the first pass asks the unseen tabs");
+    assert_eq!(first.len(), 2, "both tabs are new exactly once");
+    assert!(
+        asks.ask_due(TabTitleMode::Script, false, &steady).is_none(),
+        "unchanged material re-asks nobody"
+    );
+}
+
+#[test]
+fn a_changed_tab_a_flip_and_a_spawn_each_ask_exactly_their_tabs() {
+    let mut asks = TabTitleAsks::default();
+    asks.note_provider(true);
+    let steady = snap(&[(0, Some("vim"), false), (1, Some("zsh"), false)]);
+    let _ = asks
+        .ask_due(TabTitleMode::Script, false, &steady)
+        .expect("seed the seen set");
+    // A change on one tab asks exactly that tab, its raw report in
+    // the ctx — and an unset report crosses as the empty string.
+    let moved = snap(&[(0, Some("vim"), false), (1, Some("fish"), true)]);
+    let (_, entries) = asks
+        .ask_due(TabTitleMode::Script, false, &moved)
+        .expect("a changed tab is asked");
+    assert_eq!(
+        entries,
+        vec![TabTitleAsk {
+            tab: 1,
+            title: "fish".to_owned()
+        }]
+    );
+    let cleared = snap(&[(0, None, true), (1, Some("fish"), false)]);
+    let (_, entries) = asks
+        .ask_due(TabTitleMode::Script, false, &cleared)
+        .expect("a cleared report is a change");
+    assert_eq!(
+        entries,
+        vec![TabTitleAsk {
+            tab: 0,
+            title: String::new()
+        }],
+        "an unset report crosses as the empty string (assumption 2)"
+    );
+    // A mode flip re-asks every tab, batched in one dispatch.
+    let (_, entries) = asks
+        .ask_due(TabTitleMode::Script, true, &steady)
+        .expect("a flip re-asks all tabs");
+    assert_eq!(entries.len(), 2, "one dispatch carries every tab");
+    // A spawn asks the new tab alone.
+    let grown = snap(&[
+        (0, Some("vim"), false),
+        (1, Some("zsh"), false),
+        (2, None, false),
+    ]);
+    let (_, entries) = asks
+        .ask_due(TabTitleMode::Script, false, &grown)
+        .expect("a new tab is asked");
+    assert_eq!(
+        entries,
+        vec![TabTitleAsk {
+            tab: 2,
+            title: String::new()
+        }]
+    );
+}
+
+#[test]
+fn a_stale_or_superseded_reply_drops_whole_and_a_matched_one_lands() {
+    let mut asks = TabTitleAsks::default();
+    asks.note_provider(true);
+    let due = snap(&[(4, Some("vim"), true)]);
+    let (token, _) = asks
+        .ask_due(TabTitleMode::Script, false, &due)
+        .expect("the dispatch");
+    let answer = vec![TabTitleValue {
+        tab: 4,
+        title: Some("dev box".to_owned()),
+    }];
+    assert!(
+        asks.apply_reply(token + 1, false, answer.clone()).is_none(),
+        "a superseded token drops whole — priors kept"
+    );
+    assert!(
+        asks.apply_reply(token, true, answer.clone()).is_none(),
+        "a stale reply drops whole — priors kept"
+    );
+    assert_eq!(
+        asks.apply_reply(token, false, answer.clone()),
+        Some(answer),
+        "the matched reply passes to the caller to land"
+    );
+}
+
 #[test]
 fn numbered_mode_ignores_reports_and_parks_at_the_number() {
     // Guake `use-vte-titles=false`: the title never moves after

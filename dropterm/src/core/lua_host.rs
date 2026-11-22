@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 use notify::Watcher as _;
 
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
+use crate::core::tabs::{TabTitleAsk, TabTitleValue};
 use mlua::{
     Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, VmState,
 };
@@ -132,6 +133,20 @@ pub enum HostCommand {
         /// table every handler receives.
         ctx: serde_json::Value,
     },
+    /// Ask the tab-title provider for every entry, one interpreter
+    /// trip (tab-titles spec). The reply lands as
+    /// [`HostEvent::TabTitles`] matched by token; a tab the provider
+    /// raised on omits from the reply — the asking tab keeps its
+    /// prior title — and a trip past the soft bound replies stale,
+    /// dropped whole at the drain.
+    QueryTabTitles {
+        /// The drain-side match key; the reply carries it back.
+        token: u64,
+        /// The due tabs: each entry's id and raw OSC 0/2 report (the
+        /// empty string when unset) — the `{ tab, title }` ctx the
+        /// provider derives from.
+        tabs: Vec<TabTitleAsk>,
+    },
 }
 
 /// One observation out of the host thread. v1 carried only the log;
@@ -166,6 +181,24 @@ pub enum HostEvent {
     /// every registry change, tab-titles and script-commands
     /// extending the same arm.
     RegistrySync { segments: Vec<String> },
+    /// Every due tab's answers to one [`HostCommand::QueryTabTitles`],
+    /// matched by token (tab-titles spec): `Some` is the provider's
+    /// title — the empty string honored verbatim, spec OQ-1's pin —
+    /// `None` a nil, the default-title fallback. A tab the provider
+    /// raised on is absent (its prior title keeps rendering), a
+    /// raising trip costs one line, and `stale` marks a trip that
+    /// outlived the soft bound — the drain drops the whole reply.
+    TabTitles {
+        token: u64,
+        stale: bool,
+        values: Vec<TabTitleValue>,
+    },
+    /// The tab-title provider seat's truth at every load/reload
+    /// (tab-titles spec) — [`RegistrySync`]'s shape instantiated for
+    /// one provider: `true` when a `dropterm.tab_title` handler
+    /// stands, `false` after a reload into none (the asking side
+    /// keeps its prior titles across the gap and stops asking).
+    TabTitleProvider { present: bool },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate
@@ -442,6 +475,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             load_scripts(
                 &generation.lua,
                 &generation.segments,
+                &generation.tab_title,
                 plugins_dir,
                 events,
                 &frame,
@@ -467,6 +501,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         load_scripts(
                             &generation.lua,
                             &generation.segments,
+                            &generation.tab_title,
                             plugins_dir,
                             events,
                             &frame,
@@ -495,6 +530,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         load_scripts(
                             &generation.lua,
                             &generation.segments,
+                            &generation.tab_title,
                             plugins_dir,
                             events,
                             &frame,
@@ -505,6 +541,26 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         }
                     }
                     query_segments(&generation, token, &ctx, events, &frame);
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                }
+                HostCommand::QueryTabTitles { token, tabs } => {
+                    if !scanned {
+                        load_scripts(
+                            &generation.lua,
+                            &generation.segments,
+                            &generation.tab_title,
+                            plugins_dir,
+                            events,
+                            &frame,
+                        );
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    }
+                    query_tab_titles(&generation, token, &tabs, events, &frame);
                     if frame.hard_tripped.get() {
                         break;
                     }
@@ -525,7 +581,10 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                                 held = Some(emit);
                                 break;
                             }
-                            Ok(query @ HostCommand::QuerySegments { .. }) => {
+                            Ok(
+                                query @ (HostCommand::QuerySegments { .. }
+                                | HostCommand::QueryTabTitles { .. }),
+                            ) => {
                                 held = Some(query);
                                 break;
                             }
@@ -546,6 +605,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     load_scripts(
                         &generation.lua,
                         &generation.segments,
+                        &generation.tab_title,
                         plugins_dir,
                         events,
                         &frame,
@@ -614,14 +674,16 @@ impl TimeoutFrame {
 }
 
 /// One interpreter generation: the `Lua` instance plus its port's
-/// two registries — the event-bus table behind `dropterm.on`/`emit`
-/// and the segment registry behind `dropterm.status_segment`.
+/// registries — the event-bus table behind `dropterm.on`/`emit`, the
+/// segment registry behind `dropterm.status_segment`, and the
+/// tab-title provider seat behind `dropterm.tab_title`.
 /// Generation 1 is born at spawn; every later one is a hard-cap
 /// recreate — fresh state, no registrations (spec assumption 7).
 struct Generation {
     lua: Lua,
     registry: Table,
     segments: Table,
+    tab_title: Table,
 }
 
 impl Generation {
@@ -636,7 +698,7 @@ impl Generation {
         // sandbox claimed anywhere — the docs state it plainly.
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
-        let (registry, segments) = match install_port(&lua, events, frame) {
+        let (registry, segments, tab_title) = match install_port(&lua, events, frame) {
             Ok(registries) => registries,
             Err(err) => {
                 log(
@@ -657,6 +719,7 @@ impl Generation {
             lua,
             registry,
             segments,
+            tab_title,
         })
     }
 }
@@ -716,15 +779,16 @@ fn install_bounds(
 /// Install the `dropterm` port into the interpreter: the registry
 /// table behind `dropterm.on`/`dropterm.emit` (`WezTerm`'s
 /// registry-table design), the segment registry behind
-/// `dropterm.status_segment` (status-segments spec), the module
-/// served to `require('dropterm')` through `package.loaded` (the
-/// stdlib's own module cache — no require-path widening), and the
-/// `print` forwarder. Returns both registries for host-side use.
+/// `dropterm.status_segment` (status-segments spec), the tab-title
+/// provider seat behind `dropterm.tab_title` (tab-titles spec), the
+/// module served to `require('dropterm')` through `package.loaded`
+/// (the stdlib's own module cache — no require-path widening), and
+/// the `print` forwarder. Returns the registries for host-side use.
 fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
-) -> mlua::Result<(Table, Table)> {
+) -> mlua::Result<(Table, Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
@@ -780,16 +844,39 @@ fn install_port(
         Ok(())
     })?;
 
+    // The tab-title provider seat: one handler, the last
+    // registration wins (tab-titles spec) — titles are stable
+    // keybind-independent identity, so a silent replacement would
+    // read as breakage; the seat spends one line on each observable
+    // step, the replacement named as such.
+    let tab_title_seat = lua.create_table()?;
+    let seat_for_register = tab_title_seat.clone();
+    let seat_events = events.clone();
+    let tab_title = lua.create_function(move |_lua, handler: Function| {
+        let replaced = seat_for_register.get::<Option<Function>>(1)?.is_some();
+        seat_for_register.set(1, handler)?;
+        log(
+            &seat_events,
+            if replaced {
+                "the tab title provider was replaced"
+            } else {
+                "a tab title provider registered"
+            },
+        );
+        Ok(())
+    })?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
     module.set("status_segment", status_segment)?;
+    module.set("tab_title", tab_title)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
 
     install_print(lua, events)?;
-    Ok((registry, segment_table))
+    Ok((registry, segment_table, tab_title_seat))
 }
 
 /// Deliver one event to every handler registered under it, on this
@@ -886,10 +973,12 @@ fn display_value(lua: &Lua, value: Value) -> String {
 /// with the recreated interpreter's deferred reload. Every completed
 /// pass — a reload into an empty dir included — ends with the
 /// registry-sync report (status-segments spec): the live id set is
-/// the asking surface's source of truth.
+/// the asking surface's source of truth, and the tab-title seat's
+/// own report rides beside it (tab-titles spec).
 fn load_scripts(
     lua: &Lua,
     segments: &Table,
+    tab_title: &Table,
     dir: &Path,
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
@@ -898,11 +987,13 @@ fn load_scripts(
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             sync_registry(segments, events);
+            sync_tab_title_provider(tab_title, events);
             return;
         }
         Err(err) => {
             log(events, format!("cannot read {}: {err}", dir.display()));
             sync_registry(segments, events);
+            sync_tab_title_provider(tab_title, events);
             return;
         }
     };
@@ -939,6 +1030,7 @@ fn load_scripts(
         }
     }
     sync_registry(segments, events);
+    sync_tab_title_provider(tab_title, events);
 }
 
 /// Report the live segment registry — the id set in registration
@@ -960,6 +1052,83 @@ fn sync_registry(segments: &Table, events: &Sender<HostEvent>) {
         }
     }
     let _ = events.send(HostEvent::RegistrySync { segments: ids });
+}
+
+/// Read the tab-title provider off the seat — `None` when no
+/// registration stands (or the seat will not read, which costs one
+/// line and reads the same: nobody to call).
+fn read_provider(seat: &Table, events: &Sender<HostEvent>) -> Option<Function> {
+    match seat.get::<Option<Function>>(1) {
+        Ok(provider) => provider,
+        Err(err) => {
+            log(events, format!("the tab title seat would not read: {err}"));
+            None
+        }
+    }
+}
+
+/// Report the tab-title seat's truth at every load/reload
+/// (tab-titles spec): present when a `dropterm.tab_title` handler
+/// stands, absent after a reload into none — the asking side's gate.
+fn sync_tab_title_provider(seat: &Table, events: &Sender<HostEvent>) {
+    let present = read_provider(seat, events).is_some();
+    let _ = events.send(HostEvent::TabTitleProvider { present });
+}
+
+/// Call the tab-title provider once per ask entry in one interpreter
+/// trip (tab-titles spec), the soft/hard bounds over the trip whole.
+/// A string answer lands verbatim — the empty string included (spec
+/// OQ-1's pin) — a nil lands as the default-title fallback, and a
+/// tab the provider raised on omits from the reply so the asking
+/// side keeps its prior title; the first raise of a trip spends the
+/// one line, the siblings stay quiet (one verdict per trip, not one
+/// per tab). No provider registered sends no reply at all. Past the
+/// soft bound the reply is flagged stale — the drain drops it whole;
+/// a hard-cap abort sends no reply.
+fn query_tab_titles(
+    generation: &Generation,
+    token: u64,
+    tabs: &[TabTitleAsk],
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) {
+    let Some(provider) = read_provider(&generation.tab_title, events) else {
+        return;
+    };
+    frame.begin(true, format_args!("the tab title query"));
+    let mut values = Vec::new();
+    let mut raise_logged = false;
+    for ask in tabs {
+        let ctx = serde_json::json!({ "tab": ask.tab, "title": ask.title });
+        let Ok(value) = generation.lua.to_value(&ctx) else {
+            // Unreachable for JSON payloads; honest if it ever fires:
+            // the tab omits, its prior title keeps.
+            continue;
+        };
+        match provider.call::<Option<String>>(value) {
+            Ok(title) => values.push(TabTitleValue {
+                tab: ask.tab,
+                title,
+            }),
+            Err(err) => {
+                if frame.hard_tripped.get() {
+                    // The hook logged the reload line; the abort
+                    // unwinds — no reply, the tabs keep their priors.
+                    return;
+                }
+                if !raise_logged {
+                    log(events, format!("the tab title provider raised: {err}"));
+                    raise_logged = true;
+                }
+            }
+        }
+    }
+    let stale = frame.started.get().elapsed() >= SOFT_BOUND;
+    let _ = events.send(HostEvent::TabTitles {
+        token,
+        stale,
+        values,
+    });
 }
 
 /// Evaluate every registered segment handler once (status-segments
@@ -2340,6 +2509,329 @@ mod tests {
                 "zoom_step_mul_100": 0,
                 "missed_activity": false,
             })
+        );
+    }
+
+    // --- script tab titles (tab-titles spec, task TT2) ---
+
+    /// Send one tab-title ask under `token`.
+    fn ask_titles(host: &LuaHost, token: u64, tabs: &[(u32, &str)]) {
+        host.send(HostCommand::QueryTabTitles {
+            token,
+            tabs: tabs
+                .iter()
+                .map(|&(tab, title)| TabTitleAsk {
+                    tab,
+                    title: title.to_owned(),
+                })
+                .collect(),
+        });
+    }
+
+    #[test]
+    fn a_tab_title_provider_registers_syncs_and_answers_a_batch() {
+        let dir = TempDir::new("tabtitle");
+        script(
+            &dir,
+            "titles.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function(p)\n\
+                   return 'tab ' .. p.tab .. ': ' .. p.title\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        ask_titles(&host, 3, &[(0, "vim"), (1, "")]);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 3, .. }),
+            LONG_WAIT,
+        );
+        // The load reports the provider seat — SG1's registry-sync
+        // shape instantiated for one provider.
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, HostEvent::TabTitleProvider { present: true })),
+            "the load must report a present provider: {events:?}"
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::TabTitles {
+                    token: 3,
+                    stale,
+                    values,
+                } => Some((*stale, values.clone())),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert!(!values.0, "a swift trip replies fresh: {events:?}");
+        assert_eq!(
+            values.1,
+            vec![
+                TabTitleValue {
+                    tab: 0,
+                    title: Some("tab 0: vim".to_owned()),
+                },
+                TabTitleValue {
+                    tab: 1,
+                    title: Some("tab 1: ".to_owned()),
+                },
+            ],
+            "one trip answers every entry, matched by tab, the ctx crossed: {events:?}"
+        );
+    }
+
+    #[test]
+    fn nil_answers_default_empty_strings_honor_verbatim_and_raises_omit() {
+        let dir = TempDir::new("tabtitle-answers");
+        script(
+            &dir,
+            "answers.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function(p)\n\
+                   if p.tab == 0 then return nil end\n\
+                   if p.tab == 1 then return '' end\n\
+                   if p.tab == 2 then return 'named' end\n\
+                   error('kaboom')\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        ask_titles(&host, 1, &[(0, "a"), (1, "b"), (2, "c"), (3, "d")]);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 1, .. }),
+            LONG_WAIT,
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::TabTitles {
+                    token: 1, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert_eq!(
+            values,
+            vec![
+                TabTitleValue {
+                    tab: 0,
+                    title: None,
+                },
+                TabTitleValue {
+                    tab: 1,
+                    title: Some(String::new()),
+                },
+                TabTitleValue {
+                    tab: 2,
+                    title: Some("named".to_owned()),
+                },
+            ],
+            "nil maps to None, the empty string honors verbatim, the raising tab omits: {events:?}"
+        );
+        // The raise costs exactly one line for the whole trip — not
+        // one per tab.
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("raised") && line.contains("tab title"))
+                .count(),
+            1,
+            "the raising provider costs exactly one line per trip: {lines:?}"
+        );
+        // The host answers again after the raise.
+        ask_titles(&host, 2, &[(2, "c")]);
+        let second = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 2, .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            second.iter().any(|event| matches!(
+                event,
+                HostEvent::TabTitles { values, .. }
+                    if values == &[TabTitleValue {
+                        tab: 2,
+                        title: Some("named".to_owned()),
+                    }]
+            )),
+            "the host still answers after the raise: {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_later_tab_title_registration_replaces_with_one_line() {
+        let dir = TempDir::new("tabtitle-replace");
+        script(
+            &dir,
+            "seat.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function() return 'first' end)\n\
+                 d.tab_title(function() return 'second' end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        ask_titles(&host, 1, &[(0, "x")]);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 1, .. }),
+            LONG_WAIT,
+        );
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("tab title provider"))
+                .count(),
+            2,
+            "the first registration and the replacement each spend one line: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("replaced"))
+                .count(),
+            1,
+            "the replacement is named as such: {lines:?}"
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::TabTitles {
+                    token: 1, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert_eq!(
+            values,
+            vec![TabTitleValue {
+                tab: 0,
+                title: Some("second".to_owned()),
+            }],
+            "the last registration wins: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_reload_clears_the_provider_seat_and_reregistration_resumes() {
+        let dir = TempDir::new("tabtitle-reload");
+        script(
+            &dir,
+            "titles.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function() return 'v1' end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        ask_titles(&host, 1, &[(0, "x")]);
+        let first = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 1, .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            first
+                .iter()
+                .any(|event| matches!(event, HostEvent::TabTitleProvider { present: true })),
+            "the first load reports the provider: {first:?}"
+        );
+        // The edit drops the registration whole: a reload into a
+        // script with no provider clears the seat — the empty
+        // report included, exactly the registry-sync rule.
+        script(&dir, "titles.lua", &format!("{PORT}\nprint('no provider')"));
+        host.send(HostCommand::Reload);
+        let reloaded = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitleProvider { present: false }),
+            LONG_WAIT,
+        );
+        assert!(
+            reloaded
+                .iter()
+                .any(|event| matches!(event, HostEvent::TabTitleProvider { present: false })),
+            "the reload reports the cleared seat: {reloaded:?}"
+        );
+        // Re-registration (the script's next run) resumes service.
+        script(
+            &dir,
+            "titles.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function() return 'v2' end)"
+            ),
+        );
+        host.send(HostCommand::Reload);
+        let second = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitleProvider { present: true }),
+            LONG_WAIT,
+        );
+        assert!(
+            second
+                .iter()
+                .any(|event| matches!(event, HostEvent::TabTitleProvider { present: true })),
+            "the re-registered provider reports present: {second:?}"
+        );
+        ask_titles(&host, 2, &[(0, "x")]);
+        let third = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 2, .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            third.iter().any(|event| matches!(
+                event,
+                HostEvent::TabTitles { values, .. }
+                    if values == &[TabTitleValue {
+                        tab: 0,
+                        title: Some("v2".to_owned()),
+                    }]
+            )),
+            "the re-registered provider answers: {third:?}"
+        );
+    }
+
+    #[test]
+    fn a_query_without_a_provider_sends_no_reply() {
+        let dir = TempDir::new("tabtitle-absent");
+        script(
+            &dir,
+            "plain.lua",
+            &format!("{PORT}\nprint('no provider here')"),
+        );
+        let host = LuaHost::new(&dir.0);
+        ask_titles(&host, 1, &[(0, "x")]);
+        let all = events_until_quiet(&host);
+        assert!(
+            !all.iter()
+                .any(|event| matches!(event, HostEvent::TabTitles { .. })),
+            "no provider, no reply — the asking side keeps its priors: {all:?}"
+        );
+        assert!(
+            !all.iter()
+                .any(|event| matches!(event, HostEvent::TabTitleProvider { present: true })),
+            "the sync reports the seat honestly absent: {all:?}"
         );
     }
 }

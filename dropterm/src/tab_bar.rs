@@ -387,6 +387,30 @@ impl TabList {
         true
     }
 
+    /// Lands one script answer on the tab with `id` — the title
+    /// drain's write path (tab-titles spec): the field takes the
+    /// answer (`None` a nil, the default-title fallback; a string
+    /// verbatim, the empty one included) and the display title
+    /// re-resolves under the live mode, returning whether the title
+    /// moved. The user rename above it is untouched in every mode,
+    /// and an unknown id lands nothing.
+    pub(crate) fn note_script_title(
+        &mut self,
+        id: TabId,
+        title: Option<String>,
+        mode: TabTitleMode,
+    ) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return false;
+        };
+        if tab.script_title == title {
+            return false;
+        }
+        tab.script_title = title;
+        tab.title = resolve_record_title(tab, mode);
+        true
+    }
+
     /// Re-resolves every tab's display title under `mode` — a live
     /// mode flip re-titles the whole row immediately, from the stored
     /// inputs.

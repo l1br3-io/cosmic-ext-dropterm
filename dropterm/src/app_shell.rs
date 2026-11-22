@@ -520,6 +520,12 @@ pub(crate) struct Shell {
     /// by construction with no plugins dir (the host never spawns,
     /// the registry never reports, the band stays today's).
     status_scripts: status::ScriptSegmentsState,
+    /// The tab-title asks' live state (tab-titles spec): the provider
+    /// gate, the seen-id spawn detection, the outbound token, and the
+    /// boot arm — `sync_tab_titles` asks through it and the tick's
+    /// drain lands replies through it. Idle by construction with no
+    /// plugins dir (no provider ever reports, no ask ever fires).
+    tab_titles: dropterm::core::tabs::TabTitleAsks,
     /// The completions table's shared load (gpui-parity Task 1): the
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
@@ -806,6 +812,15 @@ impl Shell {
                     state.arm_boot_query();
                 }
                 state
+            },
+            // The tab-title boot ask rides the same dir gate (the
+            // standing-dir wake, TT2's shape of SG1's boot query).
+            tab_titles: {
+                let mut asks = dropterm::core::tabs::TabTitleAsks::default();
+                if lua_host.plugins_dir().exists() {
+                    asks.arm_boot_ask();
+                }
+                asks
             },
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
@@ -3569,14 +3584,21 @@ impl Shell {
     /// One title sync (the tick's apply point): re-title every tab
     /// through core under the live mode — the mode-flip detector
     /// first, then each pane's polled OSC 0/2 report and cwd read.
+    /// In Script mode the same pass gathers the ask material (each
+    /// tab's latched report and whether it moved) and sends one
+    /// batched query through the Lua host — change-gated, never a
+    /// per-tick ask, and nobody asked with no provider known
+    /// (tab-titles spec).
     fn sync_tab_titles(&mut self, cx: &mut Context<Self>) {
         let mode = self.config.tab_title_mode;
-        if mode != self.applied_title_mode {
+        let flipped = mode != self.applied_title_mode;
+        if flipped {
             println!("dropterm: tab title mode -> {mode} (re-titling live tabs)");
             self.tabs.refresh_titles(mode);
             self.applied_title_mode = mode;
         }
         let ids: Vec<TabId> = self.tabs.records().iter().map(|tab| tab.id).collect();
+        let mut titles_moved: Vec<TabId> = Vec::new();
         for id in ids {
             let Some(pane) = self.panes.get(&id) else {
                 continue;
@@ -3585,11 +3607,47 @@ impl Shell {
                 let pane = pane.read(cx);
                 (pane.shell_title(), pane.working_directory())
             };
+            // The ask gate's title-move signal: whether the poll moved
+            // the latched report — a cwd-only move re-resolves the
+            // title but re-asks nobody (the ctx carries no cwd).
+            let stored = self
+                .tabs
+                .records()
+                .iter()
+                .find(|tab| tab.id == id)
+                .and_then(|tab| tab.shell_title.clone());
             if self.tabs.sync_title(id, report, cwd, mode)
                 && let Some(tab) = self.tabs.records().iter().find(|tab| tab.id == id)
             {
                 println!("dropterm: tab {id:?} retitled -> {}", tab.title);
             }
+            let latched = self
+                .tabs
+                .records()
+                .iter()
+                .find(|tab| tab.id == id)
+                .and_then(|tab| tab.shell_title.clone());
+            if latched != stored {
+                titles_moved.push(id);
+            }
+        }
+        // The ask material: every record's latched report — pane or
+        // none, the record is the truth — with the poll's move flags.
+        let ask_rows: Vec<(TabId, Option<String>, bool)> = self
+            .tabs
+            .records()
+            .iter()
+            .map(|tab| {
+                (
+                    tab.id,
+                    tab.shell_title.clone(),
+                    titles_moved.contains(&tab.id),
+                )
+            })
+            .collect();
+        if let Some((token, tabs)) = self.tab_titles.ask_due(mode, flipped, &ask_rows) {
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::QueryTabTitles { token, tabs });
         }
     }
 
@@ -4475,6 +4533,34 @@ impl Shell {
                 } => {
                     self.status_scripts.apply_reply(token, stale, values);
                     cx.notify();
+                }
+                dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
+                    self.tab_titles.note_provider(present);
+                }
+                dropterm::core::lua_host::HostEvent::TabTitles {
+                    token,
+                    stale,
+                    values,
+                } => {
+                    // The stale ladder's landing step: a matched reply
+                    // writes each tab's script answer (None = the
+                    // default-title fallback) and re-resolves under
+                    // the live mode — the rename above it untouched;
+                    // a stale or superseded reply dropped whole
+                    // upstream keeps every prior.
+                    if let Some(values) = self.tab_titles.apply_reply(token, stale, values) {
+                        let mode = self.config.tab_title_mode;
+                        for value in values {
+                            let id = dropterm::core::tabs::TabId(value.tab);
+                            if self.tabs.note_script_title(id, value.title, mode)
+                                && let Some(tab) =
+                                    self.tabs.records().iter().find(|tab| tab.id == id)
+                            {
+                                println!("dropterm: tab {id:?} script title -> {}", tab.title);
+                            }
+                        }
+                        cx.notify();
+                    }
                 }
             }
         }
@@ -8365,6 +8451,111 @@ mod tests {
                 text: Some("cwd:/home/u/src".to_owned()),
             }],
             "a real reply must land in the band state through the drain and the refresh overlay"
+        );
+    }
+
+    #[gpui::test]
+    fn the_tab_title_round_trip_lands_script_answers_on_the_records(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("tabtitles");
+        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        // The spec's own success criterion as the fixture: an OSC
+        // title shows through, an empty one reads 'shell'.
+        std::fs::write(
+            dir.0.join("plugins").join("titles.lua"),
+            "local d = require('dropterm')\n\
+             d.tab_title(function(p)\n\
+               return (p.title ~= '' and p.title) or 'shell'\n\
+             end)",
+        )
+        .expect("fixture script");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // Two tab records (the paneless floor carries no panes; the
+        // records and the drain are the session's own), one carrying
+        // an OSC report landed through the poll's own write path
+        // while still in Shell mode — no asks fire there.
+        let (first, second) = cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                let first = shell.tabs.spawn(false);
+                let second = shell.tabs.spawn(false);
+                assert!(shell.tabs.sync_title(
+                    second,
+                    Some("vim main.rs".to_owned()),
+                    None,
+                    TabTitleMode::Shell
+                ));
+                (first, second)
+            })
+        });
+        // The flip into Script — the same transition a config echo
+        // drives — re-titles under the new arm and sends one batched
+        // ask covering both tabs: the host's first work item, whose
+        // load delivers the provider sync and the reply.
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.config.tab_title_mode = TabTitleMode::Script;
+                Shell::sync_tab_titles(shell, cx);
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let answered = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    let title_of = |id: TabId| {
+                        shell
+                            .tabs
+                            .records()
+                            .iter()
+                            .find(|tab| tab.id == id)
+                            .map(|tab| tab.title.clone())
+                    };
+                    title_of(first).as_deref() == Some("shell")
+                        && title_of(second).as_deref() == Some("vim main.rs")
+                })
+            });
+            if answered || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let title_of = |id: TabId| {
+            cx.update(|cx| {
+                shell
+                    .read(cx)
+                    .tabs
+                    .records()
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| (tab.title.clone(), tab.script_title.clone()))
+            })
+        };
+        assert_eq!(
+            title_of(first),
+            Some(("shell".to_owned(), Some("shell".to_owned()))),
+            "the reportless tab renders the provider's fallback, its answer latched"
+        );
+        assert_eq!(
+            title_of(second),
+            Some(("vim main.rs".to_owned(), Some("vim main.rs".to_owned()))),
+            "the OSC title shows through the provider, its answer latched"
+        );
+        // The rename stays authoritative against the landed answers:
+        // a commit after the answers keeps winning (core-pinned in
+        // the unit suite; here the live write path agrees).
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert!(
+                    shell
+                        .tabs
+                        .commit_rename(first, "work", TabTitleMode::Script)
+                );
+            });
+        });
+        assert_eq!(
+            title_of(first).map(|(title, _)| title),
+            Some("work".to_owned()),
+            "a manual rename after an answer still wins"
         );
     }
 
