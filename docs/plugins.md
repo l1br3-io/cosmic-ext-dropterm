@@ -4,11 +4,13 @@ DropTerm runs your own Lua 5.4 scripts from the config dir's `plugins/`
 subdirectory (`~/.config/io.github.l1br3_io.dropterm/plugins/` on an
 installed build; the dev identity uses its own dir): one `.lua` file per
 script, flat - subdirectories and other extensions are ignored. Scripts
-load lazily: nothing Lua happens at boot, and the host thread spawns on
-the first work item. In this build the only wake is the plugins dir
-itself - editing a script or dropping one in wakes the host, which scans
-and loads everything it finds, in filename order, so registrations across
-scripts are deterministic.
+load lazily: the host thread spawns on the first work item, and with no
+`plugins/` dir nothing Lua ever happens. Two things wake the host: the
+status band's boot query - one query within the first second when the
+dir stood at launch, so [script segments](status-segments.md) render
+without a touch - and the dir itself: editing a script or dropping one
+in wakes the host, which scans and loads everything it finds, in
+filename order, so registrations across scripts are deterministic.
 
 The dir is watched from launch: create it (and put your scripts in it)
 before launching, or restart after creating it - a dir that appears
@@ -72,10 +74,11 @@ leaves the host idle and quiet.
 
 ## What is not here yet
 
-The scriptable surfaces - status bar segments, tab titles, registered
-commands, terminal lifecycle events - arrive with their own modules, each
-with its own doc page. In this build the bus is exercised by the scripts
-themselves (`emit` between scripts) and by the loader; no terminal event
-reaches Lua yet, and the stale-degrade line only shows under a real
-dispatch, so a hanging script's live symptom today is the hard-cap reload
-line.
+The first scriptable surface is here: status bar segments
+(`dropterm.status_segment`) render in the band - [their own
+page](status-segments.md) covers the handler contract, the ctx table,
+the refresh triggers, and the ordering key. Tab titles, registered
+commands, and terminal lifecycle events arrive with their own modules,
+each with its own doc page. Until then the bus is exercised by the
+scripts themselves (`emit` between scripts), by the loader, and by the
+segment queries; no terminal event reaches Lua yet.

@@ -85,13 +85,14 @@ The details live in the `docs/` directory:
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
 - [The D-Bus contract](docs/dbus.md) - the V1 surface for integrators: the address, both interfaces' members, the CLI verbs' wire encoding, and the stability promise
-- [Configuration](docs/configuration.md) - all 52 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 53 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
 - [Theming](docs/theming.md) - the Application theme pin, the 12 built-in color schemes, and your own scheme files under `~/.config/io.github.l1br3_io.dropterm/themes/`
 - [Plugins](docs/plugins.md) - your own Lua 5.4 scripts under `~/.config/io.github.l1br3_io.dropterm/plugins/`: the `dropterm.on`/`emit` event bus, hot reload, timeouts, and the full-trust model stated plainly
+- [Script status segments](docs/status-segments.md) - plugins' own band segments: `dropterm.status_segment`, the ctx table it receives, the refresh triggers, and the `status_script_segments` ordering key
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
