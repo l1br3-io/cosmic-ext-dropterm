@@ -284,6 +284,14 @@ impl CustomActionValue {
             .ok()
             .map(|SpawnAction::Spawn(command)| command)
     }
+
+    /// Whether this value is the store's `Disable` — an entry the
+    /// keyboard page's conflict rule does not count as a holder
+    /// (`config_contains` filters it), so the marker may commit over
+    /// one exactly as COSMIC's own replace would.
+    pub fn is_disable(&self) -> bool {
+        self.0.into_rust::<DisableAction>().is_ok()
+    }
 }
 
 /// The `custom` file's parsed map.
@@ -582,6 +590,150 @@ pub fn captured_chord(modifiers: Modifiers, key: &str) -> CapturedChord {
             description: None,
         }),
         None => CapturedChord::Unresolvable,
+    }
+}
+
+/// The `Disable` shape [`CustomActionValue::is_disable`] probes an
+/// opaque value against.
+#[derive(Deserialize)]
+enum DisableAction {
+    Disable,
+}
+
+/// The effective shortcut map: the system defaults overridden by the
+/// user's custom entries.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct EffectiveShortcuts(pub HashMap<Binding, CustomActionValue>);
+
+/// The effective map over the two files — defaults extended by
+/// custom, custom winning at equal bindings (the keyboard pages' own
+/// `shortcuts_system_config` merge). Pure; the verdict's input.
+pub fn effective_shortcuts(
+    defaults: &CustomShortcuts,
+    custom: &CustomShortcuts,
+) -> EffectiveShortcuts {
+    let mut effective = defaults.0.clone();
+    effective.extend(
+        custom
+            .0
+            .iter()
+            .map(|(binding, value)| (binding.clone(), value.clone())),
+    );
+    EffectiveShortcuts(effective)
+}
+
+/// What committing a captured chord would do over the effective map —
+/// the keyboard page's own conflict rule, refused instead of replaced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureVerdict {
+    /// Free: the commit planner may add the marker here.
+    Commit,
+    /// The chord is the writer's own marker already: nothing writes.
+    Own,
+    /// Another effective entry — a foreign custom, a system default —
+    /// holds the chord: nothing writes, and the holder is named (its
+    /// description, else its chord, the replace dialog's own label
+    /// rule).
+    Conflict(String),
+    /// Not a settable binding — a bare modifier (bare Super aside) or
+    /// an unmodified key from COSMIC's forbidden set: nothing writes.
+    Unsupported,
+}
+
+/// COSMIC's forbidden unmodified keysyms
+/// (`is_forbidden_unmodified_keysym`, pinned keysym ranges): the
+/// printable text keys, the tab/return family, and the lock and
+/// group-switch keys a bare press must not steal — plus the national
+/// layout ranges.
+fn is_forbidden_unmodified_keysym(key: Keysym) -> bool {
+    let raw = key.raw();
+    matches!(raw,
+        0x0041..=0x005a   // A-Z
+        | 0x0061..=0x007a // a-z
+        | 0x0030..=0x0039 // 0-9
+        | 0x0020          // Space
+        | 0xff09          // Tab
+        | 0xfe20          // ISO_Left_Tab
+        | 0xff89          // KP_Tab
+        | 0xff0d          // Return
+        | 0xff8d          // KP_Enter
+        | 0xff7e          // Mode_switch
+        | 0xff14          // Scroll_Lock
+        | 0xff15          // Sys_Req
+        | 0xff20          // Multi_key (Compose)
+        | 0xff7f          // Num_Lock
+        | 0xffe5          // Caps_Lock
+        | 0xfe01          // ISO_Lock
+        | 0xfe08 | 0xfe0a | 0xfe0c | 0xfe0e // ISO group switches
+        | 0xfed0..=0xfed2 // First/Prev/Next_Virtual_Screen
+        | 0xfed4          // Last_Virtual_Screen
+        | 0xfed5          // Terminate_Server
+        | 0xfe7a          // AudibleBell_Enable
+        | 0x04a1..=0x04df // Kana
+        | 0x05ac..=0x05f2 // Arabic
+        | 0x06a1..=0x06ff // Cyrillic
+        | 0x07a1..=0x07f9 // Greek
+        | 0x0cdf..=0x0cfa // Hebrew
+        | 0x0da1..=0x0df9 // Thai
+        | 0x0ea1..=0x0efa // Hangul
+    )
+}
+
+/// Whether this entry is the writer's own marker — the
+/// [`MARKER_DESCRIPTION`]-described toggle spawn of `exe_stem`. A
+/// hand-made own-stem entry beside it stays foreign (never touched;
+/// Open Question 2's default).
+pub fn is_marker(binding: &Binding, value: &CustomActionValue, exe_stem: &str) -> bool {
+    binding.description.as_deref() == Some(MARKER_DESCRIPTION)
+        && value
+            .spawn_command()
+            .is_some_and(|command| is_toggle_spawn(&command, exe_stem))
+}
+
+/// The capture verdict for `binding` over the effective map (system
+/// defaults overridden by the user's custom entries) — COSMIC
+/// Settings' own conflict rule, refused instead of replaced:
+/// `Commit`; `Conflict(holder)` — nothing written, the inline error
+/// names the holder; `Unsupported` — nothing written.
+pub fn capture_verdict(
+    binding: &Binding,
+    effective: &EffectiveShortcuts,
+    exe_stem: &str,
+) -> CaptureVerdict {
+    // The validity rule, mirroring `Binding::is_set`: a bare modifier
+    // press is not a settable binding; bare Super is.
+    let bare_super = binding.key.is_none()
+        && binding.modifiers.logo
+        && !binding.modifiers.shift
+        && !binding.modifiers.alt
+        && !binding.modifiers.ctrl;
+    if binding.key.is_none() && !bare_super {
+        return CaptureVerdict::Unsupported;
+    }
+    if let Some(key) = binding.key {
+        let has_modifier = binding.modifiers.logo
+            || binding.modifiers.shift
+            || binding.modifiers.alt
+            || binding.modifiers.ctrl;
+        if !has_modifier && is_forbidden_unmodified_keysym(key) {
+            return CaptureVerdict::Unsupported;
+        }
+    }
+    // The conflict rule, mirroring `config_contains`: an effective
+    // entry with a non-`Disable` action holds the chord; a `Disable`
+    // is committable over, and the writer's own marker is `Own`. The
+    // stored key carries the holder's identity (description and all)
+    // — the captured chord is the query, not the label.
+    match effective.0.get_key_value(binding) {
+        Some((stored, value)) if is_marker(stored, value, exe_stem) => CaptureVerdict::Own,
+        Some((stored, value)) if !value.is_disable() => CaptureVerdict::Conflict(
+            stored
+                .description
+                .clone()
+                .unwrap_or_else(|| binding_display(stored)),
+        ),
+        _ => CaptureVerdict::Commit,
     }
 }
 
@@ -926,7 +1078,11 @@ mod tests {
         // from_char route, lowercased like the entries cosmic-settings
         // itself writes (the GU1 fixture's `key: "e"` form).
         assert_eq!(chord_key(Modifiers::new(), "c"), "c");
-        assert_eq!(chord_key(Modifiers::new().shift(), "C"), "c", "gpui's shifted form lands on the same keysym");
+        assert_eq!(
+            chord_key(Modifiers::new().shift(), "C"),
+            "c",
+            "gpui's shifted form lands on the same keysym"
+        );
         // Digits and the printable punctuation the zoom rows use.
         assert_eq!(chord_key(Modifiers::new(), "1"), "1");
         assert_eq!(chord_key(Modifiers::new(), "="), "equal");
@@ -959,10 +1115,247 @@ mod tests {
         }
         // Anything else that resolves to no keysym is refused — an
         // empty name and an unknown word both.
-        assert_eq!(captured_chord(Modifiers::new(), ""), CapturedChord::Unresolvable);
+        assert_eq!(
+            captured_chord(Modifiers::new(), ""),
+            CapturedChord::Unresolvable
+        );
         assert_eq!(
             captured_chord(Modifiers::new(), "not-a-real-key"),
             CapturedChord::Unresolvable
+        );
+    }
+
+    // --- the writer: the verdict over the effective map (W1) ---
+
+    /// A stock system-defaults fixture: the F-keys' honest shape
+    /// (Alt+F4 and Super+F11 only — the stock COSMIC set), no
+    /// descriptions, built-in actions.
+    const STOCK_DEFAULTS: &str = r#"{
+    (
+        modifiers: [
+            Alt,
+        ],
+        key: "F4",
+    ): Close,
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "F11",
+    ): Fullscreen,
+}"#;
+
+    /// A custom entry holding the marker's exact shape at `key` — the
+    /// `Use F12` write's own product, for the Own-verdict pin.
+    fn marker_entry_fixture(key: &str) -> String {
+        format!(
+            r#"{{ (
+        modifiers: [],
+        key: "{key}",
+        description: Some("DropTerm"),
+    ): Spawn("dropterm toggle") }}"#
+        )
+    }
+
+    /// A binding parsed out of a one-entry map — the verdict tests'
+    /// chord builder. The dummy action only satisfies the map's
+    /// shape; the tests read the binding back.
+    fn binding_of(key: &str, modifiers: Modifiers) -> Binding {
+        let text = format!(
+            r#"{{ (modifiers: [{mods}], key: "{key}"): Disable }}"#,
+            mods = ModifiersDef::from(modifiers)
+                .0
+                .iter()
+                .map(|modifier| match modifier {
+                    Modifier::Ctrl => "Ctrl",
+                    Modifier::Alt => "Alt",
+                    Modifier::Shift => "Shift",
+                    Modifier::Super => "Super",
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        parse_custom(&text)
+            .expect("the one-entry map parses")
+            .0
+            .into_iter()
+            .next()
+            .expect("one entry")
+            .0
+    }
+
+    #[test]
+    fn the_merge_overrides_defaults_with_custom_at_equal_bindings() {
+        let defaults = parse_custom(STOCK_DEFAULTS).expect("the stock fixture parses");
+        let custom = parse_custom(
+            r#"{ (modifiers: [Alt], key: "F4", description: Some("DropTerm")): Spawn("dropterm toggle") }"#,
+        )
+        .expect("the marker parses");
+        let effective = effective_shortcuts(&defaults, &custom);
+
+        // The marker's chord wins over the stock default.
+        let f4 = binding_of("F4", Modifiers::new().alt());
+        match effective.0.get(&f4) {
+            Some(value) => assert!(
+                value.spawn_command().is_some(),
+                "custom's spawn overrides the stock Close at Alt+F4"
+            ),
+            None => panic!("the overridden entry vanished"),
+        }
+        // The untouched default stands.
+        let f11 = binding_of("F11", Modifiers::new().logo());
+        assert!(
+            effective.0.contains_key(&f11),
+            "the stock entry without a custom override stands"
+        );
+        assert_eq!(effective.0.len(), 2, "equal bindings collide as one");
+    }
+
+    #[test]
+    fn the_verdict_matrix_over_the_effective_map() {
+        let stock = parse_custom(STOCK_DEFAULTS).expect("the stock fixture parses");
+        let custom = parse_custom(FIXTURE).expect("the fixture parses");
+        let stock_effective = effective_shortcuts(&stock, &CustomShortcuts::default());
+        let custom_effective = effective_shortcuts(&CustomShortcuts::default(), &custom);
+
+        // Free: commit.
+        assert_eq!(
+            capture_verdict(
+                &binding_of("q", Modifiers::new().logo()),
+                &stock_effective,
+                "dropterm"
+            ),
+            CaptureVerdict::Commit
+        );
+        // F12 is commit against the stock defaults — the "Use F12"
+        // button's verdict (research: stock COSMIC leaves F12 free).
+        assert_eq!(
+            capture_verdict(
+                &binding_of("F12", Modifiers::new()),
+                &stock_effective,
+                "dropterm"
+            ),
+            CaptureVerdict::Commit
+        );
+        // A stock default holds Alt+F4; no description, so the holder
+        // names itself by chord.
+        assert_eq!(
+            capture_verdict(
+                &binding_of("F4", Modifiers::new().alt()),
+                &stock_effective,
+                "dropterm"
+            ),
+            CaptureVerdict::Conflict("Alt + F4".to_string())
+        );
+        // A custom entry holds Super+Shift+E; its description names
+        // the holder.
+        assert_eq!(
+            capture_verdict(
+                &binding_of("e", Modifiers::new().logo().shift()),
+                &custom_effective,
+                "dropterm"
+            ),
+            CaptureVerdict::Conflict("dropterm".to_string())
+        );
+        // The writer's own marker is Own — recapturing its chord
+        // writes nothing. F12 keeps the chord settable unmodified
+        // (a bare letter would be Unsupported before the lookup).
+        let own = parse_custom(&marker_entry_fixture("F12")).expect("the marker parses");
+        let own_effective = effective_shortcuts(&CustomShortcuts::default(), &own);
+        assert_eq!(
+            capture_verdict(
+                &binding_of("F12", Modifiers::new()),
+                &own_effective,
+                "dropterm"
+            ),
+            CaptureVerdict::Own
+        );
+        // The same chord under another stem is foreign: conflict.
+        assert_eq!(
+            capture_verdict(
+                &binding_of("F12", Modifiers::new()),
+                &own_effective,
+                "dropterm-dev"
+            ),
+            CaptureVerdict::Conflict("DropTerm".to_string())
+        );
+    }
+
+    #[test]
+    fn unsupported_chords_write_nothing() {
+        let empty = effective_shortcuts(&CustomShortcuts::default(), &CustomShortcuts::default());
+        // COSMIC's forbidden unmodified keysyms: a bare letter, digit,
+        // space, tab, return, caps lock.
+        for key in ["c", "1", "space", "tab", "return", "Caps_Lock"] {
+            assert_eq!(
+                capture_verdict(&binding_of(key, Modifiers::new()), &empty, "dropterm"),
+                CaptureVerdict::Unsupported,
+                "unmodified {key} is forbidden"
+            );
+        }
+        // A bare modifier with no key (not bare Super) is unsettable.
+        assert_eq!(
+            capture_verdict(
+                &binding_of_no_key(Modifiers::new().shift()),
+                &empty,
+                "dropterm"
+            ),
+            CaptureVerdict::Unsupported
+        );
+        // Bare Super is a legal binding: evaluated normally, commit
+        // over an empty map.
+        assert_eq!(
+            capture_verdict(
+                &binding_of_no_key(Modifiers::new().logo()),
+                &empty,
+                "dropterm"
+            ),
+            CaptureVerdict::Commit
+        );
+        // Printable punctuation outside the forbidden set is settable
+        // unmodified.
+        assert_eq!(
+            capture_verdict(&binding_of("equal", Modifiers::new()), &empty, "dropterm"),
+            CaptureVerdict::Commit
+        );
+    }
+
+    /// A keyless binding — bare Super and bare modifiers. The dummy
+    /// action only satisfies the map's shape.
+    fn binding_of_no_key(modifiers: Modifiers) -> Binding {
+        let mods = ModifiersDef::from(modifiers)
+            .0
+            .iter()
+            .map(|modifier| match modifier {
+                Modifier::Ctrl => "Ctrl",
+                Modifier::Alt => "Alt",
+                Modifier::Shift => "Shift",
+                Modifier::Super => "Super",
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!(r"{{ (modifiers: [{mods}]): Disable }}");
+        parse_custom(&text)
+            .expect("the keyless map parses")
+            .0
+            .into_iter()
+            .next()
+            .expect("one entry")
+            .0
+    }
+
+    #[test]
+    fn a_disable_held_chord_is_committable_over() {
+        // The keyboard page's conflict rule filters Disable: a chord
+        // the user disabled is free for the marker to take (the write
+        // replaces the disable, exactly as COSMIC's replace would).
+        // F12 keeps the chord settable unmodified.
+        let disabled = parse_custom(r#"{ (modifiers: [], key: "F12"): Disable }"#)
+            .expect("the disable map parses");
+        let effective = effective_shortcuts(&CustomShortcuts::default(), &disabled);
+        assert_eq!(
+            capture_verdict(&binding_of("F12", Modifiers::new()), &effective, "dropterm"),
+            CaptureVerdict::Commit
         );
     }
 
