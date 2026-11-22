@@ -32,6 +32,10 @@ Commits are per control kind: toggles, dropdowns, and the pickers write on chang
 
 ## Keybindings tab
 
+At the top, above the in-app groups, the **Global** group holds the summon key's row - "Toggle the overlay" - with the chords that currently summon DropTerm read-only (`None` while unbound), the setup walk for your desktop beneath, and on COSMIC an "Open keyboard settings" button that opens the page the walk describes. The global key is a different animal from every row below it: it must fire while the terminal is hidden, so it lives in the desktop's own shortcut config rather than in `custom_key_binds` - this row shows what is bound there and how to bind more, it never captures.
+
+On first run with nothing bound, a small prompt offers the same guidance: the walk, the deep link, and a "Don't ask again" checkbox. A bound key retires the prompt through any path; the checkbox retires it for good (persisted as [`summon_prompt_dismissed`](configuration.md)); closing it without either re-asks at the next cold start.
+
 The editor is a search box on top, then every bindable action grouped (Clipboard, Tabs, Zoom, Other). Each row shows its effective binding: the custom chord if one is set, otherwise every default chord joined (`Ctrl + + / Ctrl + = / Ctrl + Shift + + / Ctrl + Shift + =` for zoom-in), or `None` for actions that ship unbound. The full default table lives in [keybindings](keybindings.md).
 
 Rebinding is two presses: press the row's binding to arm the capture, then press the chord. While armed, the capture owns every key press - nothing reaches the terminal. Escape or the hint's Cancel ends it without changes; capturing a chord another action already holds shows an inline error naming the holder and writes nothing.

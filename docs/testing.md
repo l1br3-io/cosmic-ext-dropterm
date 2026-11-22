@@ -34,6 +34,8 @@ route for evidence that must not see the dev machine.
 - [x] RAM: the wide-glyph 1-col churn stays bounded — the immortal-row OOM's headless pins, agent-run 2026-11-17 ([the record](research/ram-leak.md)): `a_one_col_churn_over_wide_glyphs_stays_bounded` runs inside `just check` (`--norc` bash, 🤘 + trailing content through the pty, three 1-col↔full cycles, the grid held ≤ 1024 rows; +488 KiB RSS isolated capped), and the real-login-rc reproduction `real_rc_toggle_churn_rss_curve` stays `#[ignore]`-gated — run only under `just mem-churn`'s pinned cap (`systemd-run … MemoryMax=2G MemoryHigh=1536M MemorySwapMax=0`), where it holds flat 50,116 → 51,184 KiB over 22 cycles after the fix (before: the climb to the cap inside the first resize; uncapped, the incident's 47.1 GB / ~12 s).
 - [ ] RAM: a normal day's session leaves the always-on memory curve flat or names the climb — the sampler's own verdict row (`ram-telemetry`; the module's headless smoke — 20 600 fake ticks, rotation honored at the pinned cap — already rides `just check`, agent-run 2026-11-18). Owner-run: use the build for a normal day (tabs, shells, a couple of heavy commands), then `tail -n 3` both files under `~/.local/state/io.github.l1br3_io.dropterm/` (the dev build's id ends `.Dev`) — the files exist, `vm_rss_kb` sits in a plausible band, `children_n` tracks the open shells, and flat-vs-climb is the verdict; the extraction one-liners and the capture ladder for a climb are [memory diagnostics](memory-diagnostics.md). A flat verdict closes the known-issues daily-growth row.
 
+- [ ] Summon setup surface: the Keybindings tab's Global group lists your hand-made toggle chords read-only, shows the walk, and the button opens COSMIC's keyboard page; first cold start with nothing bound opens the ask-once prompt - unticked close re-asks at the next cold start, a set key retires it, the Don't-ask-again tick retires it across restarts
+
 ### Shell presence and clipboard
 
 - [ ] Never listed: the switcher and dock list no DropTerm entry ever, and the shortcut and CLI each summon it
@@ -133,6 +135,7 @@ Against an installed release build on a desktop with an SNI host; the degrade ro
 - [ ] Opens/closes from keybind, gear, and menu; layout, backdrop veil, five-tab strip, scheme and font pickers (live apply, Escape layering), page turns keep drafts, input never reaches the shell beneath it
 - [ ] Drag-resize: live both ways, clamped, one write on release, double-click resets; focus-loss hide preserves tab and drafts; width floor and stale-config safety hold
 - [ ] Keybindings editor: live search, rebind round-trip and undo, conflict errors, capture consumption, multi-chord defaults; config ranges respected; the apply-timing table honored; session persistence, slide-off, and the race check behave
+- [ ] Global summon group and the first-run prompt (global-toggle-guidance): the Global group lists the machine's own toggle chords read-only (`None` when unbound), the walk names `dropterm toggle`, the deep link opens cosmic-settings keyboard; cold start unbound and undismissed opens the prompt - unticked close re-asks next cold start, any set key retires it, the Don't-ask-again tick persists `summon_prompt_dismissed` and retires it across restarts; off-COSMIC the walk is generic with no button
 
 ### Appearance and themes
 
