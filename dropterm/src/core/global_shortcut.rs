@@ -13,11 +13,14 @@
 //! `config/src/shortcuts/{binding,sym,modifier}.rs`) — the file format
 //! is that crate's contract, and carrying it keeps the port aligned
 //! the way `core::keybinds` carries cosmic-term's vocabulary. The
-//! action side is the minimal typed surface: the custom file's values
-//! are `Spawn(..)` and `Disable`; any other variant fails the parse
-//! and the callers degrade to guidance (the refuse-on-parse contract
-//! — nothing is ever written over an unreadable map).
+//! action side stays opaque: COSMIC's `custom` key holds every action
+//! variant — `Spawn(..)` beside `Disable` and the built-ins' `Close`,
+//! `Focus(..)` — so only the binding keys are typed and each action
+//! value's own RON is carried verbatim (a store refuses only when it
+//! is malformed or a keysym is unresolvable, and nothing is ever
+//! written over an unreadable map).
 
+use ron::value::RawValue;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -245,17 +248,42 @@ where
     Ok(Modifiers::from(ModifiersDef::deserialize(deserializer)?))
 }
 
-/// The custom file's action values — the two variants cosmic-settings
-/// writes for user-created shortcuts (the minimal typed slice of the
-/// crate's `Action` enum).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum CustomActionValue {
-    /// The binding is disabled (the entry exists so the chord stays
-    /// free).
-    Disable,
-    /// The binding runs a shell command — `DropTerm`'s summon is one of
-    /// these.
+/// The custom file's action value — opaque by contract: COSMIC writes
+/// every action variant into the same `custom` key (`Spawn(..)` beside
+/// `Disable` and the built-ins' `Close`, `Focus(..)`), so the value
+/// keeps its own RON text verbatim and `DropTerm` probes only the
+/// `Spawn` shape it recognizes ([`CustomActionValue::spawn_command`]).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct CustomActionValue(Box<RawValue>);
+
+impl<'de> Deserialize<'de> for CustomActionValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self(
+            Box::<RawValue>::deserialize(deserializer)?.trim_boxed(),
+        ))
+    }
+}
+
+/// The `Spawn` shape [`CustomActionValue::spawn_command`] probes an
+/// opaque value against.
+#[derive(Deserialize)]
+enum SpawnAction {
     Spawn(String),
+}
+
+impl CustomActionValue {
+    /// The command this value runs when it is a `Spawn` — `None` for
+    /// every other action (`Disable`, a rebound built-in).
+    pub fn spawn_command(&self) -> Option<String> {
+        self.0
+            .into_rust::<SpawnAction>()
+            .ok()
+            .map(|SpawnAction::Spawn(command)| command)
+    }
 }
 
 /// The `custom` file's parsed map.
@@ -275,8 +303,8 @@ pub enum ReadCustom {
     Absent,
     /// The file exists but could not be read (permissions, ...).
     Unreadable,
-    /// The file exists but does not parse (a foreign variant, a bad
-    /// keysym name, corrupt bytes).
+    /// The file exists but does not parse (malformed RON, an
+    /// unresolvable keysym name).
     Unparseable,
 }
 
@@ -333,7 +361,9 @@ pub fn summon_entries(shortcuts: &CustomShortcuts, exe_stem: &str) -> Vec<Bindin
         .0
         .iter()
         .filter(|(_, value)| {
-            matches!(value, CustomActionValue::Spawn(command) if is_toggle_spawn(command, exe_stem))
+            value
+                .spawn_command()
+                .is_some_and(|command| is_toggle_spawn(&command, exe_stem))
         })
         .map(|(binding, _)| binding.clone())
         .collect();
@@ -520,16 +550,112 @@ mod tests {
         }
     }
 
+    /// A store where built-in shortcuts were rebound beside the custom
+    /// entries — the shape cosmic-settings' shared `custom` key holds
+    /// on any machine with a rebound built-in (the defect GU4 fixes:
+    /// the typed enum rejected these, so the store read `Unparseable`
+    /// and a bound user was nagged at every cold boot).
+    const BUILT_IN_FIXTURE: &str = r#"{
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "e",
+        description: Some("dropterm"),
+    ): Spawn("dropterm toggle"),
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "d",
+    ): Close,
+    (
+        modifiers: [
+            Super,
+        ],
+        key: "Left",
+    ): Focus(Left),
+    (
+        modifiers: [
+            Super,
+            Ctrl,
+        ],
+        key: "k",
+    ): Disable,
+    (
+        modifiers: [],
+        key: "F12",
+    ): System(Launcher),
+}"#;
+
+    #[test]
+    fn built_in_variants_parse_beside_the_summon_entries() {
+        let shortcuts = parse_custom(BUILT_IN_FIXTURE)
+            .unwrap_or_else(|err| panic!("the rebound store parses as Loaded: {err}"));
+        assert_eq!(
+            shortcuts.0.len(),
+            5,
+            "every entry survives: spawn, two built-ins, disable, foreign"
+        );
+        let summon: Vec<String> = summon_entries(&shortcuts, "dropterm")
+            .iter()
+            .map(binding_display)
+            .collect();
+        assert_eq!(
+            summon,
+            vec!["Super + E".to_string()],
+            "the summon entry is still recognized among the built-ins"
+        );
+    }
+
+    #[test]
+    fn action_values_carry_verbatim_through_a_round_trip() {
+        let parsed = parse_custom(BUILT_IN_FIXTURE).expect("the rebound store parses");
+        let text = serialize_custom(&parsed).expect("the map serializes");
+        let reparsed = parse_custom(&text).expect("the round-trip parses");
+
+        for (binding, value) in &parsed.0 {
+            let carried = reparsed
+                .0
+                .get(binding)
+                .unwrap_or_else(|| panic!("entry {binding:?} lost in the round-trip"));
+            assert_eq!(
+                carried.0.get_ron(),
+                value.0.get_ron(),
+                "entry {binding:?}'s action carried byte-for-byte"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_command_probes_the_opaque_value() {
+        let value = |action: &str| {
+            let map = format!(r"{{ (modifiers: []): {action} }}");
+            let parsed = parse_custom(&map).expect("the one-entry map parses");
+            parsed.0.into_iter().next().expect("one entry").1
+        };
+        assert_eq!(
+            value(r#"Spawn("dropterm toggle")"#)
+                .spawn_command()
+                .as_deref(),
+            Some("dropterm toggle"),
+            "the Spawn shape probes out"
+        );
+        assert_eq!(value("Close").spawn_command(), None, "a built-in");
+        assert_eq!(value("Disable").spawn_command(), None, "a disable");
+        assert_eq!(value("Focus(Left)").spawn_command(), None, "a built-in arg");
+        assert_eq!(
+            value("System(Launcher)").spawn_command(),
+            None,
+            "a foreign variant"
+        );
+    }
+
     #[test]
     fn an_unparseable_map_and_a_bad_keysym_never_parse() {
         assert!(parse_custom("not ron at all").is_err(), "corrupt text");
         let bad_key = r#"{ (modifiers: [], key: "NotARealKeyname"): Spawn("x") }"#;
         assert!(parse_custom(bad_key).is_err(), "an unresolvable keysym");
-        let foreign_variant = r#"{ (modifiers: [], key: "F12"): System(Launcher) }"#;
-        assert!(
-            parse_custom(foreign_variant).is_err(),
-            "a variant outside the custom surface fails the parse (the degrade contract)"
-        );
     }
 
     #[test]
