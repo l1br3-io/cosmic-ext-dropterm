@@ -189,14 +189,19 @@ struct ShellControl {
 }
 
 /// The global-summon snapshot (global-toggle-guidance spec): the
-/// environment and the custom map's own-stem toggle chords in their
-/// display form, loaded once at cold startup. The Global row reads
-/// it, the first-run prompt's decision reads it, and the writer
-/// module's commits refresh it.
+/// environment, the custom map's own-stem toggle chords in their
+/// display form, and whether the writer's own marker entry is
+/// present (the Global row's revert affordance), loaded once at cold
+/// startup. The Global row reads it, the first-run prompt's decision
+/// reads it, and the writer module's commits refresh it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SummonSnapshot {
     pub(crate) environment: dropterm::core::global_shortcut::Environment,
     pub(crate) display: Vec<String>,
+    /// The writer's marker entry (the `DropTerm`-described toggle
+    /// spawn of the running stem) exists, so the Global row offers
+    /// the revert verb.
+    pub(crate) marker: bool,
 }
 
 /// The drawer's shell-owned state (the libcosmic app's own shape):
@@ -1642,6 +1647,9 @@ impl SettingsDrawer {
                 },
             ));
         }
+        if summon.marker {
+            group = group.child(self.summon_revert_button());
+        }
         // The re-trigger (summon-onboarding spec): the same step the
         // cold boot opens, from the settings panel. Closing from this
         // origin persists nothing.
@@ -1658,6 +1666,39 @@ impl SettingsDrawer {
             },
         ));
         group.into_any_element()
+    }
+
+    /// The revert verb (global-toggle-cosmic-writer spec): offered
+    /// only while the writer's own marker entry exists; it removes
+    /// exactly that entry through the seam and refreshes this row's
+    /// read in the same pass.
+    fn summon_revert_button(&self) -> gpui::AnyElement {
+        let shell = self.shell.clone();
+        small_button(
+            "summon-remove-marker",
+            "Remove the key DropTerm set",
+            move |_, cx| {
+                let Some(stem) = dropterm::core::global_shortcut::own_exe_stem() else {
+                    return;
+                };
+                let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+                    return;
+                };
+                let path = dropterm::core::global_shortcut::custom_shortcuts_path(&home);
+                match dropterm::core::global_shortcut::write_custom(&path, |custom| {
+                    dropterm::core::global_shortcut::revert_plan(custom, &stem)
+                }) {
+                    dropterm::core::global_shortcut::WriteOutcome::Written(_) => {
+                        let snapshot = crate::app_shell::load_summon_snapshot();
+                        shell.update(cx, |shell, _| shell.settings.summon = snapshot);
+                    }
+                    outcome => {
+                        eprintln!("dropterm: summon revert refused or failed: {outcome:?}");
+                    }
+                }
+            },
+        )
+        .into_any_element()
     }
 
     /// One keybindings row: the action's label in a filling,

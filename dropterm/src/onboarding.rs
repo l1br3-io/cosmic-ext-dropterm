@@ -86,14 +86,25 @@ struct OnboardingView {
     walk: &'static [&'static str],
     cosmic: bool,
     /// The session's answer from `setup_options`: the configure-for-me
-    /// seat renders only while this is true (false everywhere today —
-    /// the writer's W3 turns the COSMIC arm on).
+    /// seat renders only while this is true (the writer's COSMIC arm
+    /// over a writable store).
     configure_for_me: bool,
     step: Step,
     dismiss_checked: bool,
     /// A "Check again" that found nothing leaves the line standing
     /// under the walk.
     not_found: bool,
+    /// The configure-for-me capture's armed flag: the next key press
+    /// takes the verdict path (Escape cancels; a bare modifier keeps
+    /// the capture armed, the keyboard page's own behavior).
+    capture_armed: bool,
+    /// The seat's inline error — a conflict naming its holder, an
+    /// unsupported key, or a refused write. Cleared on the next
+    /// attempt.
+    seat_error: Option<String>,
+    /// The window's keyboard anchor: the capture reads keys through
+    /// the root's `on_key_down`, which needs a focused node.
+    focus: gpui::FocusHandle,
 }
 
 impl OnboardingView {
@@ -102,6 +113,7 @@ impl OnboardingView {
         origin: Origin,
         snapshot: &SummonSnapshot,
         store: &gs::ReadCustom,
+        cx: &mut Context<Self>,
     ) -> Self {
         let options = gs::setup_options(snapshot.environment, store);
         Self {
@@ -113,6 +125,9 @@ impl OnboardingView {
             step: Step::SummonKey,
             dismiss_checked: false,
             not_found: false,
+            capture_armed: false,
+            seat_error: None,
+            focus: cx.focus_handle(),
         }
     }
 
@@ -191,14 +206,182 @@ impl OnboardingView {
                     .child("No summon key was found yet."),
             );
         }
-        // The "Configure for me" seat (the writer module's contents,
-        // its own slice): rendered only while the arm is on, never a
-        // dead control. The seat stands empty until the writer's W3
-        // replaces it with the writer's buttons.
-        if self.configure_for_me {
-            // (The writer's slice lands here.)
+        if let Some(seat) = self.render_seat(cx) {
+            ask = ask.child(seat);
         }
         ask.child(self.render_footer(cx))
+    }
+
+    /// The "Configure for me" seat (the writer's contents): the two
+    /// buttons, the armed capture's hint, and the inline error —
+    /// rendered only while the arm is on, never a dead control.
+    fn render_seat(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.configure_for_me {
+            return None;
+        }
+        let use_f12 = cx.listener(
+            move |view: &mut Self,
+                  _: &gpui::ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                // Yakuake's assign-F12 consent model: the default
+                // chord, one press away.
+                match gs::captured_chord(gs::Modifiers::new(), "f12") {
+                    gs::CapturedChord::Binding(binding) => {
+                        view.commit_chord(&binding, window, cx);
+                    }
+                    _ => {
+                        view.seat_error =
+                            Some("F12 could not be read; choose another key.".to_string());
+                    }
+                }
+            },
+        );
+        let arm = cx.listener(
+            move |view: &mut Self,
+                  _: &gpui::ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                view.capture_armed = true;
+                view.seat_error = None;
+                view.focus.focus(window, cx);
+            },
+        );
+        let mut seat = v_flex().gap_2().child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(
+                    Button::new("onboarding-use-f12")
+                        .label("Use F12")
+                        .small()
+                        .primary()
+                        .on_click(use_f12),
+                )
+                .child(
+                    Button::new("onboarding-choose-key")
+                        .label(if self.capture_armed {
+                            "Press a key… (Esc cancels)"
+                        } else {
+                            "Choose another key…"
+                        })
+                        .small()
+                        .secondary()
+                        .on_click(arm),
+                ),
+        );
+        if self.capture_armed {
+            seat = seat.child(
+                gpui::div()
+                    .text_size(px(13.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Press the chord to summon DropTerm with."),
+            );
+        }
+        if let Some(error) = &self.seat_error {
+            seat = seat.child(
+                gpui::div()
+                    .text_size(px(13.))
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
+        }
+        Some(seat.into_any_element())
+    }
+
+    /// The seat's whole commit path, from a captured chord to the
+    /// confirmation: the verdict over the effective map, the write
+    /// through the seam, the snapshot refresh, the step. Nothing
+    /// writes except on this path's button presses.
+    fn commit_chord(
+        &mut self,
+        binding: &gs::Binding,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.capture_armed = false;
+        self.seat_error = None;
+        // The session's own stem and binary: recognition keys off the
+        // stem, the marker command off the path.
+        let Some(exe_stem) = gs::own_exe_stem() else {
+            self.seat_error =
+                Some("DropTerm could not locate its own binary. Use Set up manually.".to_string());
+            cx.notify();
+            return;
+        };
+        let Ok(exe) = std::env::current_exe() else {
+            self.seat_error =
+                Some("DropTerm could not locate its own binary. Use Set up manually.".to_string());
+            cx.notify();
+            return;
+        };
+        let command = gs::marker_spawn_command(&exe);
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            self.seat_error = Some("The home directory could not be read.".to_string());
+            cx.notify();
+            return;
+        };
+        let store_path = gs::custom_shortcuts_path(&home);
+
+        // The verdict reads the effective map: the system defaults
+        // overridden by the store as it stands (a broken store here
+        // only degrades the answer's inputs — the seam's own fresh
+        // read gates the write).
+        let store = gs::read_custom(&store_path);
+        let empty = gs::CustomShortcuts::default();
+        let custom = match &store {
+            gs::ReadCustom::Loaded(custom) => custom,
+            _ => &empty,
+        };
+        let effective = gs::effective_shortcuts(&gs::load_defaults(&gs::defaults_paths()), custom);
+        match gs::capture_verdict(binding, &effective, &exe_stem) {
+            gs::CaptureVerdict::Commit => {}
+            gs::CaptureVerdict::Own => {
+                // Already the writer's own marker: straight to the
+                // confirmation, nothing writes.
+                self.finish(binding, cx);
+                return;
+            }
+            gs::CaptureVerdict::Conflict(holder) => {
+                self.seat_error = Some(format!("{holder} already uses this key."));
+                cx.notify();
+                return;
+            }
+            gs::CaptureVerdict::Unsupported => {
+                self.seat_error = Some(
+                    "That key cannot summon DropTerm on its own. Add a modifier, or pick a key like F12."
+                        .to_string(),
+                );
+                cx.notify();
+                return;
+            }
+        }
+        match gs::write_custom(&store_path, |custom| {
+            gs::commit_plan(custom, binding, &exe_stem, &command)
+        }) {
+            gs::WriteOutcome::Written(_) => self.finish(binding, cx),
+            gs::WriteOutcome::Refused(reason) => {
+                eprintln!("dropterm: summon write refused: {reason:?}");
+                self.seat_error = Some(
+                    "The shortcuts store refused the change, so nothing was written.".to_string(),
+                );
+            }
+            gs::WriteOutcome::Io(err) => {
+                self.seat_error = Some(format!("Writing the shortcut failed: {err}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// The commit's landing: the Global row's snapshot refresh and
+    /// the confirmation step with the chord's display form.
+    fn finish(&mut self, binding: &gs::Binding, cx: &mut Context<Self>) {
+        let snapshot = load_summon_snapshot();
+        let chord = gs::binding_display(binding);
+        self.shell
+            .update(cx, |shell, _| shell.settings.summon = snapshot);
+        self.step = Step::Confirmed(chord);
+        cx.notify();
     }
 
     /// The origin's footer: first run carries the retire contract —
@@ -286,7 +469,7 @@ pub(crate) fn open_onboarding(cx: &mut App, shell: gpui::Entity<Shell>, origin: 
         kind: WindowKind::Normal,
         ..Default::default()
     };
-    let view = cx.new(|_| OnboardingView::new(shell, origin, &snapshot, &store));
+    let view = cx.new(|cx| OnboardingView::new(shell, origin, &snapshot, &store, cx));
     if let Err(err) = cx.open_window(options, |_, _| view.clone()) {
         eprintln!("dropterm: onboarding open failed: {err:?}");
     }
@@ -317,10 +500,59 @@ fn small_button(
 }
 
 impl Render for OnboardingView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.step.clone() {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The keyboard anchor: the window's keys route through the
+        // root's handler, which only acts while the seat's capture is
+        // armed. The focus lands once here — the render is the one
+        // place that already reseeds this window's state.
+        if !self.focus.is_focused(window) {
+            self.focus.focus(window, cx);
+        }
+        let step = match self.step.clone() {
             Step::SummonKey => self.render_ask(cx).into_any_element(),
             Step::Confirmed(chord) => Self::render_confirmed(&chord, cx).into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
+            .child(step)
+    }
+}
+
+impl OnboardingView {
+    /// The armed capture's key press: Escape cancels, a bare
+    /// modifier keeps the capture armed (the keyboard page's own
+    /// listener behavior), a chord that will not resolve errors, and
+    /// anything else takes the verdict path.
+    fn on_key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.capture_armed {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        if keystroke.key == "escape" {
+            self.capture_armed = false;
+            cx.notify();
+            return;
+        }
+        let modifiers = gs::Modifiers {
+            ctrl: keystroke.modifiers.control,
+            alt: keystroke.modifiers.alt,
+            shift: keystroke.modifiers.shift,
+            logo: keystroke.modifiers.platform,
+        };
+        match gs::captured_chord(modifiers, &keystroke.key) {
+            gs::CapturedChord::Binding(binding) => self.commit_chord(&binding, window, cx),
+            // Still arming: the press was only a modifier.
+            gs::CapturedChord::BareModifier => {}
+            gs::CapturedChord::Unresolvable => {
+                self.capture_armed = false;
+                self.seat_error = Some(format!(
+                    "'{}' cannot be used as a summon key.",
+                    keystroke.key
+                ));
+                cx.notify();
+            }
         }
     }
 }

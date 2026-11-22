@@ -263,6 +263,7 @@ pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
     use dropterm::core::global_shortcut as gs;
     let environment = gs::detect_environment(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
     let mut display = Vec::new();
+    let mut marker = false;
     if environment == gs::Environment::Cosmic {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let loaded = match home {
@@ -275,11 +276,16 @@ pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
                 .iter()
                 .map(gs::binding_display)
                 .collect();
+            marker = shortcuts
+                .0
+                .iter()
+                .any(|(binding, value)| gs::is_marker(binding, value, &stem));
         }
     }
     crate::drawer::SummonSnapshot {
         environment,
         display,
+        marker,
     }
 }
 
