@@ -106,7 +106,10 @@ leaves the host idle and quiet.
 
 Status bar segments (`dropterm.status_segment`) render in the band -
 [their own page](status-segments.md) covers the handler contract, the
-ctx table, the refresh triggers, and the ordering key - and the
-terminal events above deliver the terminal's life. Scripted tab
-titles, registered commands, and agent notifications arrive with their
-own modules, each with its own doc page.
+ctx table, the refresh triggers, and the ordering key - the terminal
+events above deliver the terminal's life, and script tab titles
+(`dropterm.tab_title`) derive the strip's names in `script` mode -
+[their own page](tab-titles.md) covers the provider contract, the ask
+gating, and the stale ladder. Registered commands and agent
+notifications arrive with their own modules, each with its own doc
+page.
