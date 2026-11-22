@@ -737,6 +737,79 @@ pub fn capture_verdict(
     }
 }
 
+/// The marker action's serializable shape — the one-variant enum so
+/// `ron` spells the variant's name exactly as the store's own
+/// `Spawn("<command>")`, the command escaped by the serializer (a
+/// newtype struct would lose the name and serialize as a bare
+/// tuple).
+#[derive(Serialize)]
+enum MarkerAction<'a> {
+    Spawn(&'a str),
+}
+
+/// The marker entry's Spawn command: the running binary's absolute
+/// path plus the toggle verb (Open Question 1's default). cosmic-comp
+/// runs it through `/bin/sh -c` — a whitespace-free first word needs
+/// no quoting — and `is_toggle_spawn` recognizes exactly that shape.
+pub fn marker_spawn_command(exe: &Path) -> String {
+    format!("{} toggle", exe.display())
+}
+
+/// The binding shape the marker is written under: the committed
+/// chord, the marker description, `keycode` unset — the shape
+/// cosmic-settings writes for a new custom shortcut.
+fn marker_binding(binding: &Binding) -> Binding {
+    Binding {
+        modifiers: binding.modifiers.clone(),
+        key: binding.key,
+        keycode: None,
+        description: Some(MARKER_DESCRIPTION.to_string()),
+    }
+}
+
+/// The commit planner: the custom map with exactly one marker entry
+/// at `binding`. An existing marker moves (its old chord goes — the
+/// update path, never a second marker), the chord's own slot takes
+/// the marker (a `Disable` is replaced, the verdict's committable
+/// case), and every foreign entry — hand-made own-stem entries
+/// included — carries over untouched. Whole map in, whole map out;
+/// the write seam re-parses the output before it touches disk.
+pub fn commit_plan(
+    custom: &CustomShortcuts,
+    binding: &Binding,
+    exe_stem: &str,
+    command: &str,
+) -> CustomShortcuts {
+    let mut planned: HashMap<Binding, CustomActionValue> = custom
+        .0
+        .iter()
+        .filter(|(existing, value)| !is_marker(existing, value, exe_stem))
+        .map(|(existing, value)| (existing.clone(), value.clone()))
+        .collect();
+    // Total over the contract: serializing a plain string, then
+    // re-parsing the serializer's own output — neither can fail here.
+    let text =
+        ron::to_string(&MarkerAction::Spawn(command)).expect("ron serializes a plain string");
+    let action = RawValue::from_boxed_ron(text.into_boxed_str())
+        .expect("the serializer's own output parses as a value");
+    planned.insert(marker_binding(binding), CustomActionValue(action));
+    CustomShortcuts(planned)
+}
+
+/// The revert planner: the custom map without every entry that is
+/// this binary's marker — foreign entries and other stems' markers
+/// carry over untouched. Whole map in, whole map out.
+pub fn revert_plan(custom: &CustomShortcuts, exe_stem: &str) -> CustomShortcuts {
+    CustomShortcuts(
+        custom
+            .0
+            .iter()
+            .filter(|(existing, value)| !is_marker(existing, value, exe_stem))
+            .map(|(existing, value)| (existing.clone(), value.clone()))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1356,6 +1429,166 @@ mod tests {
         assert_eq!(
             capture_verdict(&binding_of("F12", Modifiers::new()), &effective, "dropterm"),
             CaptureVerdict::Commit
+        );
+    }
+
+    // --- the writer: the commit and revert planners (W1) ---
+
+    /// The marker's action RON as the store holds it.
+    const MARKER_ACTION_RON: &str = r#"Spawn("/usr/bin/dropterm toggle")"#;
+
+    /// Serialize, and re-parse what will be written — every planner
+    /// test's output gate: the write seam refuses to write anything
+    /// that does not parse, so the planners' product must.
+    fn round_trip(planned: &CustomShortcuts) -> CustomShortcuts {
+        let text = serialize_custom(planned).expect("the planned map serializes");
+        parse_custom(&text).expect("the planned map's output re-parses")
+    }
+
+    #[test]
+    fn the_commit_planner_adds_exactly_one_marker_and_foreign_entries_carry_verbatim() {
+        // FIXTURE already carries a hand-made own-stem summon
+        // (`description: Some("dropterm")`) — Open Question 2's
+        // standing user: it survives untouched beside the marker.
+        let custom = parse_custom(FIXTURE).expect("the fixture parses");
+        // F9 is free in the fixture (F12 is the dev launcher's chord
+        // — a non-Disable holder the verdict would refuse).
+        let binding = binding_of("F9", Modifiers::new());
+        let reparsed = round_trip(&commit_plan(
+            &custom,
+            &binding,
+            "dropterm",
+            "/usr/bin/dropterm toggle",
+        ));
+
+        assert_eq!(reparsed.0.len(), custom.0.len() + 1, "one entry added");
+        let value = reparsed
+            .0
+            .get(&binding)
+            .expect("the marker entry is at the committed chord");
+        assert_eq!(value.0.get_ron(), MARKER_ACTION_RON, "the marker's action");
+        let (stored_key, stored_value) =
+            reparsed.0.get_key_value(&binding).expect("the marker key");
+        assert!(
+            is_marker(stored_key, stored_value, "dropterm"),
+            "the written entry is the marker: description, chord, own toggle"
+        );
+        // Every foreign entry — the hand-made summon included — is
+        // byte-identical before and after.
+        for (foreign_binding, foreign_value) in &custom.0 {
+            let carried = reparsed
+                .0
+                .get(foreign_binding)
+                .unwrap_or_else(|| panic!("entry {foreign_binding:?} lost in the commit"));
+            assert_eq!(
+                carried.0.get_ron(),
+                foreign_value.0.get_ron(),
+                "entry {foreign_binding:?}'s action carried verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn the_commit_planner_moves_an_existing_marker_and_reparses_built_in_stores() {
+        // A marker already at F12; the commit moves it to Super+Q —
+        // the update path, never a second marker.
+        let custom = parse_custom(&marker_entry_fixture("F12")).expect("the marker parses");
+        let binding = binding_of("Q", Modifiers::new().logo());
+        let reparsed = round_trip(&commit_plan(
+            &custom,
+            &binding,
+            "dropterm",
+            "/usr/bin/dropterm toggle",
+        ));
+        assert_eq!(reparsed.0.len(), 1, "the marker moved, not added");
+        let old_chord = binding_of("F12", Modifiers::new());
+        assert!(
+            !reparsed.0.contains_key(&old_chord),
+            "the old marker chord is gone"
+        );
+        assert_eq!(
+            reparsed
+                .0
+                .get(&binding)
+                .expect("the new marker")
+                .spawn_command()
+                .as_deref(),
+            Some("/usr/bin/dropterm toggle")
+        );
+
+        // A store carrying rebound built-ins (`Close`, `Focus(Left)`)
+        // and a `Disable` plans and re-parses with every action
+        // verbatim — the wipe hazard's own fixture.
+        let built_ins = parse_custom(BUILT_IN_FIXTURE).expect("the rebound store parses");
+        let reparsed = round_trip(&commit_plan(
+            &built_ins,
+            &binding,
+            "dropterm",
+            "/usr/bin/dropterm toggle",
+        ));
+        for (foreign_binding, foreign_value) in &built_ins.0 {
+            let carried = reparsed
+                .0
+                .get(foreign_binding)
+                .unwrap_or_else(|| panic!("entry {foreign_binding:?} lost in the commit"));
+            assert_eq!(
+                carried.0.get_ron(),
+                foreign_value.0.get_ron(),
+                "entry {foreign_binding:?}'s built-in action carried verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn the_revert_planner_removes_exactly_the_marker() {
+        let custom = parse_custom(FIXTURE).expect("the fixture parses");
+        let with_marker = round_trip(&commit_plan(
+            &custom,
+            &binding_of("F9", Modifiers::new()),
+            "dropterm",
+            "/usr/bin/dropterm toggle",
+        ));
+        let reparsed = round_trip(&revert_plan(&with_marker, "dropterm"));
+
+        let marker_chord = binding_of("F9", Modifiers::new());
+        assert!(
+            !reparsed.0.contains_key(&marker_chord),
+            "the marker is gone"
+        );
+        assert_eq!(reparsed.0.len(), custom.0.len(), "only the marker left");
+        for (foreign_binding, foreign_value) in &custom.0 {
+            let carried = reparsed
+                .0
+                .get(foreign_binding)
+                .unwrap_or_else(|| panic!("entry {foreign_binding:?} lost in the revert"));
+            assert_eq!(
+                carried.0.get_ron(),
+                foreign_value.0.get_ron(),
+                "entry {foreign_binding:?}'s action carried verbatim"
+            );
+        }
+
+        // A "DropTerm"-described entry that is not this binary's
+        // toggle is not the marker: another stem's marker survives
+        // this stem's revert.
+        let other_stem = parse_custom(
+            r#"{
+    (
+        modifiers: [],
+        key: "F9",
+        description: Some("DropTerm"),
+    ): Spawn("dropterm-dev toggle") }"#,
+        )
+        .expect("the other-stem marker parses");
+        let reparsed = round_trip(&revert_plan(&other_stem, "dropterm"));
+        assert_eq!(reparsed.0.len(), 1, "the dev build's marker survives");
+    }
+
+    #[test]
+    fn the_marker_command_is_the_absolute_path_and_the_toggle_verb() {
+        assert_eq!(
+            marker_spawn_command(Path::new("/usr/bin/dropterm")),
+            "/usr/bin/dropterm toggle"
         );
     }
 
