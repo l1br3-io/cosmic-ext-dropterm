@@ -48,6 +48,36 @@ Every observable step logs one line in the `dropterm: plugins:` namespace
 - the host starting, each script loaded or skipped with its reason, each
 handler raise, each forwarded `print`.
 
+## Terminal events
+
+The terminal's own life reaches the bus. Seven event names deliver from
+real sources - five from the engine's event stream, two from the
+window's focus - each with a minimal payload:
+
+| Event | Payload | Fires |
+|---|---|---|
+| `bell` | `{ tab }` | the terminal bell (`printf '\a'`) |
+| `title` | `{ tab, title }` | an OSC 0/2 title report - change-gated: only when the title actually moves, so a shell re-reporting the same title on every prompt stays quiet |
+| `title-reset` | `{ tab }` | the title cleared (an empty OSC 0/2 report) - only when one was set |
+| `child-exit` | `{ tab, code }` | a command finished (the OSC 133;D report; `code` is its exit status) |
+| `exit` | `{ tab }` | the tab's shell exited, as the pane tears down |
+| `focus-gained` | `{ tab }` | the DropTerm window became keyboard-active - the active tab |
+| `focus-lost` | `{ tab }` | it stopped being - the tab that lost |
+
+`tab` is the pane's tab id as an opaque number: stable for the pane's
+life and meaningful only to correlate events (a `title` and the
+`child-exit` that followed carry the same `tab`). Delivery is
+fire-and-forget on the host thread - no ordering guarantee beyond
+per-channel FIFO, no feedback into the terminal.
+
+Terminal events flow only when the `plugins/` dir stood at launch (the
+same gate as everything else here: a no-plugins session forwards
+nothing, and its channel stays empty). What never reaches the bus: the
+per-frame damage and wake traffic, and the machinery arms (clipboard
+store/load, color requests, PTY writes) - they are internals, not
+script events. Agent notifications join as event names with their own
+module later.
+
 ## Timeouts and reloads
 
 Every unit of Lua work runs under a soft bound (100 ms) and a hard cap
@@ -74,11 +104,9 @@ leaves the host idle and quiet.
 
 ## What is not here yet
 
-The first scriptable surface is here: status bar segments
-(`dropterm.status_segment`) render in the band - [their own
-page](status-segments.md) covers the handler contract, the ctx table,
-the refresh triggers, and the ordering key. Tab titles, registered
-commands, and terminal lifecycle events arrive with their own modules,
-each with its own doc page. Until then the bus is exercised by the
-scripts themselves (`emit` between scripts), by the loader, and by the
-segment queries; no terminal event reaches Lua yet.
+Status bar segments (`dropterm.status_segment`) render in the band -
+[their own page](status-segments.md) covers the handler contract, the
+ctx table, the refresh triggers, and the ordering key - and the
+terminal events above deliver the terminal's life. Scripted tab
+titles, registered commands, and agent notifications arrive with their
+own modules, each with its own doc page.
