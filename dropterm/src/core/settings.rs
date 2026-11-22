@@ -302,6 +302,10 @@ pub enum ConfigKey {
     /// off means the fact is never gathered and never rendered —
     /// the ring, not the latch, is what this key gates.
     StatusBarActivityMark,
+    /// The first-run summon prompt's retire flag (global-toggle-
+    /// guidance spec) — written programmatically from the prompt's
+    /// checkbox, never a drawer control row.
+    SummonPromptDismissed,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -471,6 +475,7 @@ impl ConfigKey {
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
             ConfigKey::StatusBarActivityMark => "status_bar_activity_mark",
+            ConfigKey::SummonPromptDismissed => "summon_prompt_dismissed",
         }
     }
 }
@@ -579,6 +584,12 @@ pub enum PlannedWrite {
     /// — a display flip like its border sibling: the echo's next
     /// view pass re-evaluates the sampling gate.
     StatusBarActivityMark(bool),
+    /// The first-run summon prompt's retire write (global-toggle-
+    /// guidance spec): the prompt's "Don't ask again" tick — the
+    /// nag flag only; the binding itself stays in the system config.
+    /// Not a drawer control row (it is written programmatically),
+    /// so it sits outside the section map like `output`.
+    SummonPromptDismissed(bool),
 }
 
 impl PlannedWrite {
@@ -649,6 +660,7 @@ impl PlannedWrite {
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
             PlannedWrite::StatusBarActivityMark(_) => ConfigKey::StatusBarActivityMark,
+            PlannedWrite::SummonPromptDismissed(_) => ConfigKey::SummonPromptDismissed,
         }
     }
 
@@ -806,6 +818,9 @@ impl PlannedWrite {
             PlannedWrite::StatusBarBorder(value) => section.status_bar_border = *value,
             PlannedWrite::StatusBarActivityMark(value) => {
                 section.status_bar_activity_mark = *value;
+            }
+            PlannedWrite::SummonPromptDismissed(value) => {
+                section.summon_prompt_dismissed = *value;
             }
         }
         store::save_atomic(&path, &section)
@@ -1064,6 +1079,10 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // (iterm-images spec): the echo's set_config swaps the flag,
         // the next 1337 arrival answers it.
         | ConfigKey::ImagesEnabled
+        // The summon prompt's retire flag rides the same live pass
+        // (global-toggle-guidance spec): the prompt's tick persists
+        // at once; the decision re-reads it at the next cold boot.
+        | ConfigKey::SummonPromptDismissed
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2527,6 +2546,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
         ConfigKey::StatusBarActivityMark => Some(PlannedWrite::StatusBarActivityMark(checked)),
+        ConfigKey::SummonPromptDismissed => Some(PlannedWrite::SummonPromptDismissed(checked)),
         ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
         ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
         ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),
@@ -2630,6 +2650,7 @@ impl ConfigKey {
     pub const fn label(self) -> &'static str {
         match self {
             ConfigKey::HeightPercent => "Height",
+            ConfigKey::SummonPromptDismissed => "Don't ask again",
             ConfigKey::WidthPercent => "Width",
             ConfigKey::HAlign => "Alignment",
             ConfigKey::Edge => "Edge",

@@ -380,12 +380,13 @@ pub fn own_exe_stem() -> Option<String> {
 // --- environment, walk, prompt ---
 
 /// The desktop family the summon guidance speaks to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Environment {
     /// A COSMIC session — the walk is COSMIC's custom-shortcut page,
     /// and the deep link exists.
     Cosmic,
     /// Anything else — the generic DE-shortcut walk.
+    #[default]
     Other,
 }
 

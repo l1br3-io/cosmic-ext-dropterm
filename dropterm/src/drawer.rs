@@ -188,6 +188,17 @@ struct ShellControl {
     _subscription: gpui::Subscription,
 }
 
+/// The global-summon snapshot (global-toggle-guidance spec): the
+/// environment and the custom map's own-stem toggle chords in their
+/// display form, loaded once at cold startup. The Global row reads
+/// it, the first-run prompt's decision reads it, and the writer
+/// module's commits refresh it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SummonSnapshot {
+    pub(crate) environment: dropterm::core::global_shortcut::Environment,
+    pub(crate) display: Vec<String>,
+}
+
 /// The drawer's shell-owned state (the libcosmic app's own shape):
 /// the open flag, the open page, the display-only drafts buffer
 /// (core's), and the guard that keeps an echo's programmatic input
@@ -224,6 +235,10 @@ pub(crate) struct SettingsState {
     pub(crate) keybind_search: String,
     pub(crate) keybind_capture: Option<&'static str>,
     pub(crate) keybind_conflict: Option<(&'static str, &'static str)>,
+    /// The global-summon snapshot (global-toggle-guidance spec):
+    /// loaded at cold startup, read-only here — the writer module's
+    /// commits are the one future refresher.
+    pub(crate) summon: SummonSnapshot,
     /// The resize handle's live drag width, display-only until
     /// release (core's `drawer_drag_px` math); `None` while the
     /// handle is at rest.
@@ -246,8 +261,138 @@ impl Default for SettingsState {
             keybind_search: String::new(),
             keybind_capture: None,
             keybind_conflict: None,
+            summon: SummonSnapshot::default(),
             drawer_drag: None,
         }
+    }
+}
+
+/// The first-run summon prompt (global-toggle-guidance spec): the
+/// Yakuake-style ask-once dialog at cold startup — the summon walk,
+/// the COSMIC deep link, and the don't-ask-again retire whose tick
+/// persists `summon_prompt_dismissed` at once (the drawer toggles'
+/// own write path). The writer module adds its action buttons beside
+/// the guidance (global-toggle-cosmic-writer).
+pub(crate) struct SummonPromptView {
+    shell: gpui::Entity<Shell>,
+    walk: &'static [&'static str],
+    cosmic: bool,
+    dismiss_checked: bool,
+}
+
+impl SummonPromptView {
+    fn new(shell: gpui::Entity<Shell>, snapshot: &SummonSnapshot) -> Self {
+        Self {
+            shell,
+            walk: dropterm::core::global_shortcut::summon_walk(snapshot.environment),
+            cosmic: snapshot.environment == dropterm::core::global_shortcut::Environment::Cosmic,
+            dismiss_checked: false,
+        }
+    }
+}
+
+impl gpui::Render for SummonPromptView {
+    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let shell = self.shell.clone();
+        let retire = cx.listener(
+            move |view: &mut Self,
+                  checked: &bool,
+                  _window: &mut Window,
+                  cx: &mut gpui::Context<SummonPromptView>| {
+                view.dismiss_checked = *checked;
+                if *checked {
+                    // The retire persists at once (the drawer toggles'
+                    // path): a tick survives even a crash, and the
+                    // un-tick before closing writes it back off.
+                    shell.update(cx, |shell, _| {
+                        shell.write_settings(
+                            &dropterm::core::settings::PlannedWrite::SummonPromptDismissed(
+                                *checked,
+                            ),
+                        );
+                    });
+                }
+            },
+        );
+        let mut dialog = v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .p_4()
+            .gap_2()
+            .child(gpui::div().text_xl().child("Set a summon key"))
+            .child(
+                gpui::div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("DropTerm is summoned with a global key — a chord that works while the terminal is hidden."),
+            );
+        for step in self.walk {
+            dialog = dialog.child(
+                gpui::div()
+                    .text_size(gpui::px(13.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(*step),
+            );
+        }
+        if self.cosmic {
+            dialog = dialog.child(small_button(
+                "summon-prompt-open-keyboard",
+                "Open keyboard settings",
+                |_, _| {
+                    if let Err(err) = std::process::Command::new("cosmic-settings")
+                        .arg("keyboard")
+                        .spawn()
+                    {
+                        eprintln!("dropterm: cosmic-settings spawn failed: {err}");
+                    }
+                },
+            ));
+        }
+        dialog = dialog.child(
+            h_flex()
+                .gap_2()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Switch::new("summon-prompt-dismiss")
+                                .checked(self.dismiss_checked)
+                                .on_click(retire),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_size(gpui::px(13.))
+                                .child("Don't ask again"),
+                        ),
+                )
+                .child(small_button("summon-prompt-close", "Later", |window, _| {
+                    window.remove_window();
+                })),
+        );
+        dialog
+    }
+}
+
+/// Opens the first-run summon prompt: the About window's plain-
+/// toplevel shape at a modest size. A failed open logs and drops —
+/// the prompt is guidance, never fatal, and the Global row stays
+/// available in the drawer either way.
+pub(crate) fn open_summon_prompt(cx: &mut App, shell: gpui::Entity<Shell>) {
+    let snapshot = shell.read(cx).settings.summon.clone();
+    let options = gpui::WindowOptions {
+        titlebar: None,
+        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+            origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+            size: gpui::size(gpui::px(440.), gpui::px(300.)),
+        })),
+        app_id: Some(dropterm::core::APP_ID.to_string()),
+        kind: gpui::WindowKind::Normal,
+        ..Default::default()
+    };
+    let view = cx.new(|_| SummonPromptView::new(shell, &snapshot));
+    if let Err(err) = cx.open_window(options, |_, _| view.clone()) {
+        eprintln!("dropterm: summon prompt open failed: {err:?}");
     }
 }
 
@@ -1533,6 +1678,11 @@ impl SettingsDrawer {
                     .child(format!("That chord is held by {holder_label} ({id})")),
             );
         }
+        // The Global group (global-toggle-guidance spec) above the
+        // in-app groups, answering the page's search like every row.
+        if search.is_empty() || "toggle the overlay".contains(&search.to_lowercase()) {
+            page = page.child(self.summon_group(cx));
+        }
         for (row_ix, row) in dropterm::core::keybinds::binding_rows().iter().enumerate() {
             if !dropterm::core::keybinds::row_matches_search(row, &search) {
                 continue;
@@ -1547,6 +1697,81 @@ impl SettingsDrawer {
             ));
         }
         page.into_any_element()
+    }
+
+    /// The Global group: the summon key's row — the custom map's
+    /// own-stem toggle chords read-only (`None` while unbound), the
+    /// environment's walk beneath, and on COSMIC the keyboard page's
+    /// deep link. The writer module's capture replaces the read-only
+    /// chip with the arm affordance (global-toggle-cosmic-writer).
+    fn summon_group(&self, cx: &App) -> gpui::AnyElement {
+        let summon = &self.shell.read(cx).settings.summon;
+        let binding_text = if summon.display.is_empty() {
+            "None".to_string()
+        } else {
+            summon.display.join(" / ")
+        };
+        let mut group = v_flex().gap_1().min_w_0();
+        group = group.child(
+            gpui::div()
+                .text_size(gpui::px(12.))
+                .text_color(cx.theme().muted_foreground)
+                .child("Global"),
+        );
+        group = group.child(
+            h_flex()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_sm()
+                .min_w_0()
+                .bg(cx.theme().popover)
+                .child(
+                    gpui::div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(gpui::px(13.))
+                        .child("Toggle the overlay"),
+                )
+                .child(
+                    gpui::div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(cx.theme().accent)
+                        .text_color(cx.theme().accent_foreground)
+                        .text_size(gpui::px(12.))
+                        .child(binding_text),
+                ),
+        );
+        for step in dropterm::core::global_shortcut::summon_walk(summon.environment) {
+            group = group.child(
+                gpui::div()
+                    .text_size(gpui::px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(*step),
+            );
+        }
+        if summon.environment == dropterm::core::global_shortcut::Environment::Cosmic {
+            group = group.child(small_button(
+                "summon-open-keyboard",
+                "Open keyboard settings",
+                |_, _| {
+                    // The COSMIC deep link: the keyboard page the walk
+                    // describes. A detached spawn — the settings app
+                    // outlives DropTerm as a matter of course, and a
+                    // failure is a logged line, never a surface.
+                    if let Err(err) = std::process::Command::new("cosmic-settings")
+                        .arg("keyboard")
+                        .spawn()
+                    {
+                        eprintln!("dropterm: cosmic-settings spawn failed: {err}");
+                    }
+                },
+            ));
+        }
+        group.into_any_element()
     }
 
     /// One keybindings row: the action's label in a filling,
