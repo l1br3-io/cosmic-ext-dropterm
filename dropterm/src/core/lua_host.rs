@@ -62,6 +62,7 @@ use std::time::{Duration, Instant};
 
 use notify::Watcher as _;
 
+use crate::core::keybinds::{CommandRow, MAX_COMMAND_NAME_LEN, valid_command_name};
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use crate::core::tabs::{TabTitleAsk, TabTitleValue};
 use mlua::{
@@ -199,6 +200,14 @@ pub enum HostEvent {
     /// stands, `false` after a reload into none (the asking side
     /// keeps its prior titles across the gap and stops asking).
     TabTitleProvider { present: bool },
+    /// The live script-command set, in registration order, at every
+    /// load/reload (script-commands spec) — [`RegistrySync`]'s shape
+    /// for the keybind editor's runtime rows: name + description
+    /// (the handlers stay host-side; the shell never calls them
+    /// itself). Empty included — a reload into no commands clears the
+    /// row set with it, while any persisted `script/<name>` bindings
+    /// stay in the file, inert.
+    CommandsSync { commands: Vec<CommandRow> },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate
@@ -476,6 +485,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 &generation.lua,
                 &generation.segments,
                 &generation.tab_title,
+                &generation.commands,
                 plugins_dir,
                 events,
                 &frame,
@@ -502,6 +512,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.lua,
                             &generation.segments,
                             &generation.tab_title,
+                            &generation.commands,
                             plugins_dir,
                             events,
                             &frame,
@@ -531,6 +542,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.lua,
                             &generation.segments,
                             &generation.tab_title,
+                            &generation.commands,
                             plugins_dir,
                             events,
                             &frame,
@@ -551,6 +563,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.lua,
                             &generation.segments,
                             &generation.tab_title,
+                            &generation.commands,
                             plugins_dir,
                             events,
                             &frame,
@@ -606,6 +619,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         &generation.lua,
                         &generation.segments,
                         &generation.tab_title,
+                        &generation.commands,
                         plugins_dir,
                         events,
                         &frame,
@@ -675,8 +689,9 @@ impl TimeoutFrame {
 
 /// One interpreter generation: the `Lua` instance plus its port's
 /// registries — the event-bus table behind `dropterm.on`/`emit`, the
-/// segment registry behind `dropterm.status_segment`, and the
-/// tab-title provider seat behind `dropterm.tab_title`.
+/// segment registry behind `dropterm.status_segment`, the
+/// tab-title provider seat behind `dropterm.tab_title`, and the
+/// command registry behind `dropterm.command`.
 /// Generation 1 is born at spawn; every later one is a hard-cap
 /// recreate — fresh state, no registrations (spec assumption 7).
 struct Generation {
@@ -684,6 +699,7 @@ struct Generation {
     registry: Table,
     segments: Table,
     tab_title: Table,
+    commands: Table,
 }
 
 impl Generation {
@@ -698,7 +714,7 @@ impl Generation {
         // sandbox claimed anywhere — the docs state it plainly.
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
-        let (registry, segments, tab_title) = match install_port(&lua, events, frame) {
+        let (registry, segments, tab_title, commands) = match install_port(&lua, events, frame) {
             Ok(registries) => registries,
             Err(err) => {
                 log(
@@ -720,6 +736,7 @@ impl Generation {
             registry,
             segments,
             tab_title,
+            commands,
         })
     }
 }
@@ -781,14 +798,16 @@ fn install_bounds(
 /// registry-table design), the segment registry behind
 /// `dropterm.status_segment` (status-segments spec), the tab-title
 /// provider seat behind `dropterm.tab_title` (tab-titles spec), the
-/// module served to `require('dropterm')` through `package.loaded`
-/// (the stdlib's own module cache — no require-path widening), and
-/// the `print` forwarder. Returns the registries for host-side use.
+/// command registry behind `dropterm.command` (script-commands
+/// spec), the module served to `require('dropterm')` through
+/// `package.loaded` (the stdlib's own module cache — no require-path
+/// widening), and the `print` forwarder. Returns the registries for
+/// host-side use.
 fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
-) -> mlua::Result<(Table, Table, Table)> {
+) -> mlua::Result<(Table, Table, Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
@@ -866,17 +885,58 @@ fn install_port(
         Ok(())
     })?;
 
+    // The command registry (script-commands spec): an array of
+    // `{name, description, handler}` entries — the segment registry's
+    // shape — with a repeated name replacing its slot's description
+    // and handler in place (one live seat per name, the first
+    // position kept). Names are slugs (the persisted id's charset);
+    // an invalid name rejects with one line, never a raise.
+    let command_table = lua.create_table()?;
+    let commands_for_register = command_table.clone();
+    let command_events = events.clone();
+    let command = lua.create_function(
+        move |lua, (name, description, handler): (String, String, Function)| {
+            if !valid_command_name(&name) {
+                log(
+                    &command_events,
+                    format!(
+                        "command '{name}' would not register: names are lowercase slugs \
+                         (letters, digits, hyphens) up to {MAX_COMMAND_NAME_LEN} characters"
+                    ),
+                );
+                return Ok(());
+            }
+            for slot in 1..=commands_for_register.raw_len() {
+                let entry: Table = commands_for_register.get(slot)?;
+                if entry.get::<String>("name")? == name {
+                    entry.set("description", description)?;
+                    entry.set("handler", handler)?;
+                    log(&command_events, format!("command '{name}' replaced"));
+                    return Ok(());
+                }
+            }
+            let entry = lua.create_table()?;
+            entry.set("name", name.clone())?;
+            entry.set("description", description)?;
+            entry.set("handler", handler)?;
+            commands_for_register.set(commands_for_register.raw_len() + 1, entry)?;
+            log(&command_events, format!("command '{name}' registered"));
+            Ok(())
+        },
+    )?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
     module.set("status_segment", status_segment)?;
     module.set("tab_title", tab_title)?;
+    module.set("command", command)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
 
     install_print(lua, events)?;
-    Ok((registry, segment_table, tab_title_seat))
+    Ok((registry, segment_table, tab_title_seat, command_table))
 }
 
 /// Deliver one event to every handler registered under it, on this
@@ -974,11 +1034,12 @@ fn display_value(lua: &Lua, value: Value) -> String {
 /// pass — a reload into an empty dir included — ends with the
 /// registry-sync report (status-segments spec): the live id set is
 /// the asking surface's source of truth, and the tab-title seat's
-/// own report rides beside it (tab-titles spec).
+/// and command registry's own reports ride beside it (their specs).
 fn load_scripts(
     lua: &Lua,
     segments: &Table,
     tab_title: &Table,
+    commands: &Table,
     dir: &Path,
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
@@ -988,12 +1049,14 @@ fn load_scripts(
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             sync_registry(segments, events);
             sync_tab_title_provider(tab_title, events);
+            sync_commands(commands, events);
             return;
         }
         Err(err) => {
             log(events, format!("cannot read {}: {err}", dir.display()));
             sync_registry(segments, events);
             sync_tab_title_provider(tab_title, events);
+            sync_commands(commands, events);
             return;
         }
     };
@@ -1031,6 +1094,7 @@ fn load_scripts(
     }
     sync_registry(segments, events);
     sync_tab_title_provider(tab_title, events);
+    sync_commands(commands, events);
 }
 
 /// Report the live segment registry — the id set in registration
@@ -1073,6 +1137,31 @@ fn read_provider(seat: &Table, events: &Sender<HostEvent>) -> Option<Function> {
 fn sync_tab_title_provider(seat: &Table, events: &Sender<HostEvent>) {
     let present = read_provider(seat, events).is_some();
     let _ = events.send(HostEvent::TabTitleProvider { present });
+}
+
+/// Report the live command registry — name + description per entry,
+/// registration order — at every load/reload (script-commands spec):
+/// the keybind editor's runtime rows read this and nothing else, so
+/// rows exist only for live commands (a persisted binding for a dead
+/// command stays in the file, inert). The handlers stay host-side.
+fn sync_commands(commands: &Table, events: &Sender<HostEvent>) {
+    let mut rows = Vec::new();
+    for slot in 1..=commands.raw_len() {
+        let read = commands.get::<Table>(slot).and_then(|entry| {
+            Ok((
+                entry.get::<String>("name")?,
+                entry.get::<String>("description")?,
+            ))
+        });
+        match read {
+            Ok((name, description)) => rows.push(CommandRow { name, description }),
+            Err(err) => log(
+                events,
+                format!("the command registry would not read: {err}"),
+            ),
+        }
+    }
+    let _ = events.send(HostEvent::CommandsSync { commands: rows });
 }
 
 /// Call the tab-title provider once per ask entry in one interpreter
@@ -2832,6 +2921,226 @@ mod tests {
             !all.iter()
                 .any(|event| matches!(event, HostEvent::TabTitleProvider { present: true })),
             "the sync reports the seat honestly absent: {all:?}"
+        );
+    }
+
+    // --- script commands (script-commands spec, task SC1) ---
+
+    /// The sync report a command's registration must produce, or
+    /// `None` when no report landed.
+    fn command_sync(events: &[HostEvent]) -> Option<Vec<CommandRow>> {
+        events.iter().find_map(|event| match event {
+            HostEvent::CommandsSync { commands } => Some(commands.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn command_registrations_sync_the_live_set_in_registration_order() {
+        let dir = TempDir::new("commands");
+        script(
+            &dir,
+            "cmds.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('paste-uptime', 'Paste system uptime', function(p) end)\n\
+                 d.command('git-status', 'Show git status', function(p) end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::CommandsSync { .. }),
+            LONG_WAIT,
+        );
+        let commands = command_sync(&events).expect("the load must report the live command set");
+        assert_eq!(
+            commands,
+            vec![
+                CommandRow {
+                    name: "paste-uptime".to_owned(),
+                    description: "Paste system uptime".to_owned(),
+                },
+                CommandRow {
+                    name: "git-status".to_owned(),
+                    description: "Show git status".to_owned(),
+                },
+            ],
+            "the sync carries name + description in registration order: {events:?}"
+        );
+        assert_eq!(commands[0].id(), "script/paste-uptime");
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("command 'paste-uptime' registered"))
+                .count(),
+            1,
+            "each registration costs exactly one line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_command_registration_replaces_with_one_line() {
+        let dir = TempDir::new("replaced");
+        script(
+            &dir,
+            "twice.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('greet', 'first description', function(p) end)\n\
+                 d.command('greet', 'second description', function(p) end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::CommandsSync { .. }),
+            LONG_WAIT,
+        );
+        let commands = command_sync(&events).expect("the load must report");
+        assert_eq!(
+            commands,
+            vec![CommandRow {
+                name: "greet".to_owned(),
+                description: "second description".to_owned(),
+            }],
+            "one live seat per name, the last registration's description: {events:?}"
+        );
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("command 'greet' replaced"))
+                .count(),
+            1,
+            "the replacement costs exactly one line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_command_names_reject_at_the_port_with_one_line() {
+        let dir = TempDir::new("badname");
+        let overlong = "x".repeat(65);
+        script(
+            &dir,
+            "bad.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('Bad Name', 'uppercase and space', function(p) end)\n\
+                 d.command('', 'empty name', function(p) end)\n\
+                 d.command('{overlong}', 'overlong name', function(p) end)\n\
+                 d.command('good-name', 'the one that lands', function(p) end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::CommandsSync { .. }),
+            LONG_WAIT,
+        );
+        let commands = command_sync(&events).expect("the load must report");
+        assert_eq!(
+            commands,
+            vec![CommandRow {
+                name: "good-name".to_owned(),
+                description: "the one that lands".to_owned(),
+            }],
+            "only the valid name registers: {events:?}"
+        );
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        for rejected in ["Bad Name", overlong.as_str()] {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(rejected)).count(),
+                1,
+                "the invalid name {rejected:?} costs exactly one line: {lines:?}"
+            );
+        }
+        // The empty name's line is the empty-shaped one; its own count
+        // rides the shared "would not register" wording.
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("would not register"))
+                .count(),
+            3,
+            "three invalid registrations, one line each: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_reload_clears_the_command_registry_until_reregistration() {
+        let dir = TempDir::new("cmdreload");
+        let registering =
+            |desc: &str| format!("{PORT}\nd.command('greet', '{desc}', function(p) end)");
+        script(&dir, "cmd.lua", &registering("v1"));
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let first = events_until(
+            &host,
+            |event| matches!(event, HostEvent::CommandsSync { .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            command_sync(&first).is_some_and(|commands| commands.len() == 1),
+            "the first load reports the command: {first:?}"
+        );
+        // The script stops registering: the reload clears the registry
+        // (the empty report included), and the row set follows.
+        script(
+            &dir,
+            "cmd.lua",
+            &format!("{PORT}\nprint('no commands now')"),
+        );
+        host.send(HostCommand::Reload);
+        let second = events_until(
+            &host,
+            |event| matches!(event, HostEvent::CommandsSync { commands } if commands.is_empty()),
+            LONG_WAIT,
+        );
+        assert!(
+            command_sync(&second).is_some_and(|commands| commands.is_empty()),
+            "a reload into no registrations clears the registry: {second:?}"
+        );
+        // Re-registration resumes on the next reload.
+        script(&dir, "cmd.lua", &registering("v2"));
+        host.send(HostCommand::Reload);
+        let third = events_until(
+            &host,
+            |event| {
+                matches!(
+                    event,
+                    HostEvent::CommandsSync { commands }
+                        if commands.len() == 1
+                            && commands[0].description == "v2"
+                )
+            },
+            LONG_WAIT,
+        );
+        assert!(
+            command_sync(&third).is_some_and(|commands| commands.len() == 1),
+            "the re-registered command reports again: {third:?}"
         );
     }
 }

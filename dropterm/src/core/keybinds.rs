@@ -32,6 +32,62 @@ pub struct Binding {
     pub key: String,
 }
 
+// --- script-registered commands (script-commands spec) ---
+
+/// The `custom_key_binds` namespace script commands bind under —
+/// `script/<name>`. No builtin id carries the prefix (a file-format
+/// contract pinned by test), so the namespace cannot collide.
+pub const SCRIPT_ID_PREFIX: &str = "script/";
+
+/// A command slug's length bound (the spec's "bounded length", pinned
+/// here): the id becomes a persisted `custom_key_binds` key and a row
+/// label, both of which want short names; descriptions stay unbounded
+/// (the row layout truncates them).
+pub const MAX_COMMAND_NAME_LEN: usize = 64;
+
+/// Whether `name` is a registrable command slug: `[a-z0-9-]+`, at
+/// least one character, at most [`MAX_COMMAND_NAME_LEN`]. The port
+/// rejects anything else with one log line — the slug is a persisted
+/// id, so the charset is part of the file-format contract.
+pub fn valid_command_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_COMMAND_NAME_LEN
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+/// The persisted id a command binds under: `script/<name>`.
+pub fn script_command_id(name: &str) -> String {
+    format!("{SCRIPT_ID_PREFIX}{name}")
+}
+
+/// The command slug an id carries, or `None` when the id is not in
+/// the script namespace (or carries no slug).
+pub fn command_name_from_id(id: &str) -> Option<&str> {
+    id.strip_prefix(SCRIPT_ID_PREFIX)
+        .filter(|name| !name.is_empty())
+}
+
+/// One script-registered command, as the host's sync reports it and
+/// the editor renders it: the slug (the registry key, the row's
+/// label), the description shown under it, and — through [`Self::id`]
+/// — the persisted `custom_key_binds` key the capture flow commits
+/// under. A live command is runtime state, so the strings are owned;
+/// a command ships unbound, its row's binding always a custom entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandRow {
+    pub name: String,
+    pub description: String,
+}
+
+impl CommandRow {
+    /// The persisted id — `script/<name>` (the file-format contract).
+    pub fn id(&self) -> String {
+        script_command_id(&self.name)
+    }
+}
+
 // --- the id-keyed binding registry (gpui-chrome) ---
 
 /// One keybind-editor row: the action's stable id (the
@@ -163,17 +219,20 @@ pub fn binding_display(binding: &Binding) -> String {
 
 /// The row's effective binding display: its custom entry if one
 /// exists, else its defaults joined `" / "` in sorted order — the
-/// editor row's binding text.
+/// editor row's binding text. The custom check comes first for any
+/// id: script-command rows (which have no defaults and never appear
+/// in [`binding_rows`]) serve their custom entry or `None` through
+/// the same function.
 pub fn effective_binding_display(
     id: &str,
     custom: &std::collections::BTreeMap<String, Binding>,
 ) -> String {
-    let Some(row) = binding_rows().iter().find(|row| row.id == id) else {
-        return "None".to_string();
-    };
     if let Some(binding) = custom.get(id) {
         return binding_display(binding);
     }
+    let Some(row) = binding_rows().iter().find(|row| row.id == id) else {
+        return "None".to_string();
+    };
     let mut chords: Vec<String> = row
         .defaults
         .iter()
@@ -204,8 +263,9 @@ pub enum CaptureVerdict {
     /// disarm, nothing written.
     Own,
     /// Another row holds the chord effectively: nothing writes; the
-    /// holder's id names it in the inline error.
-    Conflict(&'static str),
+    /// holder's id names it in the inline error. Owned, because the
+    /// holder may be a script-command row (`script/<name>`).
+    Conflict(String),
     /// The chord cannot round-trip (an empty key name — only a
     /// hand-edited config can hold one): disarm, never persist.
     Unsupported,
@@ -217,11 +277,14 @@ fn chord_eq(binding: &Binding, modifiers: &[ModifierName], key: &str) -> bool {
 }
 
 /// The capture verdict for `id` capturing `binding`, given the
-/// current custom map.
+/// current custom map and the live script-command rows (which hold
+/// chords through their custom entries only — a command ships
+/// unbound).
 pub fn capture_verdict(
     id: &str,
     binding: &Binding,
     custom: &std::collections::BTreeMap<String, Binding>,
+    commands: &[CommandRow],
 ) -> CaptureVerdict {
     if binding.key.is_empty() {
         return CaptureVerdict::Unsupported;
@@ -240,7 +303,19 @@ pub fn capture_verdict(
             return if row.id == id {
                 CaptureVerdict::Own
             } else {
-                CaptureVerdict::Conflict(row.id)
+                CaptureVerdict::Conflict(row.id.to_string())
+            };
+        }
+    }
+    for command in commands {
+        let Some(their_custom) = custom.get(command.id().as_str()) else {
+            continue;
+        };
+        if chord_eq(their_custom, &binding.modifiers, &binding.key) {
+            return if command.id().as_str() == id {
+                CaptureVerdict::Own
+            } else {
+                CaptureVerdict::Conflict(command.id())
             };
         }
     }
@@ -384,7 +459,8 @@ mod registry_tests {
                     modifiers: vec![ModifierName::Alt],
                     key: "X".into()
                 },
-                &empty
+                &empty,
+                &[],
             ),
             CaptureVerdict::Commit
         );
@@ -396,7 +472,8 @@ mod registry_tests {
                     modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
                     key: "C".into()
                 },
-                &empty
+                &empty,
+                &[],
             ),
             CaptureVerdict::Own
         );
@@ -408,9 +485,10 @@ mod registry_tests {
                     modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
                     key: "T".into()
                 },
-                &empty
+                &empty,
+                &[],
             ),
-            CaptureVerdict::Conflict("new_tab")
+            CaptureVerdict::Conflict("new_tab".to_string())
         );
         // A custom chord is as owned as a default, and the default it
         // retired is free again.
@@ -422,7 +500,8 @@ mod registry_tests {
                     modifiers: vec![ModifierName::Ctrl, ModifierName::Shift],
                     key: "T".into()
                 },
-                &map
+                &map,
+                &[],
             ),
             CaptureVerdict::Commit,
             "the retired default is free"
@@ -434,9 +513,10 @@ mod registry_tests {
                     modifiers: vec![ModifierName::Alt],
                     key: "N".into()
                 },
-                &map
+                &map,
+                &[],
             ),
-            CaptureVerdict::Conflict("new_tab")
+            CaptureVerdict::Conflict("new_tab".to_string())
         );
         // An empty key never persists.
         assert_eq!(
@@ -446,7 +526,8 @@ mod registry_tests {
                     modifiers: vec![],
                     key: String::new()
                 },
-                &empty
+                &empty,
+                &[],
             ),
             CaptureVerdict::Unsupported
         );
@@ -462,5 +543,109 @@ mod registry_tests {
         // Bare modifiers stay armed (the capture keeps waiting).
         assert_eq!(capture_key_name("shift"), None);
         assert_eq!(capture_key_name(""), None);
+    }
+
+    // --- script-registered commands (script-commands spec, task SC1) ---
+
+    #[test]
+    fn command_slug_rules_and_the_id_namespace_round_trip() {
+        // Valid slugs: lowercase letters, digits, hyphens.
+        for name in ["paste-uptime", "a", "x9-y"] {
+            assert!(valid_command_name(name), "{name:?} must be a valid slug");
+        }
+        // Invalid: empty, uppercase, spaces, underscores, slashes, and
+        // past the length bound.
+        let overlong = "x".repeat(MAX_COMMAND_NAME_LEN + 1);
+        for name in [
+            "",
+            "Foo",
+            "with space",
+            "under_score",
+            "slash/name",
+            &overlong,
+        ] {
+            assert!(!valid_command_name(name), "{name:?} must reject");
+        }
+        assert!(
+            valid_command_name(&"x".repeat(MAX_COMMAND_NAME_LEN)),
+            "the bound itself is valid"
+        );
+        // The id namespace: prefix + slug, inverted by name lookup,
+        // and uncollidable with every builtin id (none carries the
+        // prefix).
+        assert_eq!(script_command_id("paste-uptime"), "script/paste-uptime");
+        assert_eq!(
+            command_name_from_id("script/paste-uptime"),
+            Some("paste-uptime")
+        );
+        assert_eq!(command_name_from_id("paste-uptime"), None);
+        assert_eq!(command_name_from_id("script/"), None);
+        for row in binding_rows() {
+            assert!(
+                !row.id.starts_with(SCRIPT_ID_PREFIX),
+                "{} carries the script namespace",
+                row.id
+            );
+        }
+    }
+
+    #[test]
+    fn capture_verdicts_see_script_command_rows() {
+        let commands = [CommandRow {
+            name: "paste-uptime".to_owned(),
+            description: "Paste system uptime into the pane".to_owned(),
+        }];
+        // The command row ships no defaults: unbound displays None,
+        // and its custom entry is as owned as any builtin's.
+        let empty = std::collections::BTreeMap::default();
+        assert_eq!(
+            effective_binding_display("script/paste-uptime", &empty),
+            "None"
+        );
+        let map = custom(&[("script/paste-uptime", &[ModifierName::Alt], "U")]);
+        assert_eq!(
+            effective_binding_display("script/paste-uptime", &map),
+            "Alt + U"
+        );
+        // A chord another row's script binding holds conflicts, the
+        // holder named by its script id; a free chord commits for a
+        // script id exactly as for a builtin (rows are generic).
+        assert_eq!(
+            capture_verdict(
+                "copy",
+                &Binding {
+                    modifiers: vec![ModifierName::Alt],
+                    key: "U".into()
+                },
+                &map,
+                &commands,
+            ),
+            CaptureVerdict::Conflict("script/paste-uptime".to_string())
+        );
+        assert_eq!(
+            capture_verdict(
+                "script/paste-uptime",
+                &Binding {
+                    modifiers: vec![ModifierName::Ctrl, ModifierName::Alt],
+                    key: "U".into()
+                },
+                &map,
+                &commands,
+            ),
+            CaptureVerdict::Commit
+        );
+        // The command's own held chord is Own, the silent disarm.
+        assert_eq!(
+            capture_verdict(
+                "script/paste-uptime",
+                &Binding {
+                    modifiers: vec![ModifierName::Alt],
+                    key: "U".into()
+                },
+                &map,
+                &commands,
+            ),
+            CaptureVerdict::Own
+        );
     }
 }

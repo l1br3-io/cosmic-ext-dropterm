@@ -220,10 +220,11 @@ pub(crate) struct SettingsState {
     pub(crate) profile_delete_armed: Option<usize>,
     /// The Keybindings page's search (display-only; the page
     /// re-filters its rows), the armed capture's row id, and the
-    /// standing conflict (the arming row and the holder).
+    /// standing conflict (the arming row and the holder). Owned ids:
+    /// a script-command row's id (`script/<name>`) is runtime state.
     pub(crate) keybind_search: String,
-    pub(crate) keybind_capture: Option<&'static str>,
-    pub(crate) keybind_conflict: Option<(&'static str, &'static str)>,
+    pub(crate) keybind_capture: Option<String>,
+    pub(crate) keybind_conflict: Option<(String, String)>,
     /// The resize handle's live drag width, display-only until
     /// release (core's `drawer_drag_px` math); `None` while the
     /// handle is at rest.
@@ -1497,8 +1498,8 @@ impl SettingsDrawer {
         let shell = self.shell.read(cx);
         let custom = shell.config.custom_key_binds.clone();
         let search = shell.settings.keybind_search.clone();
-        let armed = shell.settings.keybind_capture;
-        let conflict = shell.settings.keybind_conflict;
+        let armed = shell.settings.keybind_capture.clone();
+        let conflict = shell.settings.keybind_conflict.clone();
         let mut page = v_flex().gap_3().min_w_0();
         page = page.child(Input::new(&self.keybind_search).w_full());
         if armed.is_some() {
@@ -1525,7 +1526,14 @@ impl SettingsDrawer {
             let holder_label = dropterm::core::keybinds::binding_rows()
                 .iter()
                 .find(|row| row.id == holder)
-                .map_or(holder, |row| row.label);
+                .map_or_else(
+                    || {
+                        dropterm::core::keybinds::command_name_from_id(&holder)
+                            .unwrap_or(&holder)
+                            .to_string()
+                    },
+                    |row| row.label.to_string(),
+                );
             page = page.child(
                 gpui::div()
                     .text_size(gpui::px(13.))
@@ -1533,20 +1541,141 @@ impl SettingsDrawer {
                     .child(format!("That chord is held by {holder_label} ({id})")),
             );
         }
-        for (row_ix, row) in dropterm::core::keybinds::binding_rows().iter().enumerate() {
+        let mut row_ix = 0;
+        for row in dropterm::core::keybinds::binding_rows() {
             if !dropterm::core::keybinds::row_matches_search(row, &search) {
                 continue;
             }
             page = page.child(self.keybind_row(
                 row,
                 row_ix,
-                armed == Some(row.id),
+                armed.as_deref() == Some(row.id),
                 custom.contains_key(row.id),
                 &custom,
                 cx,
             ));
+            row_ix += 1;
+        }
+        // The runtime section (script-commands spec): one row per live
+        // command, beside the builtins — the capture flow serves it
+        // exactly as the builtin rows (a command ships unbound, so
+        // only a custom entry can hold its chord). The search matches
+        // a command's name or description, the builtin rows' own rule.
+        let commands = shell.script_commands.clone();
+        let query = search.to_lowercase();
+        let matches = |command: &dropterm::core::keybinds::CommandRow| {
+            query.is_empty()
+                || command.name.to_lowercase().contains(&query)
+                || command.description.to_lowercase().contains(&query)
+        };
+        if commands.iter().any(&matches) {
+            page = page.child(
+                gpui::div()
+                    .px_2()
+                    .pt_2()
+                    .text_size(gpui::px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Script commands"),
+            );
+            for command in &commands {
+                if !matches(command) {
+                    continue;
+                }
+                page = page.child(self.command_row(
+                    command,
+                    row_ix,
+                    armed.as_deref() == Some(command.id().as_str()),
+                    &custom,
+                    cx,
+                ));
+                row_ix += 1;
+            }
         }
         page.into_any_element()
+    }
+
+    /// One script-command row (script-commands spec): the command's
+    /// slug and its description stacked in the label column, the
+    /// binding chip beside it — the capture and revert affordances
+    /// identical to [`Self::keybind_row`]'s, over the owned
+    /// `script/<name>` id.
+    fn command_row(
+        &self,
+        command: &dropterm::core::keybinds::CommandRow,
+        row_ix: usize,
+        is_armed: bool,
+        custom: &std::collections::BTreeMap<String, dropterm::core::keybinds::Binding>,
+        cx: &App,
+    ) -> impl IntoElement {
+        let target = self.shell.clone();
+        let id = command.id();
+        let capture_id = id.clone();
+        let mut element = h_flex()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .min_w_0()
+            .bg(cx.theme().popover)
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        gpui::div()
+                            .truncate()
+                            .text_size(gpui::px(13.))
+                            .child(command.name.clone()),
+                    )
+                    .child(
+                        gpui::div()
+                            .truncate()
+                            .text_size(gpui::px(12.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(command.description.clone()),
+                    ),
+            )
+            .child(
+                gpui::div()
+                    .id(("keybind-bind", row_ix))
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(cx.theme().accent)
+                    .text_color(cx.theme().accent_foreground)
+                    .text_size(gpui::px(12.))
+                    .child(dropterm::core::keybinds::effective_binding_display(
+                        &id, custom,
+                    ))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            target.update(cx, |shell, cx| {
+                                shell.keybind_capture_start(capture_id.clone(), window, cx);
+                            });
+                        },
+                    ),
+            );
+        if custom.contains_key(id.as_str()) {
+            let target = self.shell.clone();
+            let revert_id = id.clone();
+            element = element.child(small_button(
+                ("keybind-revert", row_ix),
+                "Revert",
+                move |_, cx| {
+                    target.update(cx, |shell, cx| shell.keybind_revert(&revert_id, cx));
+                },
+            ));
+        }
+        if is_armed {
+            element = element.child(
+                gpui::div()
+                    .text_size(gpui::px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("capturing…"),
+            );
+        }
+        element
     }
 
     /// One keybindings row: the action's label in a filling,
@@ -1595,7 +1724,7 @@ impl SettingsDrawer {
                         gpui::MouseButton::Left,
                         move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
                             target.update(cx, |shell, cx| {
-                                shell.keybind_capture_start(id, window, cx);
+                                shell.keybind_capture_start(id.to_string(), window, cx);
                             });
                         },
                     ),

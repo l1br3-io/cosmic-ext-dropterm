@@ -526,6 +526,12 @@ pub(crate) struct Shell {
     /// drain lands replies through it. Idle by construction with no
     /// plugins dir (no provider ever reports, no ask ever fires).
     tab_titles: dropterm::core::tabs::TabTitleAsks,
+    /// The live script-command set (script-commands spec): the host's
+    /// sync reports, the keybind editor's runtime rows read. Empty by
+    /// construction with no plugins dir; empty after a reload into no
+    /// commands — rows exist only for live commands, while persisted
+    /// `script/<name>` bindings stay in the file, inert.
+    pub(crate) script_commands: Vec<dropterm::core::keybinds::CommandRow>,
     /// The completions table's shared load (gpui-parity Task 1): the
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
@@ -822,6 +828,7 @@ impl Shell {
                 }
                 asks
             },
+            script_commands: Vec::new(),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -3019,13 +3026,13 @@ impl Shell {
     /// echo), and buffer the search box.
     pub(crate) fn keybind_capture_start(
         &mut self,
-        id: &'static str,
+        id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.settings.keybind_capture = Some(id);
         self.settings.keybind_conflict = None;
         println!("dropterm: keybind capture armed for {id}");
+        self.settings.keybind_capture = Some(id);
         // The drawer holds the keyboard while armed: its focus handle
         // takes it, the pane's claim resumes when the capture ends.
         self.settings_capture_focus.focus(window, cx);
@@ -3052,7 +3059,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.settings.keybind_capture else {
+        let Some(id) = self.settings.keybind_capture.clone() else {
             return;
         };
         if keystroke.key == "escape" {
@@ -3077,12 +3084,16 @@ impl Shell {
             modifiers.push(dropterm::core::keybinds::ModifierName::Super);
         }
         let binding = dropterm::core::keybinds::Binding { modifiers, key };
-        match dropterm::core::keybinds::capture_verdict(id, &binding, &self.config.custom_key_binds)
-        {
+        match dropterm::core::keybinds::capture_verdict(
+            &id,
+            &binding,
+            &self.config.custom_key_binds,
+            &self.script_commands,
+        ) {
             dropterm::core::keybinds::CaptureVerdict::Commit => {
                 let write = dropterm::core::keybinds::with_custom_binding(
                     &self.config.custom_key_binds,
-                    id,
+                    &id,
                     binding.clone(),
                 );
                 self.write_keybinds(&dropterm::core::settings::KeybindsWrite(write));
@@ -3107,7 +3118,7 @@ impl Shell {
         }
     }
 
-    pub(crate) fn keybind_revert(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn keybind_revert(&mut self, id: &str, cx: &mut Context<Self>) {
         self.settings.keybind_conflict = None;
         let write =
             dropterm::core::keybinds::without_custom_binding(&self.config.custom_key_binds, id);
@@ -4536,6 +4547,20 @@ impl Shell {
                 }
                 dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
                     self.tab_titles.note_provider(present);
+                }
+                dropterm::core::lua_host::HostEvent::CommandsSync { commands } => {
+                    if commands != self.script_commands {
+                        let names: Vec<&str> = commands
+                            .iter()
+                            .map(|command| command.name.as_str())
+                            .collect();
+                        println!(
+                            "dropterm: plugins: commands registry {names:?} at +{}ms",
+                            self.boot.elapsed().as_millis()
+                        );
+                        self.script_commands = commands;
+                        cx.notify();
+                    }
                 }
                 dropterm::core::lua_host::HostEvent::TabTitles {
                     token,
