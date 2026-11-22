@@ -188,6 +188,22 @@ struct ShellControl {
     _subscription: gpui::Subscription,
 }
 
+/// The global-summon snapshot (global-toggle-guidance spec): the
+/// environment, the custom map's own-stem toggle chords in their
+/// display form, and whether the writer's own marker entry is
+/// present (the Global row's revert affordance), loaded once at cold
+/// startup. The Global row reads it, the first-run prompt's decision
+/// reads it, and the writer module's commits refresh it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SummonSnapshot {
+    pub(crate) environment: dropterm::core::global_shortcut::Environment,
+    pub(crate) display: Vec<String>,
+    /// The writer's marker entry (the `DropTerm`-described toggle
+    /// spawn of the running stem) exists, so the Global row offers
+    /// the revert verb.
+    pub(crate) marker: bool,
+}
+
 /// The drawer's shell-owned state (the libcosmic app's own shape):
 /// the open flag, the open page, the display-only drafts buffer
 /// (core's), and the guard that keeps an echo's programmatic input
@@ -225,6 +241,10 @@ pub(crate) struct SettingsState {
     pub(crate) keybind_search: String,
     pub(crate) keybind_capture: Option<String>,
     pub(crate) keybind_conflict: Option<(String, String)>,
+    /// The global-summon snapshot (global-toggle-guidance spec):
+    /// loaded at cold startup, read-only here — the writer module's
+    /// commits are the one future refresher.
+    pub(crate) summon: SummonSnapshot,
     /// The resize handle's live drag width, display-only until
     /// release (core's `drawer_drag_px` math); `None` while the
     /// handle is at rest.
@@ -247,6 +267,7 @@ impl Default for SettingsState {
             keybind_search: String::new(),
             keybind_capture: None,
             keybind_conflict: None,
+            summon: SummonSnapshot::default(),
             drawer_drag: None,
         }
     }
@@ -1541,6 +1562,11 @@ impl SettingsDrawer {
                     .child(format!("That chord is held by {holder_label} ({id})")),
             );
         }
+        // The Global group (global-toggle-guidance spec) above the
+        // in-app groups, answering the page's search like every row.
+        if search.is_empty() || "toggle the overlay".contains(&search.to_lowercase()) {
+            page = page.child(self.summon_group(cx));
+        }
         let mut row_ix = 0;
         for row in dropterm::core::keybinds::binding_rows() {
             if !dropterm::core::keybinds::row_matches_search(row, &search) {
@@ -1676,6 +1702,132 @@ impl SettingsDrawer {
             );
         }
         element
+    }
+
+    /// The Global group: the summon key's row — the custom map's
+    /// own-stem toggle chords read-only (`None` while unbound), the
+    /// environment's walk beneath, and on COSMIC the keyboard page's
+    /// deep link. The writer module's capture replaces the read-only
+    /// chip with the arm affordance (global-toggle-cosmic-writer).
+    fn summon_group(&self, cx: &App) -> gpui::AnyElement {
+        let summon = &self.shell.read(cx).settings.summon;
+        let binding_text = if summon.display.is_empty() {
+            "None".to_string()
+        } else {
+            summon.display.join(" / ")
+        };
+        let mut group = v_flex().gap_1().min_w_0();
+        group = group.child(
+            gpui::div()
+                .text_size(gpui::px(12.))
+                .text_color(cx.theme().muted_foreground)
+                .child("Global"),
+        );
+        group = group.child(
+            h_flex()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_sm()
+                .min_w_0()
+                .bg(cx.theme().popover)
+                .child(
+                    gpui::div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(gpui::px(13.))
+                        .child("Toggle the overlay"),
+                )
+                .child(
+                    gpui::div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(cx.theme().accent)
+                        .text_color(cx.theme().accent_foreground)
+                        .text_size(gpui::px(12.))
+                        .child(binding_text),
+                ),
+        );
+        for step in dropterm::core::global_shortcut::summon_walk(summon.environment) {
+            group = group.child(
+                gpui::div()
+                    .text_size(gpui::px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(*step),
+            );
+        }
+        if summon.environment == dropterm::core::global_shortcut::Environment::Cosmic {
+            group = group.child(small_button(
+                "summon-open-keyboard",
+                "Open keyboard settings",
+                |_, _| {
+                    // The COSMIC deep link: the keyboard page the walk
+                    // describes. A detached spawn — the settings app
+                    // outlives DropTerm as a matter of course, and a
+                    // failure is a logged line, never a surface.
+                    if let Err(err) = std::process::Command::new("cosmic-settings")
+                        .arg("keyboard")
+                        .spawn()
+                    {
+                        eprintln!("dropterm: cosmic-settings spawn failed: {err}");
+                    }
+                },
+            ));
+        }
+        if summon.marker {
+            group = group.child(self.summon_revert_button());
+        }
+        // The re-trigger (summon-onboarding spec): the same step the
+        // cold boot opens, from the settings panel. Closing from this
+        // origin persists nothing.
+        let shell = self.shell.clone();
+        group = group.child(small_button(
+            "summon-open-onboarding",
+            "Set up the summon key…",
+            move |_, cx| {
+                crate::onboarding::open_onboarding(
+                    cx,
+                    shell.clone(),
+                    crate::onboarding::Origin::Settings,
+                );
+            },
+        ));
+        group.into_any_element()
+    }
+
+    /// The revert verb (global-toggle-cosmic-writer spec): offered
+    /// only while the writer's own marker entry exists; it removes
+    /// exactly that entry through the seam and refreshes this row's
+    /// read in the same pass.
+    fn summon_revert_button(&self) -> gpui::AnyElement {
+        let shell = self.shell.clone();
+        small_button(
+            "summon-remove-marker",
+            "Remove the key DropTerm set",
+            move |_, cx| {
+                let Some(stem) = dropterm::core::global_shortcut::own_exe_stem() else {
+                    return;
+                };
+                let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+                    return;
+                };
+                let path = dropterm::core::global_shortcut::custom_shortcuts_path(&home);
+                match dropterm::core::global_shortcut::write_custom(&path, |custom| {
+                    dropterm::core::global_shortcut::revert_plan(custom, &stem)
+                }) {
+                    dropterm::core::global_shortcut::WriteOutcome::Written(_) => {
+                        let snapshot = crate::app_shell::load_summon_snapshot();
+                        shell.update(cx, |shell, _| shell.settings.summon = snapshot);
+                    }
+                    outcome => {
+                        eprintln!("dropterm: summon revert refused or failed: {outcome:?}");
+                    }
+                }
+            },
+        )
+        .into_any_element()
     }
 
     /// One keybindings row: the action's label in a filling,

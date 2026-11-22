@@ -5,7 +5,7 @@ The questions that recur, answered directly - each with the page that owns the f
 ## Setup and the shortcut
 
 **Why doesn't the terminal appear when I press my shortcut?**
-First, the toggle must be a *COSMIC custom shortcut* running `dropterm` - DropTerm cannot register hotkeys itself (next question). Second, some Shift-modified custom shortcuts fail to fire on COSMIC; prefer an unshifted key like `F12`. The walk lives in [README: Setting up the shortcut](https://github.com/l1br3-io/dropterm#setting-up-the-shortcut); the Shift bug is tracked in [Known issues](known-issues.md).
+First, the toggle must be a *COSMIC custom shortcut* running `dropterm` - DropTerm cannot register hotkeys itself (next question). Second, some Shift-modified custom shortcuts fail to fire on COSMIC; prefer an unshifted key like `F12`. The walk lives in [README: Setting up the shortcut](https://github.com/l1br3-io/dropterm#setting-up-the-shortcut); the Shift bug is tracked in [Known issues](known-issues.md). On COSMIC you can skip the walk entirely: the onboarding's **Configure for me** - also reachable from the Keybindings tab's Global group - writes the custom shortcut for you (**Use F12**, or capture your own chord); [Settings](settings.md) describes the seat and the remove button.
 
 **Why can't DropTerm register its own global hotkey?**
 COSMIC does not yet implement the XDG `GlobalShortcuts` portal, so no app can register one; binding a COSMIC custom shortcut is the only path today ([Known issues](known-issues.md)).

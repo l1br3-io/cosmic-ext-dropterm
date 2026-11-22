@@ -251,6 +251,44 @@ pub(crate) fn apply_kit_theme(
     apply_resolved_theme(cx, &resolve_theme(config, user_schemes));
 }
 
+/// The global-summon snapshot's cold-start load (global-toggle-
+/// guidance spec): the session family off `XDG_CURRENT_DESKTOP` and
+/// the COSMIC custom map's own-stem toggle chords. Absent files,
+/// unreadable paths, and unparseable maps all answer the empty
+/// snapshot — the Global row's guidance and the onboarding's decision
+/// degrade, never an error surface. Env-and-filesystem glue around
+/// core's pure model (its tests pin every decision). The onboarding's
+/// "Check again" and the confirmation refresh call it again.
+pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
+    use dropterm::core::global_shortcut as gs;
+    let environment = gs::detect_environment(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
+    let mut display = Vec::new();
+    let mut marker = false;
+    if environment == gs::Environment::Cosmic {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let loaded = match home {
+            Some(home) => gs::read_custom(&gs::custom_shortcuts_path(&home)),
+            None => gs::ReadCustom::Absent,
+        };
+        if let gs::ReadCustom::Loaded(shortcuts) = loaded {
+            let stem = gs::own_exe_stem().unwrap_or_default();
+            display = gs::summon_entries(&shortcuts, &stem)
+                .iter()
+                .map(gs::binding_display)
+                .collect();
+            marker = shortcuts
+                .0
+                .iter()
+                .any(|(binding, value)| gs::is_marker(binding, value, &stem));
+        }
+    }
+    crate::drawer::SummonSnapshot {
+        environment,
+        display,
+        marker,
+    }
+}
+
 /// The shell view: the shaped window's root. Owns the decision layer,
 /// the executor, and the live terminal pane (gpui-terminal Task 4:
 /// the pane replaced the scaffold's stand-in band — the drawer's
@@ -749,7 +787,7 @@ impl Shell {
         // (a dir that appears mid-run is the next launch's, the
         // watcher's own rule) — `None` means no pane ever holds an
         // inlet, and a no-plugins session stays byte-identical.
-        let lua_bus = lua_host.plugins_dir().exists().then(|| lua_host.handle());
+        let (lua_bus, status_scripts, tab_titles) = Self::plugins_boot_state(&lua_host);
         Self {
             boot,
             show_open: boot,
@@ -790,7 +828,10 @@ impl Shell {
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
-            settings: crate::drawer::SettingsState::default(),
+            settings: crate::drawer::SettingsState {
+                summon: load_summon_snapshot(),
+                ..crate::drawer::SettingsState::default()
+            },
             settings_drawer: None,
             settings_capture_focus: settings_focus,
             rename_focus_repair: None,
@@ -809,25 +850,8 @@ impl Shell {
             status_menu: None,
             was_hidden: true,
             status_timer_logged: (false, None, None),
-            // The boot query arms exactly when the plugins dir stood
-            // at construction (evaluated before the move below takes
-            // the host).
-            status_scripts: {
-                let mut state = status::ScriptSegmentsState::default();
-                if lua_host.plugins_dir().exists() {
-                    state.arm_boot_query();
-                }
-                state
-            },
-            // The tab-title boot ask rides the same dir gate (the
-            // standing-dir wake, TT2's shape of SG1's boot query).
-            tab_titles: {
-                let mut asks = dropterm::core::tabs::TabTitleAsks::default();
-                if lua_host.plugins_dir().exists() {
-                    asks.arm_boot_ask();
-                }
-                asks
-            },
+            status_scripts,
+            tab_titles,
             script_commands: Vec::new(),
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
@@ -848,6 +872,31 @@ impl Shell {
             mem: dropterm::core::mem::Sampler::new(&dropterm::core::mem::state_dir()),
             tick_n: 0,
         }
+    }
+
+    /// The plugins-dir boot facts, read once at construction: the bus
+    /// inlet (`None` when no plugins dir stood at boot — a dir that
+    /// appears mid-run is the next launch's, the watcher's own rule),
+    /// the status boot query (SG1), and the tab-title boot ask (TT2).
+    /// Read before the host moves into the shell.
+    fn plugins_boot_state(
+        lua_host: &dropterm::core::lua_host::LuaHost,
+    ) -> (
+        Option<dropterm::core::lua_host::LuaHostHandle>,
+        status::ScriptSegmentsState,
+        dropterm::core::tabs::TabTitleAsks,
+    ) {
+        let stood = lua_host.plugins_dir().exists();
+        let lua_bus = stood.then(|| lua_host.handle());
+        let mut scripts = status::ScriptSegmentsState::default();
+        let mut asks = dropterm::core::tabs::TabTitleAsks::default();
+        if stood {
+            scripts.arm_boot_query();
+        }
+        if stood {
+            asks.arm_boot_ask();
+        }
+        (lua_bus, scripts, asks)
     }
 
     /// The probe's granted-bounds slot, cloned into each measuring
@@ -6400,6 +6449,20 @@ pub(crate) fn boot(
             pane.update(cx, |pane, _| pane.set_lua_bus(bus));
         }
     }
+    // The onboarding (summon-onboarding spec): the Yakuake-style
+    // ask-once, consulted here at cold boot only — a warm forward
+    // exits at the single-instance seam before GPUI boots, and
+    // Shell::new must stay window-free for the test host. Shows while
+    // no summon binding exists and the flow is not retired; a binding
+    // through any path retires it.
+    shell.update(cx, |shell, cx| {
+        let bound = !shell.settings.summon.display.is_empty();
+        let dismissed = shell.config.onboarding_dismissed;
+        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
+            let entity = cx.entity();
+            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
+        }
+    });
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
     // come and go; the shell owns the machine and must not).

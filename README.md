@@ -64,6 +64,8 @@ Command: dropterm
 Key: F12
 ```
 
+On COSMIC, DropTerm can do this for you: open settings and the Keybindings tab's **Global** group (or answer the first-run onboarding), take **Configure for me**, and press **Use F12** - or choose your own chord. DropTerm writes the custom shortcut itself (COSMIC Settings lists it as "DropTerm"), and the Global row's **Remove the key DropTerm set** undoes exactly that entry later.
+
 Running the command again toggles the terminal (single-instance: the second launch just tells the first one to show/hide, then exits). You can also bind separate shortcuts to `dropterm show` / `dropterm hide` if you want dedicated show/hide keys instead of a toggle. On desktops that host status icons there is a tray icon too: left-click toggles the dropdown, and its menu adds Help and Quit.
 
 The other layer-shell desktops bind the same command through their own settings. DropTerm never installs or seeds a shortcut on any desktop - the bind is always yours to make:

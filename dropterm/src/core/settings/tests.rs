@@ -360,6 +360,7 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::TabBarBorder, "tab_bar_border"),
         (ConfigKey::StatusBarBorder, "status_bar_border"),
         (ConfigKey::StatusBarActivityMark, "status_bar_activity_mark"),
+        (ConfigKey::OnboardingDismissed, "onboarding_dismissed"),
     ];
     for (key, name) in expected {
         assert_eq!(key.key_name(), name);

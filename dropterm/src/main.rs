@@ -30,6 +30,7 @@ mod executor;
 mod images_panel;
 mod kit_check;
 mod notify;
+mod onboarding;
 mod pickers;
 mod startup;
 mod status_bar;
