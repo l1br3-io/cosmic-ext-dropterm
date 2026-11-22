@@ -267,133 +267,6 @@ impl Default for SettingsState {
     }
 }
 
-/// The first-run summon prompt (global-toggle-guidance spec): the
-/// Yakuake-style ask-once dialog at cold startup — the summon walk,
-/// the COSMIC deep link, and the don't-ask-again retire whose tick
-/// persists `onboarding_dismissed` at once (the drawer toggles'
-/// own write path). The writer module adds its action buttons beside
-/// the guidance (global-toggle-cosmic-writer).
-pub(crate) struct SummonPromptView {
-    shell: gpui::Entity<Shell>,
-    walk: &'static [&'static str],
-    cosmic: bool,
-    dismiss_checked: bool,
-}
-
-impl SummonPromptView {
-    fn new(shell: gpui::Entity<Shell>, snapshot: &SummonSnapshot) -> Self {
-        Self {
-            shell,
-            walk: dropterm::core::global_shortcut::summon_walk(snapshot.environment),
-            cosmic: snapshot.environment == dropterm::core::global_shortcut::Environment::Cosmic,
-            dismiss_checked: false,
-        }
-    }
-}
-
-impl gpui::Render for SummonPromptView {
-    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        let shell = self.shell.clone();
-        let retire = cx.listener(
-            move |view: &mut Self,
-                  checked: &bool,
-                  _window: &mut Window,
-                  cx: &mut gpui::Context<SummonPromptView>| {
-                view.dismiss_checked = *checked;
-                if *checked {
-                    // The retire persists at once (the drawer toggles'
-                    // path): a tick survives even a crash, and the
-                    // un-tick before closing writes it back off.
-                    shell.update(cx, |shell, _| {
-                        shell.write_settings(
-                            &dropterm::core::settings::PlannedWrite::OnboardingDismissed(*checked),
-                        );
-                    });
-                }
-            },
-        );
-        let mut dialog = v_flex()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .p_4()
-            .gap_2()
-            .child(gpui::div().text_xl().child("Set a summon key"))
-            .child(
-                gpui::div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("DropTerm is summoned with a global key — a chord that works while the terminal is hidden."),
-            );
-        for step in self.walk {
-            dialog = dialog.child(
-                gpui::div()
-                    .text_size(gpui::px(13.))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(*step),
-            );
-        }
-        if self.cosmic {
-            dialog = dialog.child(small_button(
-                "summon-prompt-open-keyboard",
-                "Open keyboard settings",
-                |_, _| {
-                    if let Err(err) = std::process::Command::new("cosmic-settings")
-                        .arg("keyboard")
-                        .spawn()
-                    {
-                        eprintln!("dropterm: cosmic-settings spawn failed: {err}");
-                    }
-                },
-            ));
-        }
-        dialog = dialog.child(
-            h_flex()
-                .gap_2()
-                .justify_between()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Switch::new("summon-prompt-dismiss")
-                                .checked(self.dismiss_checked)
-                                .on_click(retire),
-                        )
-                        .child(
-                            gpui::div()
-                                .text_size(gpui::px(13.))
-                                .child("Don't ask again"),
-                        ),
-                )
-                .child(small_button("summon-prompt-close", "Later", |window, _| {
-                    window.remove_window();
-                })),
-        );
-        dialog
-    }
-}
-
-/// Opens the first-run summon prompt: the About window's plain-
-/// toplevel shape at a modest size. A failed open logs and drops —
-/// the prompt is guidance, never fatal, and the Global row stays
-/// available in the drawer either way.
-pub(crate) fn open_summon_prompt(cx: &mut App, shell: gpui::Entity<Shell>) {
-    let snapshot = shell.read(cx).settings.summon.clone();
-    let options = gpui::WindowOptions {
-        titlebar: None,
-        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
-            origin: gpui::point(gpui::px(0.), gpui::px(0.)),
-            size: gpui::size(gpui::px(440.), gpui::px(300.)),
-        })),
-        app_id: Some(dropterm::core::APP_ID.to_string()),
-        kind: gpui::WindowKind::Normal,
-        ..Default::default()
-    };
-    let view = cx.new(|_| SummonPromptView::new(shell, &snapshot));
-    if let Err(err) = cx.open_window(options, |_, _| view.clone()) {
-        eprintln!("dropterm: summon prompt open failed: {err:?}");
-    }
-}
-
 /// The profile form's Kit states, rebuilt whenever the draft's
 /// identity changes (a fresh Add/Clone/Edit, or an env-row count
 /// change): every field input seeded from the draft, the scheme
@@ -1769,6 +1642,21 @@ impl SettingsDrawer {
                 },
             ));
         }
+        // The re-trigger (summon-onboarding spec): the same step the
+        // cold boot opens, from the settings panel. Closing from this
+        // origin persists nothing.
+        let shell = self.shell.clone();
+        group = group.child(small_button(
+            "summon-open-onboarding",
+            "Set up the summon key…",
+            move |_, cx| {
+                crate::onboarding::open_onboarding(
+                    cx,
+                    shell.clone(),
+                    crate::onboarding::Origin::Settings,
+                );
+            },
+        ));
         group.into_any_element()
     }
 

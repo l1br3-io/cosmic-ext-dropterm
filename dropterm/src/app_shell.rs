@@ -255,10 +255,11 @@ pub(crate) fn apply_kit_theme(
 /// guidance spec): the session family off `XDG_CURRENT_DESKTOP` and
 /// the COSMIC custom map's own-stem toggle chords. Absent files,
 /// unreadable paths, and unparseable maps all answer the empty
-/// snapshot — the Global row's guidance and the prompt's decision
+/// snapshot — the Global row's guidance and the onboarding's decision
 /// degrade, never an error surface. Env-and-filesystem glue around
-/// core's pure model (its tests pin every decision).
-fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
+/// core's pure model (its tests pin every decision). The onboarding's
+/// "Check again" and the confirmation refresh call it again.
+pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
     use dropterm::core::global_shortcut as gs;
     let environment = gs::detect_environment(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
     let mut display = Vec::new();
@@ -6293,18 +6294,18 @@ pub(crate) fn boot(
             pane.update(cx, |pane, _| pane.set_lua_bus(bus));
         }
     }
-    // The first-run summon prompt (global-toggle-guidance spec): the
-    // Yakuake-style ask-once, consulted here at cold boot only — a
-    // warm forward exits at the single-instance seam before GPUI
-    // boots, and Shell::new must stay window-free for the test host.
-    // Shows while no summon binding exists and the user has not
-    // retired the prompt; a binding through any path retires it.
+    // The onboarding (summon-onboarding spec): the Yakuake-style
+    // ask-once, consulted here at cold boot only — a warm forward
+    // exits at the single-instance seam before GPUI boots, and
+    // Shell::new must stay window-free for the test host. Shows while
+    // no summon binding exists and the flow is not retired; a binding
+    // through any path retires it.
     shell.update(cx, |shell, cx| {
         let bound = !shell.settings.summon.display.is_empty();
         let dismissed = shell.config.onboarding_dismissed;
         if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
             let entity = cx.entity();
-            crate::drawer::open_summon_prompt(cx, entity);
+            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
         }
     });
     // The tick: 100 ms of verb drain + frame pump, holding the shell
