@@ -259,6 +259,23 @@ impl LuaHost {
         spawn_from_gate(&self.dormant, &self.plugins_dir);
     }
 
+    /// The pane-side inlet (event-hooks spec): the command half
+    /// without the outbound stream — the shell keeps the drain on its
+    /// tick, so a handle can only speak to the host, never read its
+    /// answers. The dir-gate lives at the handoff: the shell clones
+    /// this only when the plugins dir stood at boot.
+    pub fn handle(&self) -> LuaHostHandle {
+        LuaHostHandle {
+            dormant: Arc::clone(&self.dormant),
+            commands: self
+                .commands
+                .lock()
+                .expect("the lua host gate is only contended briefly")
+                .clone(),
+            plugins_dir: self.plugins_dir.clone(),
+        }
+    }
+
     /// Watch the plugins dir (non-recursive, the config watcher's
     /// shape) and queue a [`HostCommand::Reload`] on any event (task
     /// L3): the watcher feeds the host's command channel — never the
@@ -342,6 +359,48 @@ fn spawn_from_gate(dormant: &Arc<Mutex<DormantChannels>>, plugins_dir: &Path) {
         .spawn(move || host_thread(&plugins_dir, &commands, &events));
     if let Err(err) = spawned {
         println!("dropterm: plugins: host thread failed to spawn: {err}");
+    }
+}
+
+/// The pane-side half of [`LuaHost`] (event-hooks spec): the command
+/// inlet every pane forwards terminal events through, without the
+/// outbound stream — the shell keeps [`LuaHost::try_event`] on its
+/// tick, so a handle speaks to the host and never reads it.
+/// Clone-cheap and shared freely; the quiet-by-default gate lives at
+/// the handoff, where the shell clones one only when the plugins dir
+/// stood at boot — a pane holding no handle cannot send, so a
+/// no-plugins session's channel never even materializes.
+#[derive(Clone)]
+pub struct LuaHostHandle {
+    /// The gate the first send takes: a handle's first command can be
+    /// the host's spawning work item (the lazy contract).
+    dormant: Arc<Mutex<DormantChannels>>,
+    /// The command inlet, a clone of the owner's.
+    commands: Sender<HostCommand>,
+    /// The dir the first send's scan reads.
+    plugins_dir: PathBuf,
+}
+
+impl LuaHostHandle {
+    /// Deliver one event to every handler registered under it —
+    /// fire-and-forget, spawning the host first if this is the
+    /// channel's first command. The send is the work item; the caller
+    /// never waits on an answer.
+    pub fn emit(&self, event: &str, payload: serde_json::Value) {
+        spawn_from_gate(&self.dormant, &self.plugins_dir);
+        let alive = self
+            .commands
+            .send(HostCommand::Emit {
+                event: event.to_owned(),
+                payload,
+            })
+            .is_ok();
+        if !alive {
+            // The host thread is gone and the channel that would
+            // carry the word died with it — the same one line
+            // [`LuaHost::send`] pays.
+            println!("dropterm: plugins: host thread is gone; command dropped");
+        }
     }
 }
 

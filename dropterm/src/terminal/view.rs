@@ -229,6 +229,12 @@ pub(crate) struct TerminalPane {
     /// fleet (`None` in the standalone walk harness — the Hide
     /// action only logs there).
     shell_signals: Option<std::sync::mpsc::Sender<PaneSignal>>,
+    /// The Lua bus inlet (event-hooks spec), handed by the shell only
+    /// when the plugins dir stood at boot. `None` — the no-plugins
+    /// norm — means the pane's engine events never reach the channel
+    /// at all: engine events arrive constantly, and nobody drains a
+    /// channel whose host never spawned.
+    lua_bus: Option<dropterm::core::lua_host::LuaHostHandle>,
     /// The owning shell, weak — the keyboard's shell verbs (tabs,
     /// settings, images, the band) update it from the key handler's
     /// own window, the menus' own callback shape. Weak by design:
@@ -365,6 +371,7 @@ impl TerminalPane {
             reporter: MouseReporter::default(),
             reporting_gesture: false,
             shell_signals: None,
+            lua_bus: None,
             shell: None,
             id,
             attention: AttentionFlags::default(),
@@ -397,6 +404,10 @@ impl TerminalPane {
 
     /// One engine event through the pane (the libcosmic app's
     /// `handle_term_event`, pared to the single-pane surface).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the funnel: every engine arm beside its own gate, one match body — splitting it would scatter the funnel's one shape"
+    )]
     fn on_event(&mut self, event: TermEvent, cx: &mut Context<Self>) {
         match event {
             TermEvent::Wakeup => {
@@ -409,15 +420,43 @@ impl TerminalPane {
                 cx.notify();
             }
             TermEvent::Title(title) => {
+                // Change-gated onto the bus (event-hooks spec): title
+                // reports fire on every prompt, and the tap speaks
+                // only when the latched title actually moves — a
+                // repeat of the standing report forwards nothing.
+                if self.title.as_deref() != Some(title.as_str()) {
+                    forward_to_lua(
+                        self.lua_bus.as_ref(),
+                        self.id,
+                        "title",
+                        serde_json::json!({ "title": title.as_str() }),
+                    );
+                }
                 self.title = Some(title);
             }
             TermEvent::ResetTitle => {
+                // A reset forwards only when one was set (the same
+                // change gate's clear leg).
+                if self.title.is_some() {
+                    forward_to_lua(
+                        self.lua_bus.as_ref(),
+                        self.id,
+                        "title-reset",
+                        serde_json::json!({}),
+                    );
+                }
                 self.title = None;
             }
             TermEvent::Bell => {
                 // The marker latches here (desktop notifications
                 // arrive with the chrome slices).
                 self.attention.note_bell();
+                forward_to_lua(
+                    self.lua_bus.as_ref(),
+                    self.id,
+                    "bell",
+                    serde_json::json!({}),
+                );
             }
             TermEvent::ClipboardStore(kind, text) => {
                 // OSC 52 store: a program copying out (tmux's copy
@@ -483,6 +522,16 @@ impl TerminalPane {
                     .lock()
                     .expect("engine lock")
                     .note_prompt_exit(code);
+                // OSC 133;D onto the bus (event-hooks spec): the
+                // command-finished report — the fork's arm carries
+                // its code unconditionally (`PromptExit(u32)`,
+                // verified against the carried fork at plan).
+                forward_to_lua(
+                    self.lua_bus.as_ref(),
+                    self.id,
+                    "child-exit",
+                    serde_json::json!({ "code": code }),
+                );
             }
             TermEvent::CurrentDirectory(url) => {
                 self.terminal
@@ -520,7 +569,15 @@ impl TerminalPane {
             // The engine's own shutdown request: the pane has no
             // app-level surface to route it through yet; the tabs
             // slice owns closes.
-            TermEvent::Exit => self.signal_exit(),
+            TermEvent::Exit => {
+                forward_to_lua(
+                    self.lua_bus.as_ref(),
+                    self.id,
+                    "exit",
+                    serde_json::json!({}),
+                );
+                self.signal_exit();
+            }
         }
     }
 
@@ -730,6 +787,28 @@ impl TerminalPane {
         });
         self.focus_wiring = Some([on_focus, on_blur, on_activation]);
     }
+}
+
+/// Forward one engine event to the Lua bus, pane side (event-hooks
+/// spec). Fire-and-forget into the host's command channel — the send
+/// is the work item, the lazy contract — gated on plugins-dir
+/// presence at the shell's handoff, so a no-plugins session forwards
+/// nothing and the channel stays empty: engine events arrive
+/// constantly, and nobody drains a channel whose host never spawned.
+/// The payload gains the pane's `tab` id, the minimal correlation key
+/// every event carries.
+fn forward_to_lua(
+    bus: Option<&dropterm::core::lua_host::LuaHostHandle>,
+    tab: TabId,
+    event: &str,
+    payload: serde_json::Value,
+) {
+    let Some(bus) = bus else { return };
+    let mut payload = payload;
+    if let Some(fields) = payload.as_object_mut() {
+        fields.insert("tab".to_owned(), serde_json::json!(tab.0));
+    }
+    bus.emit(event, payload);
 }
 
 impl TerminalPane {
@@ -1078,6 +1157,14 @@ impl TerminalPane {
     /// loop over the restored fleet, and every spawn path after it.
     pub(crate) fn adopt_shell(&mut self, shell: gpui::WeakEntity<crate::app_shell::Shell>) {
         self.shell = Some(shell);
+    }
+
+    /// Take the Lua bus inlet from the shell's handoff (event-hooks
+    /// spec): the shell calls this only when the plugins dir stood at
+    /// boot — the pane never re-checks the dir, so the gate stays a
+    /// boot-time fact.
+    pub(crate) fn set_lua_bus(&mut self, bus: dropterm::core::lua_host::LuaHostHandle) {
+        self.lua_bus = Some(bus);
     }
 
     /// One shell verb off the keyboard (the menus' own funnels): the

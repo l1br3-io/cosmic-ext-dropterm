@@ -434,6 +434,12 @@ pub(crate) struct Shell {
     /// watcher wake), never at boot. v1's events are all
     /// `dropterm:` log lines drained on the tick.
     lua_host: dropterm::core::lua_host::LuaHost,
+    /// The pane-side Lua inlet every pane handoff clones (event-hooks
+    /// spec): `Some` exactly when the plugins dir stood at boot;
+    /// `None` — the no-plugins norm — keeps every pane off the
+    /// channel, so the host never spawns and the session stays
+    /// byte-identical.
+    lua_bus: Option<dropterm::core::lua_host::LuaHostHandle>,
     /// When a focus-loss hide last hid the surface (the tray-click
     /// fix): the click that activates the tray unfocuses a shown
     /// surface, so [`tray_toggle_swallowed`] can pair the two halves
@@ -721,6 +727,12 @@ impl Shell {
         // The booted fleet is the session baseline (computed before
         // the struct literal moves the list).
         let session_written = session_shape(&tabs);
+        // The event-hooks gate: the plugins dir standing at
+        // construction is the boot-time fact every pane handoff reads
+        // (a dir that appears mid-run is the next launch's, the
+        // watcher's own rule) — `None` means no pane ever holds an
+        // inlet, and a no-plugins session stays byte-identical.
+        let lua_bus = lua_host.plugins_dir().exists().then(|| lua_host.handle());
         Self {
             boot,
             show_open: boot,
@@ -797,6 +809,7 @@ impl Shell {
             quit_at: None,
             tray_actions,
             lua_host,
+            lua_bus,
             focus_loss_hide_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
@@ -2191,6 +2204,7 @@ impl Shell {
         // its owner from the first keystroke.
         let shell = cx.entity().downgrade();
         pane.update(cx, |pane, _| pane.adopt_shell(shell));
+        self.arm_pane_lua_bus(&pane, cx);
         self.panes.insert(id, pane);
         self.tabs.note_spawn_facts(id, profile_id, ephemeral);
         cx.notify();
@@ -3046,6 +3060,7 @@ impl Shell {
         };
         let shell = cx.entity().downgrade();
         pane.update(cx, |pane, _| pane.adopt_shell(shell));
+        self.arm_pane_lua_bus(&pane, cx);
         self.panes.insert(id, pane);
         self.tabs.note_spawn_facts(id, None, false);
         println!(
@@ -3390,6 +3405,7 @@ impl Shell {
         // seat — lands through core's plan.
         let shell = cx.entity().downgrade();
         pane.update(cx, |pane, _| pane.adopt_shell(shell));
+        self.arm_pane_lua_bus(&pane, cx);
         drop(self.panes.insert(id, pane));
         self.respawn_focus_repair = departed_focus;
         let fields = dropterm::core::tabs::plan_respawn(
@@ -4338,6 +4354,16 @@ impl Shell {
     /// and a translated dirty request arms the next requery. Never
     /// blocks — [`LuaHost::try_event`] on the tick, the
     /// pty-test-gate pin.
+    /// Hand one pane the Lua bus inlet (event-hooks spec): the
+    /// shell's side of the dir-gate — a no-plugins boot holds no
+    /// inlet, so the pane never gets one and its engine events stay
+    /// off the channel entirely.
+    fn arm_pane_lua_bus(&self, pane: &Entity<TerminalPane>, cx: &mut Context<Self>) {
+        if let Some(bus) = self.lua_bus.clone() {
+            pane.update(cx, |pane, _| pane.set_lua_bus(bus));
+        }
+    }
+
     fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
         while let Some(event) = self.lua_host.try_event() {
             match event {
@@ -6173,6 +6199,11 @@ pub(crate) fn boot(
     let weak = shell.downgrade();
     for pane in boot_panes {
         pane.update(cx, |pane, _| pane.adopt_shell(weak.clone()));
+        // event-hooks: the boot fleet gets its Lua inlet in the same
+        // pass — the gate fact lives on the shell.
+        if let Some(bus) = shell.read(cx).lua_bus.clone() {
+            pane.update(cx, |pane, _| pane.set_lua_bus(bus));
+        }
     }
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
