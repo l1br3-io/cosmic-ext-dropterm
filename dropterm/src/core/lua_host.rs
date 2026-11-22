@@ -62,6 +62,7 @@ use std::time::{Duration, Instant};
 
 use notify::Watcher as _;
 
+use crate::core::status::{ScriptSide, StatusInputs};
 use mlua::{
     Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, VmState,
 };
@@ -84,6 +85,13 @@ const HARD_CAP: Duration = Duration::from_secs(1);
 /// bounds land within slack of their marks, large enough that the
 /// check is noise next to the work between fires.
 const HOOK_EVERY_N_INSTRUCTIONS: u32 = 2_000;
+
+/// The reserved bus event name (status-segments spec, proposed at
+/// intake): a scripted `emit` of this name never dispatches — the
+/// host translates it into an outbound [`HostEvent::SegmentsDirty`]
+/// the tick drains into a requery, so a segment can pull its own
+/// refresh after computing new state.
+pub const STATUS_REFRESH_EVENT: &str = "status-refresh";
 
 /// One item of work for the host thread. The UI never blocks on the
 /// answer: a dispatch is fire-and-forget, and a future query
@@ -110,15 +118,72 @@ pub enum HostCommand {
     /// the registry-table design a re-run file could not un-register
     /// its old handlers, so there is no sound smaller unit.
     Reload,
+    /// Re-evaluate every registered script segment against the
+    /// current band inputs (status-segments spec). One dispatch
+    /// covers all segments — one interpreter trip, the soft/hard
+    /// bounds over the whole trip — and the reply lands as
+    /// [`HostEvent::SegmentValues`] matched by token: stale until
+    /// then, and the band keeps each segment's prior text (the
+    /// runtime contract, never block).
+    QuerySegments {
+        /// The drain-side match key; the reply carries it back.
+        token: u64,
+        /// The [`StatusInputs`] mirror ([`status_ctx`]) — the ctx
+        /// table every handler receives.
+        ctx: serde_json::Value,
+    },
 }
 
-/// One observation out of the host thread. v1 carries only the log;
-/// result tokens join as new arms with the query surfaces that ask
-/// for them (the same closed-extension rule).
+/// One observation out of the host thread. v1 carried only the log;
+/// the query surfaces' replies and reports join as new arms with the
+/// modules that ask for them (the same closed-extension rule).
+#[derive(Debug)]
 pub enum HostEvent {
     /// One `dropterm:` evidence line: host up, each script loaded,
     /// each error with its file, each script's forwarded `print`.
     Log(String),
+    /// Every registered segment's answers to one
+    /// [`HostCommand::QuerySegments`], matched by token, in
+    /// registration order. A raising or unusable answer omits its id
+    /// — the asking surface keeps that segment's prior value; a nil
+    /// answer is carried as [`SegmentAnswer::Hidden`], a fresh
+    /// decision to render nothing. `stale` marks a trip that
+    /// outlived the soft bound: the drain drops the whole reply
+    /// (stale-degrade, never block).
+    SegmentValues {
+        token: u64,
+        stale: bool,
+        values: Vec<SegmentAnswer>,
+    },
+    /// A script pulled its own refresh: [`STATUS_REFRESH_EVENT`],
+    /// translated — never dispatched — into this outbound request
+    /// the tick drains into a requery.
+    SegmentsDirty,
+    /// The live script-segment id set, in registration order, at
+    /// every load/reload (empty included — a reload into an empty
+    /// dir clears the asking surface's registry with it). The
+    /// out-arm shape the later script surfaces reuse: one report at
+    /// every registry change, tab-titles and script-commands
+    /// extending the same arm.
+    RegistrySync { segments: Vec<String> },
+}
+
+/// One script segment's answer on a query trip (status-segments
+/// spec): the shown value (the chosen side and text) or a deliberate
+/// hide (nil). A raising or timing-out handler answers not at all —
+/// its id is omitted from the reply so the asking surface keeps the
+/// prior value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SegmentAnswer {
+    /// The handler answered: render this text on this side.
+    Shown {
+        id: String,
+        side: ScriptSide,
+        text: String,
+    },
+    /// The handler answered nil: render nothing (a fresh decision —
+    /// distinct from an omission, which keeps the prior value).
+    Hidden { id: String },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate
@@ -320,8 +385,23 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             log(events, "host thread up");
             first_generation = false;
         }
+        // Whether this generation's scripts have been loaded: a fresh
+        // generation scans before it first serves, so the spawn, the
+        // hard cap, and the wake all share one lazy path.
+        let mut scanned = false;
         if rescan_now {
-            load_scripts(&generation.lua, plugins_dir, events, &frame);
+            load_scripts(
+                &generation.lua,
+                &generation.segments,
+                plugins_dir,
+                events,
+                &frame,
+            );
+            // The eager rescan IS this generation's load — mark it
+            // scanned so the first dispatch never loads a second
+            // copy beside it (found at status-segments SG1: a doubled
+            // load doubled every registration).
+            scanned = true;
             rescan_now = false;
             if frame.hard_tripped.get() {
                 // The rescan's own load ran away: recreate WITHOUT the
@@ -330,16 +410,18 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 continue;
             }
         }
-        // Whether this generation's scripts have been loaded: a fresh
-        // generation scans before it first serves, so the spawn, the
-        // hard cap, and the wake all share one lazy path.
-        let mut scanned = false;
         let mut reload_requested = false;
         while let Some(command) = held.take().or_else(|| commands.recv().ok()) {
             match command {
                 HostCommand::Emit { event, payload } => {
                     if !scanned {
-                        load_scripts(&generation.lua, plugins_dir, events, &frame);
+                        load_scripts(
+                            &generation.lua,
+                            &generation.segments,
+                            plugins_dir,
+                            events,
+                            &frame,
+                        );
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -355,6 +437,25 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             format!("payload for '{event}' would not convert: {err}"),
                         ),
                     }
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                }
+                HostCommand::QuerySegments { token, ctx } => {
+                    if !scanned {
+                        load_scripts(
+                            &generation.lua,
+                            &generation.segments,
+                            plugins_dir,
+                            events,
+                            &frame,
+                        );
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    }
+                    query_segments(&generation, token, &ctx, events, &frame);
                     if frame.hard_tripped.get() {
                         break;
                     }
@@ -375,6 +476,10 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                                 held = Some(emit);
                                 break;
                             }
+                            Ok(query @ HostCommand::QuerySegments { .. }) => {
+                                held = Some(query);
+                                break;
+                            }
                             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                                 break;
                             }
@@ -389,7 +494,13 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     // The spawning wake itself: this generation has
                     // never loaded anything, so the scan IS the
                     // reload — no duplicate beside it.
-                    load_scripts(&generation.lua, plugins_dir, events, &frame);
+                    load_scripts(
+                        &generation.lua,
+                        &generation.segments,
+                        plugins_dir,
+                        events,
+                        &frame,
+                    );
                     scanned = true;
                     if frame.hard_tripped.get() {
                         break;
@@ -454,12 +565,14 @@ impl TimeoutFrame {
 }
 
 /// One interpreter generation: the `Lua` instance plus its port's
-/// registry. Generation 1 is born at spawn; every later one is a
-/// hard-cap recreate — fresh state, no registrations (spec assumption
-/// 7).
+/// two registries — the event-bus table behind `dropterm.on`/`emit`
+/// and the segment registry behind `dropterm.status_segment`.
+/// Generation 1 is born at spawn; every later one is a hard-cap
+/// recreate — fresh state, no registrations (spec assumption 7).
 struct Generation {
     lua: Lua,
     registry: Table,
+    segments: Table,
 }
 
 impl Generation {
@@ -474,8 +587,8 @@ impl Generation {
         // sandbox claimed anywhere — the docs state it plainly.
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
-        let registry = match install_port(&lua, events, frame) {
-            Ok(registry) => registry,
+        let (registry, segments) = match install_port(&lua, events, frame) {
+            Ok(registries) => registries,
             Err(err) => {
                 log(
                     events,
@@ -491,7 +604,11 @@ impl Generation {
             );
             return None;
         }
-        Some(Generation { lua, registry })
+        Some(Generation {
+            lua,
+            registry,
+            segments,
+        })
     }
 }
 
@@ -549,15 +666,16 @@ fn install_bounds(
 
 /// Install the `dropterm` port into the interpreter: the registry
 /// table behind `dropterm.on`/`dropterm.emit` (`WezTerm`'s
-/// registry-table design), the module served to
-/// `require('dropterm')` through `package.loaded` (the stdlib's own
-/// module cache — no require-path widening), and the `print`
-/// forwarder. Returns the registry for host-side dispatch.
+/// registry-table design), the segment registry behind
+/// `dropterm.status_segment` (status-segments spec), the module
+/// served to `require('dropterm')` through `package.loaded` (the
+/// stdlib's own module cache — no require-path widening), and the
+/// `print` forwarder. Returns both registries for host-side use.
 fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
-) -> mlua::Result<Table> {
+) -> mlua::Result<(Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
@@ -580,19 +698,49 @@ fn install_port(
     let emit_events = events.clone();
     let emit_frame = frame.clone();
     let emit = lua.create_function(move |_lua, (event, payload): (String, Value)| {
+        if event == STATUS_REFRESH_EVENT {
+            // The reserved name is translated, not dispatched: the
+            // dirty request the tick drains into a requery
+            // (status-segments spec).
+            let _ = emit_events.send(HostEvent::SegmentsDirty);
+            return Ok(());
+        }
         dispatch(&emit_events, &emit_registry, &event, &payload, &emit_frame);
+        Ok(())
+    })?;
+
+    // The segment registry: an array of `{name, handler}` entries —
+    // an array, because registration order is render order and a
+    // keyed table would lose it. A repeated name replaces its slot's
+    // handler in place: one live id, one answer, the first position
+    // kept.
+    let segment_table = lua.create_table()?;
+    let segments_for_register = segment_table.clone();
+    let status_segment = lua.create_function(move |lua, (name, handler): (String, Function)| {
+        for slot in 1..=segments_for_register.raw_len() {
+            let entry: Table = segments_for_register.get(slot)?;
+            if entry.get::<String>("name")? == name {
+                entry.set("handler", handler)?;
+                return Ok(());
+            }
+        }
+        let entry = lua.create_table()?;
+        entry.set("name", name)?;
+        entry.set("handler", handler)?;
+        segments_for_register.set(segments_for_register.raw_len() + 1, entry)?;
         Ok(())
     })?;
 
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
+    module.set("status_segment", status_segment)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
 
     install_print(lua, events)?;
-    Ok(registry)
+    Ok((registry, segment_table))
 }
 
 /// Deliver one event to every handler registered under it, on this
@@ -686,13 +834,26 @@ fn display_value(lua: &Lua, value: Value) -> String {
 /// one log line and never stops its siblings. Each file's load runs
 /// under the hard cap (never the soft bound — a load has no result to
 /// go stale); a tripped cap aborts the remaining files, which load
-/// with the recreated interpreter's deferred reload.
-fn load_scripts(lua: &Lua, dir: &Path, events: &Sender<HostEvent>, frame: &TimeoutFrame) {
+/// with the recreated interpreter's deferred reload. Every completed
+/// pass — a reload into an empty dir included — ends with the
+/// registry-sync report (status-segments spec): the live id set is
+/// the asking surface's source of truth.
+fn load_scripts(
+    lua: &Lua,
+    segments: &Table,
+    dir: &Path,
+    events: &Sender<HostEvent>,
+    frame: &TimeoutFrame,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            sync_registry(segments, events);
+            return;
+        }
         Err(err) => {
             log(events, format!("cannot read {}: {err}", dir.display()));
+            sync_registry(segments, events);
             return;
         }
     };
@@ -719,13 +880,236 @@ fn load_scripts(lua: &Lua, dir: &Path, events: &Sender<HostEvent>, frame: &Timeo
             Ok(()) => log(events, format!("loaded {name}")),
             Err(err) => {
                 if frame.hard_tripped.get() {
-                    // The hook logged the reload line already.
+                    // The hook logged the reload line already; this
+                    // generation is dying — its successor's load
+                    // carries the next sync.
                     return;
                 }
                 log(events, format!("skipped {name}: {err}"));
             }
         }
     }
+    sync_registry(segments, events);
+}
+
+/// Report the live segment registry — the id set in registration
+/// order — at every load/reload (status-segments spec): the asking
+/// surface's source of truth for what renders, empty after a reload
+/// into an empty dir (the stale slots clear with it).
+fn sync_registry(segments: &Table, events: &Sender<HostEvent>) {
+    let mut ids = Vec::new();
+    for slot in 1..=segments.raw_len() {
+        match segments
+            .get::<Table>(slot)
+            .and_then(|entry| entry.get::<String>("name"))
+        {
+            Ok(name) => ids.push(name),
+            Err(err) => log(
+                events,
+                format!("the segment registry would not read: {err}"),
+            ),
+        }
+    }
+    let _ = events.send(HostEvent::RegistrySync { segments: ids });
+}
+
+/// Evaluate every registered segment handler once (status-segments
+/// spec): one interpreter trip under one frame — the soft/hard bounds
+/// cover the trip whole — with the answers in registration order. A
+/// handler that raises, or answers without a usable shape, costs one
+/// line and omits its id: the asking surface keeps that segment's
+/// prior value. Past the soft bound the reply is flagged stale — the
+/// drain drops it whole; a hard-cap abort sends no reply at all.
+fn query_segments(
+    generation: &Generation,
+    token: u64,
+    ctx: &serde_json::Value,
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) {
+    let ctx = match generation.lua.to_value(ctx) {
+        Ok(value) => value,
+        Err(err) => {
+            // Unreachable for JSON payloads; honest if it ever fires:
+            // no reply, prior values kept.
+            log(events, format!("the segment ctx would not convert: {err}"));
+            return;
+        }
+    };
+    frame.begin(true, format_args!("the segment query"));
+    let mut values = Vec::new();
+    for slot in 1..=generation.segments.raw_len() {
+        let Ok(entry) = generation.segments.get::<Table>(slot) else {
+            continue;
+        };
+        let Ok(name) = entry.get::<String>("name") else {
+            continue;
+        };
+        let Ok(handler) = entry.get::<Function>("handler") else {
+            continue;
+        };
+        let answer = match handler.call::<Option<Table>>(ctx.clone()) {
+            Ok(answer) => answer,
+            Err(err) => {
+                if frame.hard_tripped.get() {
+                    // The hook logged the reload line; the abort
+                    // unwinds — no reply, the slots keep their priors.
+                    return;
+                }
+                log(events, format!("segment '{name}' raised: {err}"));
+                continue;
+            }
+        };
+        let Some(answer) = answer else {
+            values.push(SegmentAnswer::Hidden { id: name });
+            continue;
+        };
+        match read_answer(&answer, &name) {
+            Ok(value) => values.push(value),
+            Err(err) => {
+                log(
+                    events,
+                    format!("segment '{name}' answered without a usable value: {err}"),
+                );
+            }
+        }
+    }
+    let stale = frame.started.get().elapsed() >= SOFT_BOUND;
+    let _ = events.send(HostEvent::SegmentValues {
+        token,
+        stale,
+        values,
+    });
+}
+
+/// Read one handler's answer table: `{ text = …, side = "left" |
+/// "right" }` — both fields required, the side's words the only two
+/// accepted. Anything else is an error the caller logs once.
+fn read_answer(answer: &Table, name: &str) -> mlua::Result<SegmentAnswer> {
+    let text: String = answer.get("text")?;
+    let side: String = answer.get("side")?;
+    let side = match side.as_str() {
+        "left" => ScriptSide::Left,
+        "right" => ScriptSide::Right,
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "the side '{other}' is neither left nor right"
+            )));
+        }
+    };
+    Ok(SegmentAnswer::Shown {
+        id: name.to_owned(),
+        side,
+        text,
+    })
+}
+
+/// Build the segment query's ctx payload: the [`StatusInputs`]
+/// mirror (status-segments spec assumption 1) — every band input the
+/// tick already gathers, and nothing more (no engine read rides a
+/// query). Absent inputs are absent keys; durations cross as seconds
+/// (Lua numbers); the engine's standing reports carry their
+/// protocol's own words. The scheme's red pair does not cross: v1
+/// segments are plain text (assumption 2) — render tokens stay
+/// shell-side.
+pub fn status_ctx(inputs: &StatusInputs) -> serde_json::Value {
+    use crate::core::terminal::{ProgramState, ProgressState};
+    use serde_json::json;
+
+    let grid =
+        |pair: Option<(u16, u16)>| pair.map(|(cols, rows)| json!({ "cols": cols, "rows": rows }));
+    let mut ctx = serde_json::Map::new();
+    let mut put = |key: &str, value: serde_json::Value| {
+        ctx.insert(key.to_owned(), value);
+    };
+    if let Some(home) = inputs.home {
+        put("home", json!(home.display().to_string()));
+    }
+    if let Some(cwd) = inputs.cwd {
+        put("cwd", json!(cwd.display().to_string()));
+    }
+    if let Some(report) = inputs.reported_cwd.as_ref() {
+        put(
+            "reported_cwd",
+            json!({ "host": report.host.clone(), "path": report.path.clone() }),
+        );
+    }
+    if let Some(hostname) = inputs.hostname {
+        put("hostname", json!(hostname));
+    }
+    put("shell", json!(inputs.shell));
+    if let Some(profile) = inputs.profile_name {
+        put("profile_name", json!(profile));
+    }
+    put("zoom_adj", json!(inputs.zoom_adj));
+    put("zoom_step_mul_100", json!(inputs.zoom_step_mul_100));
+    if let Some(foreground) = inputs.foreground {
+        put("foreground", json!(foreground));
+    }
+    if let Some(branch) = inputs.branch {
+        put("branch", json!(branch));
+    }
+    if let Some(grid) = grid(inputs.grid) {
+        put("grid", grid);
+    }
+    if let Some(spawn_grid) = grid(inputs.spawn_grid) {
+        put("spawn_grid", spawn_grid);
+    }
+    if let Some((index, total)) = inputs.tab_position {
+        put("tab_position", json!({ "index": index, "total": total }));
+    }
+    if let Some(clock) = inputs.clock {
+        put("clock", json!(clock));
+    }
+    if let Some(elapsed) = inputs.running_elapsed {
+        put("running_elapsed", json!(elapsed.as_secs_f64()));
+    }
+    if let Some((name, duration)) = inputs.frozen {
+        put(
+            "frozen",
+            json!({ "name": name, "duration_seconds": duration.as_secs_f64() }),
+        );
+    }
+    if let Some(exit_status) = inputs.exit_status {
+        put("exit_status", json!(exit_status));
+    }
+    if let Some(scrolled_back) = inputs.scrolled_back {
+        put("scrolled_back", json!(scrolled_back));
+    }
+    if let Some(pasted) = inputs.pasted {
+        put("pasted", json!(pasted));
+    }
+    if let Some(progress) = inputs.progress {
+        let state = match progress.state {
+            ProgressState::InProgress => "in_progress",
+            ProgressState::Error => "error",
+            ProgressState::Indeterminate => "indeterminate",
+            ProgressState::Paused => "paused",
+        };
+        put(
+            "progress",
+            json!({ "state": state, "value": progress.value }),
+        );
+    }
+    if let Some(program) = inputs.program_status {
+        let state = match program.state {
+            ProgramState::Idle => "idle",
+            ProgramState::Working => "working",
+            ProgramState::Done => "done",
+            ProgramState::Blocked => "blocked",
+            ProgramState::Error => "error",
+        };
+        put(
+            "program_status",
+            json!({ "state": state, "progress": program.progress }),
+        );
+    }
+    if let Some(ssh_destination) = inputs.ssh_destination {
+        put("ssh_destination", json!(ssh_destination));
+    }
+    // A bool fact the band always has — always present, like `shell`.
+    put("missed_activity", json!(inputs.missed_activity));
+    serde_json::Value::Object(ctx)
 }
 
 /// One `dropterm:` evidence line onto the outbound channel. A send
@@ -791,12 +1175,14 @@ mod tests {
     /// no event): the host thread works asynchronously off its
     /// command channel, so a test reads its whole reaction to a
     /// command by draining to the silence — a bounded wait on the
-    /// channel, never a fixed sleep.
+    /// channel, never a fixed sleep. Non-log events (the query
+    /// surfaces' replies) pass through unread.
     fn logs_until_quiet(host: &LuaHost) -> Vec<String> {
         let mut lines = Vec::new();
         loop {
             match host.events.recv_timeout(Duration::from_millis(200)) {
                 Ok(HostEvent::Log(line)) => lines.push(line),
+                Ok(_) => {}
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return lines,
             }
         }
@@ -820,10 +1206,49 @@ mod tests {
                     }
                     lines.push(line);
                 }
+                Ok(_) => {}
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return lines,
             }
         }
         lines
+    }
+
+    /// Collect the host's events until one matches `wanted` (the
+    /// match included) or `timeout` passes — the query surfaces'
+    /// companion to [`logs_until`]: a reply is read by waiting for
+    /// the reply, never for silence.
+    fn events_until(
+        host: &LuaHost,
+        wanted: impl Fn(&HostEvent) -> bool,
+        timeout: Duration,
+    ) -> Vec<HostEvent> {
+        let mut events = Vec::new();
+        let deadline = Instant::now() + timeout;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            match host.events.recv_timeout(remaining) {
+                Ok(event) => {
+                    if wanted(&event) {
+                        events.push(event);
+                        return events;
+                    }
+                    events.push(event);
+                }
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return events,
+            }
+        }
+        events
+    }
+
+    /// Collect the host's events until it goes quiet (200 ms with no
+    /// event) — the whole reaction, replies and lines together.
+    fn events_until_quiet(host: &LuaHost) -> Vec<HostEvent> {
+        let mut events = Vec::new();
+        loop {
+            match host.events.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => events.push(event),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return events,
+            }
+        }
     }
 
     fn emit(host: &LuaHost, event: &str) {
@@ -1337,6 +1762,535 @@ mod tests {
         assert!(
             third.iter().any(|line| line.contains("back")),
             "the recovered script's handler answers: {third:?}"
+        );
+    }
+
+    // --- script segments (status-segments spec, task SG1) ---
+
+    /// One query's ctx, the shape the shell assembles from the tick's
+    /// `StatusInputs` — the minimal fixture the echoing handler reads.
+    fn segment_ctx() -> serde_json::Value {
+        serde_json::json!({ "cwd": "/home/u/src" })
+    }
+
+    /// Send one segment query under `token`.
+    fn query(host: &LuaHost, token: u64) {
+        host.send(HostCommand::QuerySegments {
+            token,
+            ctx: segment_ctx(),
+        });
+    }
+
+    #[test]
+    fn status_segment_registration_syncs_and_answers_a_query() {
+        let dir = TempDir::new("segments");
+        script(
+            &dir,
+            "segs.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function(ctx)\n\
+                   return {{ text = 'cwd is ' .. tostring(ctx.cwd), side = 'right' }}\n\
+                 end)\n\
+                 d.status_segment('git', function()\n\
+                   return {{ text = 'branch ok', side = 'left' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 7);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 7, .. }),
+            LONG_WAIT,
+        );
+        // The load reports the live registry, in registration order.
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                HostEvent::RegistrySync { segments }
+                    if segments == &["net".to_owned(), "git".to_owned()]
+            )),
+            "the load must report the live segment ids in order: {events:?}"
+        );
+        // The reply carries every segment's answer, in registration
+        // order, matched by token — and the ctx table crossed: the
+        // echoing handler answered with the queried cwd.
+        let reply = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 7,
+                    stale,
+                    values,
+                } => Some((*stale, values.clone())),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert!(!reply.0, "a swift query replies fresh: {events:?}");
+        assert_eq!(
+            reply.1,
+            vec![
+                SegmentAnswer::Shown {
+                    id: "net".to_owned(),
+                    side: ScriptSide::Right,
+                    text: "cwd is /home/u/src".to_owned(),
+                },
+                SegmentAnswer::Shown {
+                    id: "git".to_owned(),
+                    side: ScriptSide::Left,
+                    text: "branch ok".to_owned(),
+                },
+            ],
+            "the answers land in registration order: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_nil_answer_hides_a_raise_omits_and_a_bad_side_costs_one_line() {
+        let dir = TempDir::new("answers");
+        script(
+            &dir,
+            "answers.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('good', function()\n\
+                   return {{ text = 'fine', side = 'right' }}\n\
+                 end)\n\
+                 d.status_segment('mute', function() return nil end)\n\
+                 d.status_segment('boom', function() error('kaboom') end)\n\
+                 d.status_segment('odd', function()\n\
+                   return {{ text = 'x', side = 'up' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 1);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 1, .. }),
+            LONG_WAIT,
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 1,
+                    stale: _,
+                    values,
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert_eq!(
+            values,
+            vec![
+                SegmentAnswer::Shown {
+                    id: "good".to_owned(),
+                    side: ScriptSide::Right,
+                    text: "fine".to_owned(),
+                },
+                SegmentAnswer::Hidden {
+                    id: "mute".to_owned()
+                },
+            ],
+            "a nil answer is carried (a fresh hide); a raise or an unusable side omits the id: {events:?}"
+        );
+        // One line per failure, by name — and the host answers again.
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("boom")).count(),
+            1,
+            "the raising handler costs exactly one line: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("odd")).count(),
+            1,
+            "the unusable side costs exactly one line: {lines:?}"
+        );
+        query(&host, 2);
+        let second = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 2, .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            second.iter().any(|event| matches!(
+                event,
+                HostEvent::SegmentValues { values, .. }
+                    if values.iter().any(|answer| matches!(
+                        answer,
+                        SegmentAnswer::Shown { id, text, .. }
+                            if id == "good" && text == "fine"
+                    ))
+            )),
+            "the host still answers after the failures: {second:?}"
+        );
+    }
+
+    #[test]
+    fn the_registry_sync_rereports_after_a_reload() {
+        let dir = TempDir::new("resync");
+        script(
+            &dir,
+            "seg.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function()\n\
+                   return {{ text = 'v1', side = 'right' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 1);
+        let first = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 1, .. }),
+            LONG_WAIT,
+        );
+        assert!(
+            first.iter().any(|event| matches!(
+                event,
+                HostEvent::RegistrySync { segments } if segments == &["net".to_owned()]
+            )),
+            "the first load reports ['net']: {first:?}"
+        );
+        script(
+            &dir,
+            "seg.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('git', function()\n\
+                   return {{ text = 'v2', side = 'left' }}\n\
+                 end)"
+            ),
+        );
+        host.send(HostCommand::Reload);
+        let reloaded = events_until(
+            &host,
+            |event| {
+                matches!(
+                    event,
+                    HostEvent::RegistrySync { segments } if segments == &["git".to_owned()]
+                )
+            },
+            LONG_WAIT,
+        );
+        assert!(
+            reloaded
+                .iter()
+                .filter(|event| matches!(event, HostEvent::RegistrySync { .. }))
+                .all(|event| matches!(
+                    event,
+                    HostEvent::RegistrySync { segments } if segments == &["git".to_owned()]
+                )),
+            "no sync ever reports a doubled registration: {reloaded:?}"
+        );
+        // The reloaded registry answers with the new segment alone.
+        query(&host, 2);
+        let second = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 2, .. }),
+            LONG_WAIT,
+        );
+        let values = second
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 2, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reloaded host answers");
+        assert_eq!(
+            values.as_slice(),
+            &[SegmentAnswer::Shown {
+                id: "git".to_owned(),
+                side: ScriptSide::Left,
+                text: "v2".to_owned(),
+            }],
+            "only the new registration answers, exactly once: {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_scripted_status_refresh_emit_lands_as_a_segments_dirty_request() {
+        let dir = TempDir::new("dirty");
+        script(
+            &dir,
+            "pull.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function()\n\
+                   return {{ text = 'x', side = 'right' }}\n\
+                 end)\n\
+                 d.emit('status-refresh', {{}})\n\
+                 d.emit('unrelated', {{}})"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        // The emits fire at load, and the load needs a first command
+        // under the lazy pin; the drain to quiet collects the whole
+        // reaction so a second dirty (if one existed) would be
+        // collected, not cut off.
+        emit(&host, "boot");
+        let all = events_until_quiet(&host);
+        assert_eq!(
+            all.iter()
+                .filter(|event| matches!(event, HostEvent::SegmentsDirty))
+                .count(),
+            1,
+            "the reserved emit translates into exactly one dirty request: {all:?}"
+        );
+    }
+
+    #[test]
+    fn a_query_past_the_soft_bound_replies_stale() {
+        let dir = TempDir::new("stale-query");
+        // The slow handler sleeps wall-clock time (os.clock spins
+        // count the whole process's CPU — under the parallel suite
+        // other threads would advance that clock and the trip would
+        // flake short), then spins a few instructions so the debug
+        // hook gets its look past the bound.
+        script(
+            &dir,
+            "slow.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('slow', function()\n\
+                   io.popen('sleep 0.2'):close()\n\
+                   local i = 0\n\
+                   while i < 200000 do i = i + 1 end\n\
+                   return {{ text = 'late', side = 'right' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 1);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 1, .. }),
+            LONG_WAIT,
+        );
+        let reply = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 1,
+                    stale,
+                    values,
+                } => Some((stale, values)),
+                _ => None,
+            })
+            .expect("the stale reply still lands");
+        assert!(
+            *reply.0,
+            "a trip past the soft bound replies stale: {events:?}"
+        );
+        assert!(
+            reply.1.iter().any(|answer| matches!(
+                answer,
+                SegmentAnswer::Shown { id, text, .. } if id == "slow" && text == "late"
+            )),
+            "the stale reply carries its values; the drain side decides to drop them: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    HostEvent::Log(line) => Some(line),
+                    _ => None,
+                })
+                .filter(|line| line.contains("ran past the soft bound"))
+                .count(),
+            1,
+            "the stale trip costs exactly one line"
+        );
+    }
+
+    #[test]
+    fn segment_values_land_in_the_band_view_model_ordered() {
+        use crate::core::status::{ScriptSegmentValue, StatusSegments};
+
+        fn eight_px(text: &str) -> f32 {
+            #[expect(clippy::cast_precision_loss, reason = "test strings, exact in f32")]
+            let width = text.chars().count() as f32 * 8.0;
+            width
+        }
+        let dir = TempDir::new("compose");
+        script(
+            &dir,
+            "pair.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function()\n\
+                   return {{ text = 'net:1.2M', side = 'right' }}\n\
+                 end)\n\
+                 d.status_segment('git', function()\n\
+                   return {{ text = 'git:1', side = 'left' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 3);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 3, .. }),
+            LONG_WAIT,
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 3, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        // The drain side's apply: every Shown answer becomes a slot —
+        // the shape SG2's shell state keeps, proven here against the
+        // real reply.
+        let mut segments = StatusSegments {
+            clock: Some("14:32".to_owned()),
+            ..StatusSegments::default()
+        };
+        for answer in values {
+            if let SegmentAnswer::Shown { id, side, text } = answer {
+                segments.script.push(ScriptSegmentValue {
+                    id,
+                    side,
+                    text: Some(text),
+                });
+            }
+        }
+        let vm = crate::core::status::band_vm(&segments, 2000.0, &eight_px, None, None, None);
+        let laid: Vec<(&str, &str)> = vm
+            .script_rows
+            .iter()
+            .map(|row| (row.id.as_str(), row.text.as_str()))
+            .collect();
+        assert_eq!(
+            laid,
+            vec![("git", "git:1"), ("net", "net:1.2M")],
+            "the reply's values render: the left group before the right, per side in slot order"
+        );
+    }
+
+    #[test]
+    fn status_ctx_mirrors_the_pinned_status_inputs_fields() {
+        use crate::core::status::StatusInputs;
+        use crate::core::terminal::{
+            ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress,
+        };
+        let full = StatusInputs {
+            home: Some(Path::new("/home/u")),
+            cwd: Some(Path::new("/home/u/src")),
+            reported_cwd: Some(ReportedCwd {
+                host: Some("other".to_owned()),
+                path: "/srv".to_owned(),
+            }),
+            hostname: Some("here"),
+            shell: "/usr/bin/fish",
+            profile_name: Some("dev"),
+            zoom_adj: 2,
+            zoom_step_mul_100: 125,
+            foreground: Some("cargo"),
+            branch: Some("main"),
+            grid: Some((100, 24)),
+            spawn_grid: Some((80, 24)),
+            tab_position: Some((2, 5)),
+            clock: Some("14:32"),
+            running_elapsed: Some(Duration::from_millis(41_500)),
+            frozen: Some(("cargo", Duration::from_secs(161))),
+            exit_status: Some(3),
+            scrolled_back: Some(12),
+            pasted: Some(2),
+            progress: Some(ReportedProgress {
+                state: ProgressState::InProgress,
+                value: Some(40),
+                refreshed_at: Instant::now(),
+            }),
+            program_status: Some(ProgramStatus {
+                state: ProgramState::Blocked,
+                progress: Some(55),
+            }),
+            ssh_destination: Some("web-prod"),
+            missed_activity: true,
+            attention_red: None,
+            attention_bright_red: None,
+        };
+        assert_eq!(
+            status_ctx(&full),
+            serde_json::json!({
+                "home": "/home/u",
+                "cwd": "/home/u/src",
+                "reported_cwd": { "host": "other", "path": "/srv" },
+                "hostname": "here",
+                "shell": "/usr/bin/fish",
+                "profile_name": "dev",
+                "zoom_adj": 2,
+                "zoom_step_mul_100": 125,
+                "foreground": "cargo",
+                "branch": "main",
+                "grid": { "cols": 100, "rows": 24 },
+                "spawn_grid": { "cols": 80, "rows": 24 },
+                "tab_position": { "index": 2, "total": 5 },
+                "clock": "14:32",
+                "running_elapsed": 41.5,
+                "frozen": { "name": "cargo", "duration_seconds": 161.0 },
+                "exit_status": 3,
+                "scrolled_back": 12,
+                "pasted": 2,
+                "progress": { "state": "in_progress", "value": 40 },
+                "program_status": { "state": "blocked", "progress": 55 },
+                "ssh_destination": "web-prod",
+                "missed_activity": true,
+            }),
+            "the ctx is the StatusInputs mirror — the pinned field list"
+        );
+        // Absent inputs mirror as absent keys: the minimal-payload
+        // rule (nothing stands in for a fact the band does not have).
+        let bare = StatusInputs {
+            home: None,
+            cwd: None,
+            reported_cwd: None,
+            hostname: None,
+            shell: "",
+            profile_name: None,
+            zoom_adj: 0,
+            zoom_step_mul_100: 0,
+            foreground: None,
+            branch: None,
+            grid: None,
+            spawn_grid: None,
+            tab_position: None,
+            clock: None,
+            running_elapsed: None,
+            frozen: None,
+            exit_status: None,
+            scrolled_back: None,
+            pasted: None,
+            progress: None,
+            program_status: None,
+            ssh_destination: None,
+            missed_activity: false,
+            attention_red: None,
+            attention_bright_red: None,
+        };
+        assert_eq!(
+            status_ctx(&bare),
+            serde_json::json!({
+                "shell": "",
+                "zoom_adj": 0,
+                "zoom_step_mul_100": 0,
+                "missed_activity": false,
+            })
         );
     }
 }

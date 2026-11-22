@@ -207,6 +207,34 @@ pub const DROP_ORDER: [SegmentId; 11] = [
     SegmentId::Scrolled,
     SegmentId::Clock,
 ];
+/// The side a script-provided segment chose for its seat
+/// (status-segments spec) — which trailing group renders it, and the
+/// group's cluster idiom: full alpha on the left, dimmed on the
+/// right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptSide {
+    /// After the builtin left cluster.
+    Left,
+    /// Before the builtin right cluster.
+    Right,
+}
+
+/// One script segment's resolved slot (status-segments spec): the
+/// registered id, its chosen side, and its resolved text — `None`
+/// (never answered, or answered nil) renders nothing. Shell-fed,
+/// never resolved: the tick's resolve starts it empty and the drain
+/// applies the host's answers, so a slot keeps its prior text until
+/// a fresh answer lands (the stale-degrade story).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptSegmentValue {
+    /// The `dropterm.status_segment` registration name.
+    pub id: String,
+    /// The side the last shown answer chose.
+    pub side: ScriptSide,
+    /// The last shown text; `None` renders the segment absent.
+    pub text: Option<String>,
+}
+
 /// The resolved segments of the active tab's status band, left
 /// cluster then right, values without labels — a path reads as a
 /// path. The disc's fill state rides `running`; the process name is
@@ -300,6 +328,10 @@ pub struct StatusSegments {
     /// The live scheme's bright red — [`Self::attention_red`]'s
     /// sibling for dark strips.
     pub attention_bright_red: Option<(f32, f32, f32)>,
+    /// The script-provided segments' resolved slots (status-segments
+    /// spec), the shell's render order — an empty vec is today's band
+    /// exactly (the pin): no group lays, nothing consumes room.
+    pub script: Vec<ScriptSegmentValue>,
 }
 
 /// The app-side inputs to [`resolve_segments`] — plain data only, so
@@ -538,6 +570,11 @@ pub fn resolve_segments(inputs: &StatusInputs, toggles: StatusToggles) -> Status
         missed_activity: inputs.missed_activity,
         attention_red: inputs.attention_red,
         attention_bright_red: inputs.attention_bright_red,
+        // Script slots are the drain's to apply, never the
+        // resolver's — resolve starts them empty and the shell's
+        // stale-keep overlays its live state after (status-segments
+        // spec).
+        script: Vec::new(),
     }
 }
 
@@ -976,17 +1013,40 @@ pub struct BandFit {
 /// widths of every other present segment (path and process
 /// excluded — the path elides, the disc never yields). Survivors
 /// keep their cluster seats: positioning is stable through every
-/// drop step, never uniformly compressed. Deterministic for a
-/// fixed input — fewest drops, then least elision.
+/// drop step, never uniformly compressed. Deterministic for a fixed
+/// input — fewest drops, then least elision.
 pub fn band_fit(width: f32, fixed: f32, widths: &[(SegmentId, f32)], path: PathMeasure) -> BandFit {
+    band_fit_with_scripts(width, fixed, widths, path, &[]).0
+}
+
+/// [`band_fit`]'s pass with script seats in the accounting
+/// (status-segments spec): each seat consumes room like any present
+/// segment, and the group gives way first — the last seat in order
+/// drops, then the next, before any builtin yields; once the group
+/// is exhausted the builtin [`DROP_ORDER`] loop takes over
+/// unchanged. An empty `script_widths` is exactly [`band_fit`].
+/// Returns the builtin fit plus how many leading script seats
+/// survive.
+pub fn band_fit_with_scripts(
+    width: f32,
+    fixed: f32,
+    widths: &[(SegmentId, f32)],
+    path: PathMeasure,
+    script_widths: &[f32],
+) -> (BandFit, usize) {
     let mut dropped: Vec<SegmentId> = Vec::new();
+    let mut kept_scripts = script_widths.len();
     let fit = loop {
+        let script_consumed: f32 = script_widths[..kept_scripts]
+            .iter()
+            .map(|w| SEGMENT_GAP + w)
+            .sum();
         let consumed: f32 = widths
             .iter()
             .filter(|(id, _)| !dropped.contains(id))
             .map(|(_, w)| SEGMENT_GAP + w)
             .sum();
-        let room = width - fixed - consumed;
+        let room = width - fixed - consumed - script_consumed;
         // The path's inner step: [`left_squeeze`] as pure elision —
         // the branch rides `widths` like any droppable segment, so
         // its eager internal yield is subsumed by the patient
@@ -995,8 +1055,13 @@ pub fn band_fit(width: f32, fixed: f32, widths: &[(SegmentId, f32)], path: PathM
         if !matches!(fit, PathFit::Gone) {
             break fit;
         }
-        // Even a fully elided path cannot fit — the next present
-        // segment in precedence order gives way.
+        // Even a fully elided path cannot fit — a script seat gives
+        // way first (the last in order), then the next present
+        // builtin segment in precedence order.
+        if kept_scripts > 0 {
+            kept_scripts -= 1;
+            continue;
+        }
         match DROP_ORDER
             .iter()
             .find(|id| widths.iter().any(|(wid, _)| wid == *id) && !dropped.contains(id))
@@ -1005,7 +1070,7 @@ pub fn band_fit(width: f32, fixed: f32, widths: &[(SegmentId, f32)], path: PathM
             None => break fit,
         }
     };
-    BandFit { path: fit, dropped }
+    (BandFit { path: fit, dropped }, kept_scripts)
 }
 
 /// The signed zoom percent a `zoom_adj` of `step_mul_100`-sized steps
@@ -1177,10 +1242,30 @@ pub struct DiscVm {
     pub attention: bool,
 }
 
+/// One laid script-segment row (status-segments spec) — the script
+/// groups' own seat type: painted like any row over its laid rect,
+/// but non-interactive in v1 (no hover tint, no selection, no copy —
+/// the interactions key on [`SegmentId`] and never see these).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandScriptRowVm {
+    /// The `dropterm.status_segment` registration name.
+    pub id: String,
+    pub text: String,
+    pub x: f32,
+    pub width: f32,
+    pub text_x: f32,
+    /// The side's cluster idiom: full alpha on the left, dimmed on
+    /// the right.
+    pub dimmed: bool,
+}
+
 /// The band's laid view-model: rows in x-order (left cluster then
 /// right), the separator hairlines' gap-center positions, the disc,
 /// and the missed-activity halo's center — pure over the resolved
 /// segments and measured widths, deterministic for a fixed input.
+/// The script segments' rows ride their own vec
+/// ([`BandVm::script_rows`]), x-ordered after the builtin rows'
+/// sides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BandVm {
     pub rows: Vec<BandRowVm>,
@@ -1192,6 +1277,9 @@ pub struct BandVm {
     /// reveal's arming reads its elided flag; a laid path row is
     /// always `Full` or `Elided` (a `Gone` path composes no row).
     pub path_fit: PathFit,
+    /// The script segments' laid rows (status-segments spec), in
+    /// x-order — the left group's seats, then the right group's.
+    pub script_rows: Vec<BandScriptRowVm>,
 }
 
 /// The band's one layout pass: the reference band's fit + rect
@@ -1343,7 +1431,19 @@ pub fn band_vm(
     } else {
         PAD_X + SEGMENT_GAP + PAD_X
     };
-    let fit = band_fit(
+    // The script seats (status-segments spec): every slot with a
+    // non-empty text, in the shell's render order — the seats consume
+    // room like any present segment and give it back first (the
+    // group's tail drops before any builtin yields), so an empty
+    // script vec is today's fit exactly (the byte-identical pin).
+    let script_seats: Vec<(&ScriptSegmentValue, f32)> = segments
+        .script
+        .iter()
+        .filter(|slot| slot.text.as_deref().is_some_and(|text| !text.is_empty()))
+        .map(|slot| (slot, measure(slot.text.as_deref().unwrap_or_default())))
+        .collect();
+    let script_widths: Vec<f32> = script_seats.iter().map(|(_, w)| *w).collect();
+    let (fit, kept_scripts) = band_fit_with_scripts(
         width,
         fixed,
         &widths,
@@ -1353,6 +1453,7 @@ pub fn band_vm(
             chars: path_value.chars().count(),
             full_width: measure(&path_value),
         },
+        &script_widths,
     );
     // The fit's verdicts: dropped seats compose no row.
     let dropped = |id: SegmentId| fit.dropped.contains(&id);
@@ -1421,10 +1522,16 @@ pub fn band_vm(
             .copied()
             .filter(|(id, _)| !dropped(*id))
             .collect();
+        // The kept script seats keep consuming their room through the
+        // loan — the expansion fits beside them, never through them.
+        let script_room: f32 = script_seats[..kept_scripts]
+            .iter()
+            .map(|(_, w)| SEGMENT_GAP + w)
+            .sum();
         (
             reveal_display(
                 &path_value,
-                width,
+                width - script_room,
                 fixed,
                 &survivors,
                 PathMeasure {
@@ -1466,6 +1573,33 @@ pub fn band_vm(
         });
         x += w + SEGMENT_GAP;
     }
+    // The separators and the script groups' own rows collect here,
+    // ahead of the cluster walk below, so every walk writes one vec.
+    let mut separators = Vec::new();
+    let mut script_rows: Vec<BandScriptRowVm> = Vec::new();
+    // The left script group (status-segments spec): the trailing
+    // cluster after the whole builtin left cluster, full alpha —
+    // seats in slot order, hairlines between adjacent seats like any
+    // cluster, none across to the builtins (never between clusters).
+    let mut prev_end: Option<f32> = None;
+    for (slot, w) in script_seats[..kept_scripts]
+        .iter()
+        .filter(|(slot, _)| slot.side == ScriptSide::Left)
+    {
+        if let Some(start) = prev_end {
+            separators.push(f32::midpoint(start, x));
+        }
+        script_rows.push(BandScriptRowVm {
+            id: slot.id.clone(),
+            text: slot.text.clone().unwrap_or_default(),
+            x,
+            width: *w,
+            text_x: x,
+            dimmed: false,
+        });
+        prev_end = Some(x + w);
+        x += w + SEGMENT_GAP;
+    }
     let mut right = width - PAD_X;
     for (id, text) in right_cluster.iter().rev() {
         if dropped(*id) {
@@ -1487,8 +1621,32 @@ pub fn band_vm(
         });
         right -= SEGMENT_GAP;
     }
+    // The right script group: hugging the builtin right cluster's own
+    // left edge — seats in slot order laid right-to-left with the
+    // cluster, dimmed like the cluster they join.
+    let mut next_start: Option<f32> = None;
+    for (slot, w) in script_seats[..kept_scripts]
+        .iter()
+        .filter(|(slot, _)| slot.side == ScriptSide::Right)
+    {
+        right -= w;
+        if let Some(start) = next_start {
+            separators.push(f32::midpoint(right + w, start));
+        }
+        script_rows.push(BandScriptRowVm {
+            id: slot.id.clone(),
+            text: slot.text.clone().unwrap_or_default(),
+            x: right,
+            width: *w,
+            text_x: right,
+            dimmed: true,
+        });
+        next_start = Some(right);
+        right -= SEGMENT_GAP;
+    }
     // x-order: the left cluster composed first, the right cluster's
-    // seats accumulated right-to-left — reverse them back.
+    // seats accumulated right-to-left — reverse them back. (The
+    // script groups keep their own vec, already x-ordered.)
     let right_rows = right_cluster.iter().filter(|(id, _)| !dropped(*id)).count();
     let right_start = rows.len() - right_rows;
     rows[right_start..].reverse();
@@ -1496,7 +1654,6 @@ pub fn band_vm(
     // The separators: one between each pair of adjacent rendered
     // seats of the same cluster — never between the clusters, never
     // beside an absent one.
-    let mut separators = Vec::new();
     for cluster in [LEFT_CLUSTER.as_slice(), RIGHT_CLUSTER.as_slice()] {
         let mut prev_end: Option<f32> = None;
         for id in cluster {
@@ -1520,6 +1677,7 @@ pub fn band_vm(
         disc,
         halo_center_x,
         path_fit: fit.path,
+        script_rows,
     }
 }
 

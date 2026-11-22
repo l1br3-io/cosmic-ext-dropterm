@@ -927,16 +927,20 @@ impl Shell {
             self.apply_pane_signal(signal, cx, &mut actions, &mut exited);
         }
         // The Lua host's outbound stream (lua-host Task L4): one
-        // try_recv drain beside the tray/pane channels — v1's events
-        // are all log lines (result tokens join with the query
-        // surfaces that ask for them, the L-A closed-extension
-        // ruling), so the sink is println, the surface every other
-        // dropterm: line already uses. try_recv on the tick is the
-        // pty-test-gate pin: no waker ever crosses the host thread
-        // into the foreground executor's pump.
+        // try_recv drain beside the tray/pane channels — the log
+        // lines sink to println, the surface every other dropterm:
+        // line already uses. The query surfaces' replies
+        // (status-segments spec) land inert here until task SG2
+        // wires the shell's segment state; either way the drain
+        // never blocks. try_recv on the tick is the pty-test-gate
+        // pin: no waker ever crosses the host thread into the
+        // foreground executor's pump.
         while let Some(event) = self.lua_host.try_event() {
             match event {
                 dropterm::core::lua_host::HostEvent::Log(line) => println!("{line}"),
+                dropterm::core::lua_host::HostEvent::SegmentValues { .. }
+                | dropterm::core::lua_host::HostEvent::SegmentsDirty
+                | dropterm::core::lua_host::HostEvent::RegistrySync { .. } => {}
             }
         }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());

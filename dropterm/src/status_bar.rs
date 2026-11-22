@@ -311,6 +311,30 @@ impl gpui::RenderOnce for StatusBandView {
             text = text.text_color(color);
             band = band.child(text);
         }
+        // The script segments' rows (status-segments spec): painted
+        // like any row over their laid rects, but non-interactive in
+        // v1 — the default cursor, no hover tint, no copy (the
+        // interactions key on SegmentId and never see these).
+        for row in &vm.script_rows {
+            let mut text = gpui::div()
+                .absolute()
+                .left(gpui::px(row.text_x))
+                .top(gpui::px(0.))
+                .h(gpui::px(BAND_HEIGHT))
+                .w(gpui::px(row.width))
+                .flex()
+                .items_center()
+                .font(self.font.clone())
+                .text_size(gpui::px(SEGMENT_FONT_SIZE));
+            text = text.child(row.text.clone());
+            let color = if row.dimmed {
+                gpui::Hsla { a: DIM_ALPHA, ..fg }
+            } else {
+                fg
+            };
+            text = text.text_color(color);
+            band = band.child(text);
+        }
         // The separators: thin hairlines centered in the gaps.
         for x in &vm.separators {
             band = band.child(

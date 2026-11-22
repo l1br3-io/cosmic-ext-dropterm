@@ -857,3 +857,182 @@ fn the_bands_terminal_facing_side_matches_the_stacking_in_every_combination() {
         }
     }
 }
+
+// --- script segments (status-segments spec, task SG1) ---
+
+/// The script-merge measurer: the view tests' own monospace fake,
+/// 8 px per character — deterministic pins without GPUI.
+fn script_measure(text: &str) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "test strings, exact in f32")]
+    let width = text.chars().count() as f32 * 8.0;
+    width
+}
+
+#[test]
+fn script_segments_render_as_trailing_groups_on_their_chosen_sides() {
+    let mut segments = StatusSegments {
+        process: "sh".to_owned(),
+        path: Some("~/src".to_owned()),
+        branch: Some("main".to_owned()),
+        clock: Some("14:32".to_owned()),
+        ..StatusSegments::default()
+    };
+    segments.script = vec![
+        ScriptSegmentValue {
+            id: "git".to_owned(),
+            side: ScriptSide::Left,
+            text: Some("git:1".to_owned()),
+        },
+        ScriptSegmentValue {
+            id: "mem".to_owned(),
+            side: ScriptSide::Left,
+            text: Some("mem:512M".to_owned()),
+        },
+        ScriptSegmentValue {
+            id: "net".to_owned(),
+            side: ScriptSide::Right,
+            text: Some("net:1.2M".to_owned()),
+        },
+    ];
+    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    // Both groups lay, in slot order per side, the left group first
+    // in x-order.
+    let ids: Vec<&str> = vm.script_rows.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, vec!["git", "mem", "net"]);
+
+    // The left group trails the whole builtin left cluster: its first
+    // seat sits exactly one segment gap past the branch's end.
+    let branch = vm
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Branch)
+        .expect("the branch row lays");
+    assert_eq!(
+        vm.script_rows[0].x,
+        branch.x + branch.width + SEGMENT_GAP,
+        "the left script group trails the builtin left cluster"
+    );
+    // The right group sits exactly one gap before the right cluster's
+    // first seat (the clock, this fixture's only one).
+    let clock = vm
+        .rows
+        .iter()
+        .find(|row| row.id == SegmentId::Clock)
+        .expect("the clock row lays");
+    assert_eq!(
+        vm.script_rows[2].x + vm.script_rows[2].width + SEGMENT_GAP,
+        clock.x,
+        "the right script group hugs the builtin right cluster's left edge"
+    );
+    // The side's cluster idiom rides: left full alpha, right dimmed.
+    assert!(!vm.script_rows[0].dimmed && !vm.script_rows[1].dimmed);
+    assert!(vm.script_rows[2].dimmed);
+    // One hairline inside the left group (between its two seats), none
+    // around the right group's single seat: same-cluster adjacency is
+    // the rule, groups never separate from the builtins.
+    assert!(vm.separators.contains(&f32::midpoint(
+        vm.script_rows[0].x + vm.script_rows[0].width,
+        vm.script_rows[1].x,
+    )));
+    assert_eq!(
+        vm.separators.iter().filter(|x| **x > 1900.0).count(),
+        0,
+        "a lone right-side script seat adds no separator"
+    );
+}
+
+#[test]
+fn script_segments_drop_before_any_builtin_under_width_pressure() {
+    let mut segments = StatusSegments {
+        process: "sh".to_owned(),
+        path: Some("~/src/oss/l1br3/ced2".to_owned()),
+        clock: Some("14:32".to_owned()),
+        ..StatusSegments::default()
+    };
+    segments.script = vec![
+        ScriptSegmentValue {
+            id: "keep".to_owned(),
+            side: ScriptSide::Left,
+            text: Some("aaaa".to_owned()),
+        },
+        ScriptSegmentValue {
+            id: "yield".to_owned(),
+            side: ScriptSide::Right,
+            text: Some("bbbbbbbb".to_owned()),
+        },
+    ];
+    // Roomy: both script seats render beside the full band.
+    let roomy = band_vm(&segments, 400.0, &script_measure, None, None, None);
+    assert_eq!(roomy.script_rows.len(), 2);
+    assert!(roomy.rows.iter().any(|row| row.id == SegmentId::Clock));
+
+    // Squeezed past the wider script seat's worth of room: the LAST
+    // seat in order gives way first, every builtin intact.
+    let one_gone = band_vm(&segments, 200.0, &script_measure, None, None, None);
+    assert_eq!(
+        one_gone
+            .script_rows
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["keep"],
+        "the trailing script seat drops first"
+    );
+    assert!(
+        one_gone.rows.iter().any(|row| row.id == SegmentId::Clock),
+        "no builtin yields while a script seat remains"
+    );
+
+    // Squeezed past both: the script group is gone whole and the
+    // builtins still stand (the clock only yields once the script
+    // group is exhausted).
+    let scripts_gone = band_vm(&segments, 160.0, &script_measure, None, None, None);
+    assert!(
+        scripts_gone.script_rows.is_empty(),
+        "the script group exhausts before any builtin drops"
+    );
+    assert!(
+        scripts_gone
+            .rows
+            .iter()
+            .any(|row| row.id == SegmentId::Clock)
+    );
+
+    // Past even the builtin floor: the clock — DROP_ORDER's own last
+    // — yields, the script group long gone.
+    let past = band_vm(&segments, 100.0, &script_measure, None, None, None);
+    assert!(past.script_rows.is_empty());
+    assert!(
+        !past.rows.iter().any(|row| row.id == SegmentId::Clock),
+        "the builtin drop order takes over only after the script group is gone"
+    );
+}
+
+#[test]
+fn script_slots_that_answer_nothing_change_no_laid_pixel() {
+    let mut segments = StatusSegments {
+        process: "sh".to_owned(),
+        path: Some("~/src".to_owned()),
+        branch: Some("main".to_owned()),
+        clock: Some("14:32".to_owned()),
+        ..StatusSegments::default()
+    };
+    let today = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    // A nil answer (text `None`) and an empty-text answer both render
+    // nothing: the empty-registry pin — today's band, byte-identical.
+    segments.script = vec![
+        ScriptSegmentValue {
+            id: "mute".to_owned(),
+            side: ScriptSide::Right,
+            text: None,
+        },
+        ScriptSegmentValue {
+            id: "blank".to_owned(),
+            side: ScriptSide::Left,
+            text: Some(String::new()),
+        },
+    ];
+    let niled = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    assert!(niled.script_rows.is_empty());
+    assert_eq!(niled, today, "no-answer script slots lay today's band");
+}
