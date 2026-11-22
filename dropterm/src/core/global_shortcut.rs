@@ -5,8 +5,8 @@
 //! (they are the `core::keybinds` domain); this module owns the
 //! external half: reading the COSMIC custom-shortcuts config that
 //! actually summons the overlay while it is hidden, recognizing the
-//! entries that spawn this binary's toggle verb, and the first-run
-//! prompt's trigger decision.
+//! entries that spawn this binary's toggle verb, and the onboarding's
+//! trigger decision.
 //!
 //! The config shapes below port `cosmic-settings-config`'s shortcuts
 //! module (pop-os/cosmic-settings-daemon, MPL-2.0,
@@ -354,8 +354,8 @@ pub fn is_toggle_spawn(command: &str, exe_stem: &str) -> bool {
 }
 
 /// The custom map's entries that summon this `DropTerm` — the Global
-/// row's read-only display and the prompt's trigger input — sorted by
-/// their display form.
+/// row's read-only display and the onboarding's trigger input — sorted
+/// by their display form.
 pub fn summon_entries(shortcuts: &CustomShortcuts, exe_stem: &str) -> Vec<Binding> {
     let mut found: Vec<Binding> = shortcuts
         .0
@@ -407,7 +407,7 @@ pub fn own_exe_stem() -> Option<String> {
     exe.file_stem()?.to_str().map(str::to_string)
 }
 
-// --- environment, walk, prompt ---
+// --- environment, walk, onboarding ---
 
 /// The desktop family the summon guidance speaks to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -452,11 +452,37 @@ pub fn summon_walk(environment: Environment) -> &'static [&'static str] {
     }
 }
 
-/// The first-run prompt's decision — consulted at cold startup only
-/// (never on a warm toggle forward): show while the environment holds
-/// no summon binding and the user has not retired the prompt.
-pub fn prompt_should_show(summon_bound: bool, dismissed: bool) -> bool {
-    !summon_bound && !dismissed
+/// The onboarding's cold-boot decision: show while no summon binding
+/// exists and the flow is not retired. Never consulted on a warm
+/// launch.
+pub fn onboarding_should_show(summon_bound: bool, retired: bool) -> bool {
+    !summon_bound && !retired
+}
+
+/// Which setup paths a session offers for the summon key — the
+/// onboarding's one question per session. `configure_for_me` is off
+/// everywhere until its provider exists (the writer turns the COSMIC
+/// arm on in its own slice), and off wherever the store cannot be
+/// read (an unreadable or unparseable map degrades to guidance).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetupOptions {
+    /// Whether the "Configure for me" path is offered this session.
+    pub configure_for_me: bool,
+}
+
+/// The session's setup options — the pure answer the onboarding window
+/// renders. The parameters are the future decision's inputs: the
+/// writer's W3 turns the COSMIC arm on over a loaded store.
+pub fn setup_options(environment: Environment, store: &ReadCustom) -> SetupOptions {
+    // The "Configure for me" provider is the writer module
+    // (SPEC-global-toggle-cosmic-writer); it does not exist yet, so
+    // every cell answers the safe default. W3 turns the arm on as
+    // `matches!(environment, Environment::Cosmic)
+    //     && matches!(store, ReadCustom::Loaded(_))`.
+    let _ = (environment, store);
+    SetupOptions {
+        configure_for_me: false,
+    }
 }
 
 #[cfg(test)]
@@ -715,17 +741,51 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_trigger_matrix() {
+    fn the_onboarding_trigger_matrix() {
         assert!(
-            prompt_should_show(false, false),
+            onboarding_should_show(false, false),
             "unbound and not retired: ask"
         );
-        assert!(!prompt_should_show(false, true), "retired: never again");
-        assert!(!prompt_should_show(true, false), "bound: never again");
+        assert!(!onboarding_should_show(false, true), "retired: never again");
+        assert!(!onboarding_should_show(true, false), "bound: never again");
         assert!(
-            !prompt_should_show(true, true),
+            !onboarding_should_show(true, true),
             "bound and retired: never again"
         );
+    }
+
+    #[test]
+    fn setup_options_keep_the_configure_arm_off_in_every_cell() {
+        // The shipped constant: the "Configure for me" provider is the
+        // writer module (SPEC-global-toggle-cosmic-writer), which does
+        // not exist yet — so every cell of the matrix degrades to the
+        // manual path alone.
+        let loaded = ReadCustom::Loaded(parse_custom(FIXTURE).expect("the fixture parses"));
+        let cells: [(&str, Environment, &ReadCustom); 5] = [
+            ("COSMIC with a loaded store", Environment::Cosmic, &loaded),
+            (
+                "COSMIC with no store",
+                Environment::Cosmic,
+                &ReadCustom::Absent,
+            ),
+            (
+                "COSMIC with an unreadable store",
+                Environment::Cosmic,
+                &ReadCustom::Unreadable,
+            ),
+            (
+                "COSMIC with an unparseable store",
+                Environment::Cosmic,
+                &ReadCustom::Unparseable,
+            ),
+            ("off-COSMIC", Environment::Other, &loaded),
+        ];
+        for (cell, environment, store) in cells {
+            assert!(
+                !setup_options(environment, store).configure_for_me,
+                "{cell}: the configure arm stays off until the writer's W3 turns it on"
+            );
+        }
     }
 
     #[test]

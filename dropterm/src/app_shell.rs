@@ -6302,7 +6302,7 @@ pub(crate) fn boot(
     shell.update(cx, |shell, cx| {
         let bound = !shell.settings.summon.display.is_empty();
         let dismissed = shell.config.onboarding_dismissed;
-        if dropterm::core::global_shortcut::prompt_should_show(bound, dismissed) {
+        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
             let entity = cx.entity();
             crate::drawer::open_summon_prompt(cx, entity);
         }
