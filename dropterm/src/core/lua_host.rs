@@ -221,6 +221,18 @@ pub enum HostEvent {
     /// row set with it, while any persisted `script/<name>` bindings
     /// stay in the file, inert.
     CommandsSync { commands: Vec<CommandRow> },
+    /// One `dropterm.send_text` request (script-commands spec):
+    /// fire-and-forget the other way — the tick drain writes the
+    /// bytes to the named pane's PTY as raw input (the typed-input
+    /// path, no bracketed paste), and a dead tab drops with one
+    /// line. The tab is the handler's ctx tab: the pane the command
+    /// was invoked on, or the event's own tab for a bus handler.
+    SendText {
+        /// The destination pane's id.
+        tab: u32,
+        /// The exact bytes the script asked for, verbatim.
+        text: String,
+    },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate
@@ -538,6 +550,16 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     match generation.lua.to_value(&payload) {
                         Ok(value) => {
                             frame.begin(true, format_args!("a handler for '{event}'"));
+                            // The verb's ctx (script-commands spec): a
+                            // payload carrying the engine events' tab
+                            // shape names the pane send_text writes to.
+                            if let Some(tab) = payload
+                                .get("tab")
+                                .and_then(serde_json::Value::as_u64)
+                                .and_then(|tab| u32::try_from(tab).ok())
+                            {
+                                frame.ctx_tab.set(Some(tab));
+                            }
                             dispatch(events, &generation.registry, &event, &value, &frame);
                         }
                         Err(err) => log(
@@ -705,6 +727,15 @@ struct TimeoutFrame {
     /// Dispatches arm the soft bound; loads run under the hard cap
     /// only — a slow load has no result to go stale.
     soft_armed: Cell<bool>,
+    /// The dispatch's ctx tab — the pane `dropterm.send_text` writes
+    /// to (script-commands spec). `begin` clears it (a unit without a
+    /// tab — a load, a segment query — holds none, and a load-time
+    /// call drops with one line); the host-driven entries set it
+    /// right after (`RunCommand` always; an `Emit` whose payload
+    /// carries the engine events' tab shape). A scripted `emit`
+    /// nested inside a handler never begins a unit, so the enclosing
+    /// dispatch's tab stands — nested emits inherit, by design.
+    ctx_tab: Cell<Option<u32>>,
 }
 
 impl TimeoutFrame {
@@ -715,6 +746,7 @@ impl TimeoutFrame {
             soft_logged: Cell::new(false),
             hard_tripped: Cell::new(false),
             soft_armed: Cell::new(false),
+            ctx_tab: Cell::new(None),
         }
     }
 
@@ -725,6 +757,7 @@ impl TimeoutFrame {
         self.soft_armed.set(soft_armed);
         self.soft_logged.set(false);
         self.hard_tripped.set(false);
+        self.ctx_tab.set(None);
         *self.label.borrow_mut() = label.to_string();
     }
 }
@@ -967,12 +1000,37 @@ fn install_port(
         },
     )?;
 
+    // v1's one host verb (script-commands spec): push an outbound
+    // [`HostEvent::SendText`] and return — fire-and-forget both
+    // directions, the host thread never blocks on the UI. Bus-global
+    // (assumption 2): every handler holds it, not only command
+    // handlers; the frame's ctx tab names the pane the write lands
+    // on, and a call with no ctx tab (load-time, a segment handler)
+    // drops with one line.
+    let send_text_events = events.clone();
+    let send_text_frame = frame.clone();
+    let send_text = lua.create_function(move |_lua, text: String| {
+        match send_text_frame.ctx_tab.get() {
+            Some(tab) => {
+                let _ = send_text_events.send(HostEvent::SendText { tab, text });
+            }
+            None => {
+                log(
+                    &send_text_events,
+                    "send_text dropped: no ctx tab on this dispatch",
+                );
+            }
+        }
+        Ok(())
+    })?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
     module.set("status_segment", status_segment)?;
     module.set("tab_title", tab_title)?;
     module.set("command", command)?;
+    module.set("send_text", send_text)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
@@ -1297,6 +1355,7 @@ fn run_command(
             return;
         };
         frame.begin(true, format_args!("command '{name}'"));
+        frame.ctx_tab.set(Some(tab));
         if let Err(err) = handler.call::<()>(value) {
             if frame.hard_tripped.get() {
                 // The hook logged the reload line; the abort unwinds.
@@ -3358,6 +3417,128 @@ mod tests {
         assert!(
             second.iter().any(|line| line.contains("fine ran")),
             "the sibling command answers after the raise: {second:?}"
+        );
+    }
+
+    // --- send_text (script-commands spec, task SC3) ---
+
+    #[test]
+    fn send_text_carries_the_ctx_tab_and_returns_immediately() {
+        let dir = TempDir::new("sendtext");
+        script(
+            &dir,
+            "cmd.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('paste-uptime', 'Paste uptime', function(p)\n\
+                   d.send_text('uptime output\\n')\n\
+                   print('returned from send_text')\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        host.send(HostCommand::RunCommand {
+            name: "paste-uptime".to_owned(),
+            tab: 5,
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SendText { .. }),
+            LONG_WAIT,
+        );
+        // The request carries the ctx tab and the exact bytes,
+        // verbatim — raw input, no wrapping, the newline the script
+        // asked for included.
+        let sent = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SendText { tab, text } => Some((*tab, text.clone())),
+                _ => None,
+            })
+            .expect("the outbound request lands");
+        assert_eq!(sent, (5, "uptime output\n".to_owned()));
+        // Immediate return: the line after the call runs, so the call
+        // came back without waiting on the UI — waited for by name,
+        // the reply surfaces' own rule.
+        let tail = logs_until(
+            &host,
+            |line| line.contains("returned from send_text"),
+            LONG_WAIT,
+        );
+        assert!(
+            tail.iter()
+                .any(|line| line.contains("returned from send_text")),
+            "send_text returns before the handler continues: {tail:?}"
+        );
+    }
+
+    #[test]
+    fn send_text_from_an_event_handler_uses_the_events_tab() {
+        let dir = TempDir::new("sendbell");
+        script(
+            &dir,
+            "ev.lua",
+            &format!(
+                "{PORT}\n\
+                 d.on('bell', function(p) d.send_text('ring') end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        host.send(HostCommand::Emit {
+            event: "bell".to_owned(),
+            payload: serde_json::json!({ "tab": 3 }),
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SendText { .. }),
+            LONG_WAIT,
+        );
+        // The verb is bus-global (spec assumption 2): an event
+        // handler holds it too, and the payload's tab — the engine
+        // events' own shape — is the ctx tab.
+        let sent = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SendText { tab, text } => Some((*tab, text.clone())),
+                _ => None,
+            })
+            .expect("the outbound request lands");
+        assert_eq!(sent, (3, "ring".to_owned()));
+    }
+
+    #[test]
+    fn send_text_without_a_ctx_tab_drops_with_one_line() {
+        let dir = TempDir::new("orphan");
+        // A load-time call — no dispatch, no ctx tab — drops with one
+        // line and never reaches the channel.
+        script(
+            &dir,
+            "orphan.lua",
+            &format!("{PORT}\nd.send_text('orphan')"),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until_quiet(&host);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, HostEvent::SendText { .. })),
+            "no ctx tab, no request: {events:?}"
+        );
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("send_text dropped: no ctx tab"))
+                .count(),
+            1,
+            "the contextless call costs exactly one line: {lines:?}"
         );
     }
 }

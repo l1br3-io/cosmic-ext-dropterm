@@ -4573,6 +4573,25 @@ impl Shell {
                         cx.notify();
                     }
                 }
+                dropterm::core::lua_host::HostEvent::SendText { tab, text } => {
+                    // Fire-and-forget the other way (script-commands
+                    // spec): the tick writes the bytes to the named
+                    // pane's PTY as raw input — the typed-input path,
+                    // no bracketed paste — and a dead tab drops with
+                    // one line, nothing written.
+                    let id = TabId(tab);
+                    match self.panes.get(&id) {
+                        Some(pane) => {
+                            let engine = pane.read(cx).terminal.clone();
+                            let mut engine = engine.lock().expect("engine lock");
+                            engine.input_scroll(text.into_bytes());
+                            engine.needs_update = true;
+                        }
+                        None => {
+                            println!("dropterm: plugins: send_text dropped: tab {tab} is gone");
+                        }
+                    }
+                }
                 dropterm::core::lua_host::HostEvent::TabTitles {
                     token,
                     stale,
@@ -8592,6 +8611,92 @@ mod tests {
             title_of(first).map(|(title, _)| title),
             Some("work".to_owned()),
             "a manual rename after an answer still wins"
+        );
+    }
+
+    #[gpui::test]
+    fn the_drain_drops_send_text_on_a_dead_tab_and_keeps_serving(cx: &mut gpui::TestAppContext) {
+        // The send_text drain's dead-tab half (script-commands spec):
+        // a real command dispatch through the real host — the handler
+        // send_texts to its ctx tab — over the paneless floor, where
+        // every tab is dead. The outbound request rides ahead of the
+        // handler's own log line on the same channel, so the line's
+        // arrival proves the SendText event was drained through the
+        // drop arm; the second dispatch proves the drain survived
+        // it. (The write-lands half is the pane-surface walk, SC-w1
+        // — the pane-booting gpui class is the parked pty-test-gate.)
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("sendtext");
+        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::write(
+            dir.0.join("plugins").join("cmd.lua"),
+            "local d = require('dropterm')\n\
+             d.command('ping', 'Ping the pane', function(p)\n\
+               d.send_text('ping\\n')\n\
+               print('ping ran on tab ' .. tostring(p.tab))\n\
+             end)",
+        )
+        .expect("fixture script");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        let dispatch = |tab: u32| {
+            cx.update(|cx| {
+                shell.update(cx, |shell, _| {
+                    shell
+                        .lua_host
+                        .send(dropterm::core::lua_host::HostCommand::RunCommand {
+                            name: "ping".to_owned(),
+                            tab,
+                        });
+                });
+            });
+        };
+        dispatch(42);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let ran = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    !shell.script_commands.is_empty()
+                })
+            });
+            if ran || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            cx.update(|cx| shell.update(cx, |shell, cx| {
+                shell.drain_lua_host(cx);
+                shell.script_commands.clone()
+            })),
+            vec![dropterm::core::keybinds::CommandRow {
+                name: "ping".to_owned(),
+                description: "Ping the pane".to_owned(),
+            }],
+            "the load's registry landed through a drain that also walked the SendText drop"
+        );
+        // The drain survived the drop: a second dispatch answers, its
+        // registry report and handler line draining clean.
+        dispatch(43);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let drained = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    shell.lua_host.spawned()
+                })
+            });
+            if drained || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            cx.update(|cx| shell.update(cx, |shell, cx| {
+                shell.drain_lua_host(cx);
+                shell.panes.is_empty() && !shell.script_commands.is_empty()
+            })),
+            "the drain keeps serving after the dead-tab drops (the paneless floor stays paneless)"
         );
     }
 
