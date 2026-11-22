@@ -288,6 +288,11 @@ pub struct ScriptSegmentsState {
     /// A drained dirty request (the reserved emit's translation) —
     /// spent by the next requery decision.
     dirty: bool,
+    /// Whether the boot query is still armed — the shell arms it at
+    /// construction exactly when the plugins dir stood (the watcher
+    /// only wakes on dir *events*, so without this one query a
+    /// standing dir's segments would never render).
+    boot_armed: bool,
     /// The config's ordered-id key: `None` renders the registry's
     /// own order; `Some` renders exactly the listed ids, in list
     /// order — the render-side filter (the registry itself stays
@@ -328,6 +333,30 @@ impl ScriptSegmentsState {
     /// regardless of diff or interval.
     pub fn note_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Arm the boot query — the shell does this at construction
+    /// exactly when the plugins dir stood at launch.
+    pub fn arm_boot_query(&mut self) {
+        self.boot_armed = true;
+    }
+
+    /// The boot query's token: the one dispatch the shell sends when
+    /// the plugins dir stood at launch but the registry has not
+    /// reported — the lazy host's first work item (spec assumption
+    /// 4's "first query" wake), so segments render without a dir
+    /// touch. The trip's sync report is the point; its reply applies
+    /// like any other (the token matches, the answers land). One
+    /// shot: the flag spends with the send, and a registry that
+    /// later reports needs no second bootstrap.
+    pub fn boot_query_due(&mut self) -> Option<u64> {
+        if self.boot_armed && self.ids.is_empty() {
+            self.boot_armed = false;
+            self.token += 1;
+            return Some(self.token);
+        }
+        self.boot_armed = false;
+        None
     }
 
     /// Apply a query reply: a stale flag or a superseded token drops

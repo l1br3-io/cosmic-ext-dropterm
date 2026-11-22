@@ -780,7 +780,16 @@ impl Shell {
             status_menu: None,
             was_hidden: true,
             status_timer_logged: (false, None, None),
-            status_scripts: status::ScriptSegmentsState::default(),
+            // The boot query arms exactly when the plugins dir stood
+            // at construction (evaluated before the move below takes
+            // the host).
+            status_scripts: {
+                let mut state = status::ScriptSegmentsState::default();
+                if lua_host.plugins_dir().exists() {
+                    state.arm_boot_query();
+                }
+                state
+            },
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -4422,6 +4431,20 @@ impl Shell {
         // may carry it — the config echo needs no extra path.
         self.status_scripts
             .configure(self.config.status_script_segments.as_deref());
+        // The boot query (status-segments spec): a plugins dir that
+        // stood at launch is the feature's signal — one query wakes
+        // the lazy host (spec assumption 4's "first query" wake),
+        // whose load then reports the registry and the machinery
+        // above takes it from there. A dir that appears mid-run stays
+        // the next launch's (the watcher's own rule); an absent dir
+        // never arms this, keeping the no-plugins run byte-identical.
+        if let Some(token) = self.status_scripts.boot_query_due() {
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::QuerySegments {
+                    token,
+                    ctx: serde_json::Value::Null,
+                });
+        }
         let Some(pane) = self.active_pane() else {
             // The script overlay rides even the paneless floor: the
             // segments are the session's, not a pane's
@@ -8284,5 +8307,41 @@ mod tests {
                 "no ctx build, no diff bookkeeping — the gate is the empty registry"
             );
         });
+    }
+
+    #[gpui::test]
+    fn the_boot_query_wakes_the_host_when_the_plugins_dir_stood_at_launch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("boot");
+        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        assert!(
+            !cx.update(|cx| shell.read(cx).lua_host.spawned()),
+            "construction arms nothing — the tick's refresh sends the boot query"
+        );
+        cx.update(|cx| shell.update(cx, Shell::refresh_status_band));
+        assert!(
+            cx.update(|cx| shell.read(cx).lua_host.spawned()),
+            "one refresh sends the boot query: the first work item wakes the host"
+        );
+        // The wake loads the (here empty) dir and reports the empty
+        // registry; drain to quiet — no crash, no spam, and the flag
+        // is spent (the earlier test pins the absent-dir counterpart:
+        // no dir, no boot query, the host never spawns).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let quiet = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    shell.lua_host.try_event().is_none()
+                })
+            });
+            if quiet || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

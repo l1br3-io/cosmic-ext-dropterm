@@ -244,6 +244,14 @@ impl LuaHost {
             .is_none()
     }
 
+    /// The plugins dir this host scans — the shell's gate for its
+    /// boot query (a dir that stood at launch is the feature's
+    /// signal; one that appears mid-run is the next launch's, the
+    /// watcher's own rule).
+    pub fn plugins_dir(&self) -> &Path {
+        &self.plugins_dir
+    }
+
     /// Materialize the host thread if it never has been: the first
     /// command pays the interpreter. Taking the dormant halves under
     /// the lock makes the first caller the only spawner.
