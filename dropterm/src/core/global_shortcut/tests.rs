@@ -266,35 +266,44 @@ fn the_onboarding_trigger_matrix() {
 }
 
 #[test]
-fn setup_options_keep_the_configure_arm_off_in_every_cell() {
-    // The shipped constant: the "Configure for me" provider is the
-    // writer module (SPEC-global-toggle-cosmic-writer), which does
-    // not exist yet — so every cell of the matrix degrades to the
-    // manual path alone.
+fn setup_options_turn_the_cosmic_arm_on_over_a_writable_store() {
+    // The writer's seat: on COSMIC, the seat renders wherever the
+    // store can carry a write — a loaded map, or a fresh session
+    // with no file yet. Every degrade (unreadable, unparseable)
+    // stays off, and off-COSMIC never offers the seat.
     let loaded = ReadCustom::Loaded(parse_custom(FIXTURE).expect("the fixture parses"));
-    let cells: [(&str, Environment, &ReadCustom); 5] = [
-        ("COSMIC with a loaded store", Environment::Cosmic, &loaded),
+    let cells: [(&str, Environment, &ReadCustom, bool); 5] = [
+        (
+            "COSMIC with a loaded store",
+            Environment::Cosmic,
+            &loaded,
+            true,
+        ),
         (
             "COSMIC with no store",
             Environment::Cosmic,
             &ReadCustom::Absent,
+            true,
         ),
         (
             "COSMIC with an unreadable store",
             Environment::Cosmic,
             &ReadCustom::Unreadable,
+            false,
         ),
         (
             "COSMIC with an unparseable store",
             Environment::Cosmic,
             &ReadCustom::Unparseable,
+            false,
         ),
-        ("off-COSMIC", Environment::Other, &loaded),
+        ("off-COSMIC", Environment::Other, &loaded, false),
     ];
-    for (cell, environment, store) in cells {
-        assert!(
-            !setup_options(environment, store).configure_for_me,
-            "{cell}: the configure arm stays off until the writer's W3 turns it on"
+    for (cell, environment, store, expected) in cells {
+        assert_eq!(
+            setup_options(environment, store).configure_for_me,
+            expected,
+            "{cell}: the configure arm's cell"
         );
     }
 }

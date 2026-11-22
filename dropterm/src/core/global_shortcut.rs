@@ -479,17 +479,15 @@ pub struct SetupOptions {
 }
 
 /// The session's setup options — the pure answer the onboarding window
-/// renders. The parameters are the future decision's inputs: the
-/// writer's W3 turns the COSMIC arm on over a loaded store.
+/// renders. The "Configure for me" seat is the writer's (this
+/// module): on COSMIC, offered wherever the store can carry a write —
+/// a loaded map, or a fresh session with no file yet — and degraded
+/// to guidance wherever it cannot (an unreadable or unparseable
+/// map), never off COSMIC.
 pub fn setup_options(environment: Environment, store: &ReadCustom) -> SetupOptions {
-    // The "Configure for me" provider is the writer module
-    // (SPEC-global-toggle-cosmic-writer); it does not exist yet, so
-    // every cell answers the safe default. W3 turns the arm on as
-    // `matches!(environment, Environment::Cosmic)
-    //     && matches!(store, ReadCustom::Loaded(_))`.
-    let _ = (environment, store);
     SetupOptions {
-        configure_for_me: false,
+        configure_for_me: matches!(environment, Environment::Cosmic)
+            && matches!(store, ReadCustom::Loaded(_) | ReadCustom::Absent),
     }
 }
 
