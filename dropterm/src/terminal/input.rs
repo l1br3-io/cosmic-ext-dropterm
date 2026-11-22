@@ -20,7 +20,7 @@ use gpui::{Keystroke, Modifiers};
 
 /// The pane's actions — the terminal-view slice of the libcosmic
 /// frontend's `Action` set, the same stable ids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum TermAction {
     Copy,
     CopyPrimary,
@@ -63,13 +63,20 @@ pub(crate) enum TermAction {
     Settings,
     ImagesPanel,
     ToggleStatusBar,
+    /// A script-registered command, dispatched by id through the same
+    /// pane action path as every builtin verb (the `script/<name>`
+    /// namespace in `action_id`, script-commands spec). Execution is
+    /// a fire-and-forget host call the shell sends — no reply arm;
+    /// the handler's powers are the runtime's full trust plus
+    /// `dropterm.send_text`.
+    ScriptCommand(String),
 }
 
 impl TermAction {
     /// Whether the verb belongs to the shell (its funnels are the
     /// menus' own) rather than the pane — the key handler's routing
     /// gate between `perform_action` and the shell handoff.
-    pub(crate) fn is_shell_verb(self) -> bool {
+    pub(crate) fn is_shell_verb(&self) -> bool {
         matches!(
             self,
             TermAction::NewTab
@@ -86,6 +93,7 @@ impl TermAction {
                 | TermAction::Settings
                 | TermAction::ImagesPanel
                 | TermAction::ToggleStatusBar
+                | TermAction::ScriptCommand(_)
         )
     }
 }
@@ -95,39 +103,42 @@ impl TermAction {
 /// contract one id set across frontends). The numbered seats are
 /// per-slot ids (`activate_tab_1` … `activate_tab_8`) and resolve
 /// through [`activate_slot_id`]; the payload form carries no single
-/// id, so it answers `None`.
+/// id, so it answers `None`. A script command's id is its slug under
+/// core keybinds' `script/` namespace (owned — a command name is
+/// runtime state).
 // Not consumed outside the tests yet: the id vocabulary's other
 // consumers (the settings editor) arrive with their slice, and the
 // round-trip test holds the contract until then.
 #[allow(dead_code)]
-pub(crate) fn action_id(action: TermAction) -> Option<&'static str> {
+pub(crate) fn action_id(action: &TermAction) -> Option<String> {
     match action {
-        TermAction::Copy => Some("copy"),
-        TermAction::CopyPrimary => Some("copy_primary"),
-        TermAction::Paste => Some("paste"),
-        TermAction::PastePrimary => Some("paste_primary"),
-        TermAction::SelectAll => Some("select_all"),
-        TermAction::ClearScrollback => Some("clear_scrollback"),
-        TermAction::ZoomIn => Some("zoom_in"),
-        TermAction::ZoomOut => Some("zoom_out"),
-        TermAction::ZoomReset => Some("zoom_reset"),
-        TermAction::Hide => Some("hide"),
-        TermAction::ShowCompletions => Some("show_completions"),
-        TermAction::ScrollToBottom => Some("scroll_to_bottom"),
-        TermAction::NewTab => Some("new_tab"),
-        TermAction::NewTabHome => Some("new_tab_home"),
-        TermAction::DuplicateTab => Some("duplicate_tab"),
-        TermAction::CloseTab => Some("close_tab"),
-        TermAction::RenameTab => Some("rename_tab"),
-        TermAction::NextTab => Some("next_tab"),
-        TermAction::PrevTab => Some("prev_tab"),
-        TermAction::MoveTabLeft => Some("move_tab_left"),
-        TermAction::MoveTabRight => Some("move_tab_right"),
+        TermAction::Copy => Some("copy".into()),
+        TermAction::CopyPrimary => Some("copy_primary".into()),
+        TermAction::Paste => Some("paste".into()),
+        TermAction::PastePrimary => Some("paste_primary".into()),
+        TermAction::SelectAll => Some("select_all".into()),
+        TermAction::ClearScrollback => Some("clear_scrollback".into()),
+        TermAction::ZoomIn => Some("zoom_in".into()),
+        TermAction::ZoomOut => Some("zoom_out".into()),
+        TermAction::ZoomReset => Some("zoom_reset".into()),
+        TermAction::Hide => Some("hide".into()),
+        TermAction::ShowCompletions => Some("show_completions".into()),
+        TermAction::ScrollToBottom => Some("scroll_to_bottom".into()),
+        TermAction::NewTab => Some("new_tab".into()),
+        TermAction::NewTabHome => Some("new_tab_home".into()),
+        TermAction::DuplicateTab => Some("duplicate_tab".into()),
+        TermAction::CloseTab => Some("close_tab".into()),
+        TermAction::RenameTab => Some("rename_tab".into()),
+        TermAction::NextTab => Some("next_tab".into()),
+        TermAction::PrevTab => Some("prev_tab".into()),
+        TermAction::MoveTabLeft => Some("move_tab_left".into()),
+        TermAction::MoveTabRight => Some("move_tab_right".into()),
         TermAction::ActivateTab(_) => None,
-        TermAction::ActivateLastTab => Some("activate_last_tab"),
-        TermAction::Settings => Some("settings"),
-        TermAction::ImagesPanel => Some("images_panel"),
-        TermAction::ToggleStatusBar => Some("toggle_status_bar"),
+        TermAction::ActivateLastTab => Some("activate_last_tab".into()),
+        TermAction::Settings => Some("settings".into()),
+        TermAction::ImagesPanel => Some("images_panel".into()),
+        TermAction::ToggleStatusBar => Some("toggle_status_bar".into()),
+        TermAction::ScriptCommand(name) => Some(dropterm::core::keybinds::script_command_id(name)),
     }
 }
 
@@ -138,7 +149,11 @@ pub(crate) fn activate_slot_id(slot: u8) -> String {
 }
 
 /// The action an id string resolves to, for the actions this slice
-/// owns; `None` for anything else (a stale hand-edited entry).
+/// owns; `None` for anything else (a stale hand-edited entry). A
+/// `script/<name>` id parses structurally — the namespace is
+/// uncollidable with builtin ids (core keybinds' pin) and a dead
+/// command's binding stays live as a chord, its press resolving at
+/// the host (script-commands spec).
 pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
     match id {
         "copy" => Some(TermAction::Copy),
@@ -168,11 +183,21 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "toggle_status_bar" => Some(TermAction::ToggleStatusBar),
         // The numbered seats (`activate_tab_1` … `activate_tab_8`);
         // a seat past 8 is not this table's (9 is activate_last_tab).
-        _ => id
-            .strip_prefix("activate_tab_")
-            .and_then(|slot| slot.parse::<u8>().ok())
-            .filter(|slot| (1..=8).contains(slot))
-            .map(TermAction::ActivateTab),
+        _ => {
+            if let Some(slot) = id
+                .strip_prefix("activate_tab_")
+                .and_then(|slot| slot.parse::<u8>().ok())
+                .filter(|slot| (1..=8).contains(slot))
+            {
+                return Some(TermAction::ActivateTab(slot));
+            }
+            // The script-command namespace: any non-empty slug
+            // without the separator parses (the structural rule —
+            // live-or-dead is the host's call).
+            dropterm::core::keybinds::command_name_from_id(id)
+                .filter(|name| !name.contains('/'))
+                .map(|name| TermAction::ScriptCommand(name.to_owned()))
+        }
     }
 }
 
@@ -329,7 +354,8 @@ pub(crate) fn effective_key_binds(
             }
         })
         .collect();
-    let customized: HashSet<TermAction> = resolved.iter().map(|(action, _)| *action).collect();
+    let customized: HashSet<TermAction> =
+        resolved.iter().map(|(action, _)| action.clone()).collect();
 
     let mut binds = default_key_binds();
     binds.retain(|_, action| !customized.contains(action));
@@ -363,7 +389,7 @@ pub(crate) fn matched_action(
     key_binds
         .iter()
         .find(|(chord, _)| chord_matches(chord, keystroke))
-        .map(|(_, action)| *action)
+        .map(|(_, action)| action.clone())
 }
 
 /// What one keystroke becomes on the pane: bytes for the PTY, an
@@ -774,8 +800,8 @@ mod tests {
             TermAction::ImagesPanel,
             TermAction::ToggleStatusBar,
         ] {
-            let id = action_id(action).expect("the payload-less verbs carry ids");
-            assert_eq!(action_from_id(id), Some(action));
+            let id = action_id(&action).expect("the payload-less verbs carry ids");
+            assert_eq!(action_from_id(&id), Some(action));
         }
         for slot in 1..=8u8 {
             assert_eq!(
@@ -785,9 +811,54 @@ mod tests {
         }
         // The payload form answers None (no single id), and the seat
         // past 8 is not this table's — 9 is activate_last_tab.
-        assert_eq!(action_id(TermAction::ActivateTab(4)), None);
+        assert_eq!(action_id(&TermAction::ActivateTab(4)), None);
         assert_eq!(action_from_id("activate_tab_9"), None);
         assert_eq!(action_from_id("not_an_action"), None);
+    }
+
+    #[test]
+    fn script_command_ids_round_trip_and_carry_the_namespace() {
+        // The id map's script arm (script-commands spec): prefix +
+        // slug both ways, and the routing gate — a command is a shell
+        // verb, its execution targets the host.
+        let action = TermAction::ScriptCommand("paste-uptime".to_owned());
+        assert_eq!(action_id(&action).as_deref(), Some("script/paste-uptime"));
+        assert_eq!(action_from_id("script/paste-uptime"), Some(action.clone()));
+        assert!(action.is_shell_verb());
+        // A dead command's id still parses (the structural rule): a
+        // binding outliving its command keeps matching, and the press
+        // resolves at the host with one line. The slug itself cannot
+        // carry the separator, and an empty name is nobody's.
+        assert_eq!(
+            action_from_id("script/gone"),
+            Some(TermAction::ScriptCommand("gone".to_owned()))
+        );
+        assert_eq!(action_from_id("script/a/b"), None);
+        assert_eq!(action_from_id("script/"), None);
+    }
+
+    #[test]
+    fn a_custom_script_binding_lives_in_the_effective_map() {
+        // The persistence criterion (script-commands spec): a custom
+        // entry under `script/<name>` rides the existing overlay
+        // unmodified — no default to retire, the chord matches, and
+        // the pane hands the verb up like any shell verb.
+        let mut custom = BTreeMap::new();
+        custom.insert(
+            "script/greet".to_owned(),
+            Binding {
+                modifiers: vec![ModifierName::Ctrl, ModifierName::Alt],
+                key: "G".to_owned(),
+            },
+        );
+        let binds = effective_key_binds(&custom);
+        let mut mods = ctrl();
+        mods.alt = true;
+        let pressed = key(mods, "g", None);
+        assert_eq!(
+            matched_action(&binds, &pressed),
+            Some(TermAction::ScriptCommand("greet".to_owned()))
+        );
     }
 
     #[test]
@@ -798,7 +869,7 @@ mod tests {
             let keystroke = key(chord.modifiers, &chord.key, None);
             assert_eq!(
                 translate(&keystroke, &default_key_binds(), plain_modes()),
-                KeyInput::Action(action),
+                KeyInput::Action(action.clone()),
                 "chord {chord:?} fires {action:?}"
             );
         }

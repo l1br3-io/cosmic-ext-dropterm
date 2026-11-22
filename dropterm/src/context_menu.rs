@@ -31,7 +31,7 @@ pub(crate) enum ShellPick {
 
 /// Where a menu item's pick lands: the pane's action path (the same
 /// `perform_action` the keybind map drives) or a shell call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickRoute {
     /// The pane's own action — the keybind funnel.
     Pane(TermAction),

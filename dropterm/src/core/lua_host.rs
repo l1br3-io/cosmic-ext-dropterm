@@ -148,6 +148,19 @@ pub enum HostCommand {
         /// provider derives from.
         tabs: Vec<TabTitleAsk>,
     },
+    /// Run one registered command's handler (script-commands spec) —
+    /// fire-and-forget: no reply arm exists to wait on. The handler
+    /// receives `{ tab }` (the pane the chord landed in); the
+    /// soft/hard bounds cover the run. An unknown name (registered
+    /// then reloaded away between binding and press, or never
+    /// registered) dispatches to nobody with one line.
+    RunCommand {
+        /// The command's slug — the registry key (its `script/<name>`
+        /// id is the keybind file's vocabulary; the host knows names).
+        name: String,
+        /// The invoking tab's id — the handler's whole ctx.
+        tab: u32,
+    },
 }
 
 /// One observation out of the host thread. v1 carried only the log;
@@ -578,6 +591,27 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         break;
                     }
                 }
+                HostCommand::RunCommand { name, tab } => {
+                    if !scanned {
+                        load_scripts(
+                            &generation.lua,
+                            &generation.segments,
+                            &generation.tab_title,
+                            &generation.commands,
+                            plugins_dir,
+                            events,
+                            &frame,
+                        );
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    }
+                    run_command(&generation, &name, tab, events, &frame);
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                }
                 HostCommand::Reload => {
                     // One edit lands as a burst of events (a
                     // truncate-write is two Modifys on inotify): fold
@@ -599,6 +633,14 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                                 | HostCommand::QueryTabTitles { .. }),
                             ) => {
                                 held = Some(query);
+                                break;
+                            }
+                            // A command press riding a reload burst is
+                            // held the same way — served on the
+                            // reloaded generation, whose registry is
+                            // the truth about who answers.
+                            Ok(run @ HostCommand::RunCommand { .. }) => {
+                                held = Some(run);
                                 break;
                             }
                             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
@@ -1218,6 +1260,56 @@ fn query_tab_titles(
         stale,
         values,
     });
+}
+
+/// Run one registered command's handler (script-commands spec):
+/// fire-and-forget — no reply arm, the sending side never waits. The
+/// handler receives `{ tab }` (the invoking pane's id) under the
+/// soft/hard bounds; an unknown name dispatches to nobody with one
+/// line (registered then reloaded away, or never registered — both
+/// read the same from the press); a raise costs one line and the
+/// registry keeps its siblings.
+fn run_command(
+    generation: &Generation,
+    name: &str,
+    tab: u32,
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) {
+    for slot in 1..=generation.commands.raw_len() {
+        let Ok(entry) = generation.commands.get::<Table>(slot) else {
+            continue;
+        };
+        let Ok(entry_name) = entry.get::<String>("name") else {
+            continue;
+        };
+        if entry_name != name {
+            continue;
+        }
+        let Ok(handler) = entry.get::<Function>("handler") else {
+            continue;
+        };
+        let ctx = serde_json::json!({ "tab": tab });
+        let Ok(value) = generation.lua.to_value(&ctx) else {
+            // Unreachable for JSON payloads; honest if it ever fires:
+            // nobody runs, one line.
+            log(events, format!("command '{name}' would not build its ctx"));
+            return;
+        };
+        frame.begin(true, format_args!("command '{name}'"));
+        if let Err(err) = handler.call::<()>(value) {
+            if frame.hard_tripped.get() {
+                // The hook logged the reload line; the abort unwinds.
+                return;
+            }
+            log(events, format!("command '{name}' raised: {err}"));
+        }
+        return;
+    }
+    log(
+        events,
+        format!("command '{name}' dispatched to nobody (not registered)"),
+    );
 }
 
 /// Evaluate every registered segment handler once (status-segments
@@ -3141,6 +3233,131 @@ mod tests {
         assert!(
             command_sync(&third).is_some_and(|commands| commands.len() == 1),
             "the re-registered command reports again: {third:?}"
+        );
+    }
+
+    // --- command dispatch (script-commands spec, task SC2) ---
+
+    #[test]
+    fn a_command_dispatch_runs_the_handler_with_the_ctx_tab() {
+        let dir = TempDir::new("runcmd");
+        script(
+            &dir,
+            "cmd.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('greet', 'Greet the tab', function(p)\n\
+                   print('greet tab ' .. tostring(p.tab))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        host.send(HostCommand::RunCommand {
+            name: "greet".to_owned(),
+            tab: 7,
+        });
+        // The dispatch wakes the host (the lazy pin), the load
+        // reports, and the handler answers — drain to the match, then
+        // to quiet so the no-reply assertion sees the whole reaction.
+        let mut events = events_until(&host, |event| matches!(event, HostEvent::Log(_)), LONG_WAIT);
+        events.extend(events_until_quiet(&host));
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("greet tab 7"))
+                .count(),
+            1,
+            "the handler runs with the ctx tab: {lines:?}"
+        );
+        // No reply arm exists to wait on: everything beside the logs
+        // is a sync report from the load (all three registries
+        // report on every load), never a dispatch answer.
+        for event in &events {
+            assert!(
+                matches!(
+                    event,
+                    HostEvent::Log(_)
+                        | HostEvent::CommandsSync { .. }
+                        | HostEvent::RegistrySync { .. }
+                        | HostEvent::TabTitleProvider { .. }
+                ),
+                "a command dispatch has no reply arm: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_command_dispatches_to_nobody_with_one_line() {
+        let dir = TempDir::new("ghost");
+        script(
+            &dir,
+            "cmd.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('real', 'The live one', function(p) print('real ran') end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        host.send(HostCommand::RunCommand {
+            name: "ghost".to_owned(),
+            tab: 1,
+        });
+        let lines = logs_until(&host, |line| line.contains("ghost"), LONG_WAIT);
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("ghost")).count(),
+            1,
+            "the unknown id costs exactly one line: {lines:?}"
+        );
+        // The host and the live command are unaffected.
+        host.send(HostCommand::RunCommand {
+            name: "real".to_owned(),
+            tab: 2,
+        });
+        let second = logs_until(&host, |line| line.contains("real ran"), LONG_WAIT);
+        assert!(
+            second.iter().any(|line| line.contains("real ran")),
+            "the live command still answers: {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_raising_command_handler_costs_one_line_and_siblings_survive() {
+        let dir = TempDir::new("boomcmd");
+        script(
+            &dir,
+            "cmds.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('boom', 'Raises', function(p) error('kaboom') end)\n\
+                 d.command('fine', 'Behaves', function(p) print('fine ran') end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        host.send(HostCommand::RunCommand {
+            name: "boom".to_owned(),
+            tab: 3,
+        });
+        let first = logs_until(&host, |line| line.contains("kaboom"), LONG_WAIT);
+        assert_eq!(
+            first.iter().filter(|line| line.contains("kaboom")).count(),
+            1,
+            "the handler's raise costs exactly one line: {first:?}"
+        );
+        host.send(HostCommand::RunCommand {
+            name: "fine".to_owned(),
+            tab: 4,
+        });
+        let second = logs_until(&host, |line| line.contains("fine ran"), LONG_WAIT);
+        assert!(
+            second.iter().any(|line| line.contains("fine ran")),
+            "the sibling command answers after the raise: {second:?}"
         );
     }
 }

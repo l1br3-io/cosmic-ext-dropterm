@@ -1194,7 +1194,7 @@ impl TerminalPane {
         };
         let pane = self.id;
         window.defer(cx, move |window, cx| {
-            shell.update(cx, |shell, cx| shell.shell_verb(action, pane, window, cx));
+            shell.update(cx, |shell, cx| shell.shell_verb(&action, pane, window, cx));
         });
     }
 

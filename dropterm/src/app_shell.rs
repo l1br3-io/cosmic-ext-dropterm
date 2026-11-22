@@ -2317,7 +2317,7 @@ impl Shell {
     /// dispatching).
     pub(crate) fn shell_verb(
         &mut self,
-        action: crate::terminal::input::TermAction,
+        action: &crate::terminal::input::TermAction,
         pane: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2365,7 +2365,7 @@ impl Shell {
             }
             crate::terminal::input::TermAction::ActivateTab(slot) => {
                 let len = self.tabs.records().len();
-                if let Some(index) = activate_index_target(len, usize::from(slot))
+                if let Some(index) = activate_index_target(len, usize::from(*slot))
                     && let Some(tab) = self.tabs.records().get(index)
                 {
                     self.select_tab(tab.id, cx);
@@ -2396,6 +2396,17 @@ impl Shell {
             crate::terminal::input::TermAction::ImagesPanel => self.open_images_panel(cx),
             crate::terminal::input::TermAction::ToggleStatusBar => {
                 self.toggle_status_bar_setting(cx);
+            }
+            // A script-registered command (script-commands spec):
+            // fire-and-forget into the host — the handler runs there
+            // under the soft/hard bounds with `{ tab }`, and the
+            // shell never waits on an answer (no reply arm exists).
+            crate::terminal::input::TermAction::ScriptCommand(name) => {
+                self.lua_host
+                    .send(dropterm::core::lua_host::HostCommand::RunCommand {
+                        name: name.clone(),
+                        tab: pane.0,
+                    });
             }
             // The pane-owned verbs never reach this handoff; the
             // catch-all is unreachable by dispatch_shell_verb's gate.
@@ -7914,7 +7925,7 @@ mod tests {
             let shell = shell.clone();
             shell.update(cx, |shell, cx| {
                 shell.shell_verb(
-                    crate::terminal::input::TermAction::Settings,
+                    &crate::terminal::input::TermAction::Settings,
                     TabId(0),
                     window,
                     cx,
@@ -7937,7 +7948,7 @@ mod tests {
             let shell = shell.clone();
             shell.update(cx, |shell, cx| {
                 shell.shell_verb(
-                    crate::terminal::input::TermAction::Settings,
+                    &crate::terminal::input::TermAction::Settings,
                     TabId(0),
                     window,
                     cx,
