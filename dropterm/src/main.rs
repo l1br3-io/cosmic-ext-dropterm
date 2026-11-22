@@ -27,6 +27,7 @@ mod context_menu;
 mod dbus;
 mod drawer;
 mod executor;
+mod fonts;
 mod images_panel;
 mod kit_check;
 mod notify;
@@ -235,19 +236,27 @@ fn main() {
         // gpui-kit / gpui-shell aggregates.
         .with_assets(gpui_kit_assets::Assets)
         .with_quit_mode(gpui::QuitMode::Explicit)
-        .run(move |cx: &mut gpui::App| match check {
-            Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
-            Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
-            None => app_shell::boot(
-                cx,
-                exit_after,
-                &phase,
-                &tabs,
-                verbs,
-                startup,
-                surface_mode,
-                tray_actions,
-            ),
+        .run(move |cx: &mut gpui::App| {
+            // The bundled default family registers before any pane
+            // resolves (fonts.rs, gnome-window Task 5): every boot
+            // mode passes through this one closure, so the resolver's
+            // terminal fallback is held by construction — the bare-rig
+            // walk's `fc-list` empty row closes here.
+            fonts::register_bundled_fonts(cx);
+            match check {
+                Some(CheckMode::KitC2b) => kit_check::boot(cx, exit_after),
+                Some(CheckMode::TerminalGrid) => terminal_walk::boot(cx, exit_after),
+                None => app_shell::boot(
+                    cx,
+                    exit_after,
+                    &phase,
+                    &tabs,
+                    verbs,
+                    startup,
+                    surface_mode,
+                    tray_actions,
+                ),
+            }
         });
     println!("dropterm: event loop exited cleanly");
 }

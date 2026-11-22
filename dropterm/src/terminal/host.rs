@@ -21,15 +21,27 @@ use gpui::{App, FontStyle, FontWeight, Pixels, px};
 
 use dropterm::core::terminal::TextHost;
 
-/// The monospace families the pane tries, in order: cosmic-text's
-/// own hard-wired `Family::Monospace` default first (the family the
-/// libcosmic build's cells resolve to where it is installed), then
-/// the common distribution monospaces. The first family GPUI's font
-/// system actually holds wins — an unheld family does not fail
-/// resolution loudly, it silently fails to rasterize glyphs (the
-/// first walk's lesson on the validation VM: quads painted, no
-/// glyph ever landed).
-pub(crate) const MONOSPACE_CANDIDATES: [&str; 5] = [
+/// The monospace families the pane tries, in order: the platform
+/// natives lead (each absent where it is not native, so the entry
+/// never fires there — an unconfigured pick matches the OS's own
+/// expectations: Menlo on macOS, Consolas on Windows), then the
+/// common distribution monospaces of the Linux platforms (Noto Sans
+/// Mono is cosmic-text's hard-wired `Family::Monospace` default, the
+/// family the libcosmic build's cells resolve to where it is
+/// installed). The first family GPUI's font system actually holds
+/// wins — an unheld family does not fail resolution loudly, it
+/// silently fails to rasterize glyphs (the first walk's lesson on
+/// the validation VM: quads painted, no glyph ever landed). The
+/// walk's terminal fallback is the bundled family
+/// ([`crate::fonts::BUNDLED_FAMILY`]), held by construction once the
+/// boot registration ran — the one candidate no platform needs
+/// installed.
+pub(crate) const MONOSPACE_CANDIDATES: [&str; 10] = [
+    "Menlo",
+    "SF Mono",
+    "Monaco",
+    "Consolas",
+    "Cascadia Mono",
     "Noto Sans Mono",
     "DejaVu Sans Mono",
     "JetBrains Mono",
@@ -37,17 +49,28 @@ pub(crate) const MONOSPACE_CANDIDATES: [&str; 5] = [
     "Liberation Mono",
 ];
 
-/// The first candidate family GPUI's font system holds, or the
-/// cosmic-text default verbatim when none is listed (the resolver's
-/// own fallback then owns the pick — visible as the logged row).
-pub(crate) fn resolve_monospace_family(text_system: &gpui::TextSystem) -> String {
-    let names = text_system.all_font_names();
+/// The walk, pure: the first listed family `held` carries, else the
+/// bundled family — the boot registration's guarantee, so no path can
+/// return a name nothing holds (the silent-failure state the first
+/// walk's lesson pins is unreachable by construction). The tests pin
+/// the ordering policy through this function directly.
+fn select_monospace_family(held: &impl Fn(&str) -> bool) -> String {
     for candidate in MONOSPACE_CANDIDATES {
-        if names.iter().any(|name| name == candidate) {
+        if held(candidate) {
             return candidate.to_string();
         }
     }
-    MONOSPACE_CANDIDATES[0].to_string()
+    crate::fonts::BUNDLED_FAMILY.to_string()
+}
+
+/// The first candidate family GPUI's font system holds, else the
+/// bundled family verbatim (held once the boot registration ran; if
+/// registration itself failed, the boot's logged row makes that state
+/// visible and the pick rides the system's fonts as before the
+/// bundle).
+pub(crate) fn resolve_monospace_family(text_system: &gpui::TextSystem) -> String {
+    let names = text_system.all_font_names();
+    select_monospace_family(&|name| names.iter().any(|n| n == name))
 }
 
 /// The configured `font_name` resolved against GPUI's held fonts: a
@@ -188,28 +211,50 @@ impl TextHost for GpuiHost {
 #[cfg(test)]
 mod tests {
     use super::MONOSPACE_CANDIDATES;
+    use crate::fonts::BUNDLED_FAMILY;
 
-    /// The headless selection over a plain name list — the family
-    /// choice without GPUI's text system (the candidate order is the
-    /// policy; the test pins it).
+    /// The headless selection over a plain name list — the real walk
+    /// function against a synthetic held set, so the tests pin the
+    /// resolver's policy, not a helper's copy of it.
     fn select(held: &[&str]) -> String {
-        for candidate in MONOSPACE_CANDIDATES {
-            if held.contains(&candidate) {
-                return candidate.to_string();
-            }
-        }
-        MONOSPACE_CANDIDATES[0].to_string()
+        super::select_monospace_family(&|name| held.contains(&name))
     }
 
     #[test]
     fn the_cosmic_text_default_wins_where_held() {
-        // Noto Sans Mono is cosmic-text's own `Family::Monospace`
-        // default — where the system holds it, parity with the
-        // libcosmic cells is exact.
+        // On Linux none of the platform natives is held, so the walk
+        // lands on Noto Sans Mono — cosmic-text's own `Family::
+        // Monospace` default and the bundled family, parity with the
+        // libcosmic cells exact.
         assert_eq!(
             select(&["DejaVu Sans Mono", "Noto Sans Mono"]),
             "Noto Sans Mono"
         );
+    }
+
+    #[test]
+    fn the_platform_natives_win_where_held() {
+        // An unconfigured pick matches the OS's expectations: the
+        // macOS natives lead the walk, then Windows'. The Linux list
+        // follows — absent everywhere but Linux, so the other
+        // platforms' natives resolve first without disturbing this
+        // platform's order.
+        assert_eq!(
+            select(&[
+                "DejaVu Sans Mono",
+                "Noto Sans Mono",
+                "Menlo",
+                "SF Mono",
+                "Monaco",
+                "Consolas",
+                "Cascadia Mono",
+            ]),
+            "Menlo"
+        );
+        assert_eq!(select(&["Consolas", "Noto Sans Mono"]), "Consolas");
+        assert_eq!(select(&["Cascadia Mono"]), "Cascadia Mono");
+        assert_eq!(select(&["SF Mono", "Monaco"]), "SF Mono");
+        assert_eq!(select(&["Monaco"]), "Monaco");
     }
 
     #[test]
@@ -224,21 +269,38 @@ mod tests {
     }
 
     #[test]
+    fn a_font_less_system_lands_on_the_bundled_family() {
+        // The bare rig holds nothing (the plan record's container row:
+        // `fc-list` empty). The walk's terminal fallback is the
+        // registered bundled family — held by construction once the
+        // boot ran, so the pane renders glyphs instead of the
+        // silent-failure state (quads painted, none rasterized).
+        assert_eq!(select(&[]), BUNDLED_FAMILY);
+    }
+
+    #[test]
     fn a_held_non_candidate_never_matches() {
         // Only the candidate list is eligible; a system holding none
-        // of them keeps the cosmic-text default and lets the
-        // resolver's own fallback own the pick (the logged row makes
-        // that state visible in a walk).
-        assert_eq!(select(&["Comic Sans"]), "Noto Sans Mono");
+        // of them keeps the bundled default (the logged row at boot
+        // and the resolver's println make that state visible in a
+        // walk).
+        assert_eq!(select(&["Comic Sans"]), BUNDLED_FAMILY);
     }
 
     #[test]
     fn the_candidates_are_all_monospace_and_ordered() {
-        // The order is the policy: cosmic-text's default, then the
-        // common distribution monospaces.
+        // The order is the policy: the platform natives lead (each
+        // absent where it is not native, so it never fires there),
+        // then the Linux distribution monospaces, the bundled family
+        // behind them all as the guaranteed last resort.
         assert_eq!(
             MONOSPACE_CANDIDATES,
             [
+                "Menlo",
+                "SF Mono",
+                "Monaco",
+                "Consolas",
+                "Cascadia Mono",
                 "Noto Sans Mono",
                 "DejaVu Sans Mono",
                 "JetBrains Mono",
@@ -246,5 +308,8 @@ mod tests {
                 "Liberation Mono",
             ]
         );
+        // The terminal fallback and the configured default are the
+        // bundled family — the registration's guarantee is the walk's.
+        assert_eq!(BUNDLED_FAMILY, "Noto Sans Mono");
     }
 }
