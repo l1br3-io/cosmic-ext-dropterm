@@ -1451,9 +1451,10 @@ impl TerminalPane {
 
     /// A release: a reported gesture ends through the encoder
     /// (whatever button it pressed); the left button finalizes the
-    /// selection. The libcosmic rows carry no copy-on-select — the
-    /// selection stands until Copy grabs it — so this release only
-    /// logs the byte count a Copy would take.
+    /// selection — expanding its sides first, so every cell the drag
+    /// touched is included (the boundary-cell fix), then logging the
+    /// byte count a Copy would take. The libcosmic rows carry no
+    /// copy-on-select — the selection stands until Copy grabs it.
     fn on_release(
         &mut self,
         button: gpui::MouseButton,
@@ -1479,7 +1480,22 @@ impl TerminalPane {
         let selected = {
             let mut terminal = self.terminal.lock().expect("engine lock");
             let text = {
-                let term = terminal.term.lock();
+                let mut term = terminal.term.lock();
+                // The release expands the standing selection's sides
+                // (`Selection::include_all`): `range_simple` drops a
+                // Right-anchored start's own cell and a Left-ended
+                // release's own cell, so without this every drag's
+                // first and last character hinged on which sub-cell
+                // half the pointer landed in. The empty case is
+                // skipped — a plain click's same-anchor selection must
+                // stay nothing, and include_all would split its
+                // anchors' sides into a one-cell "selection"
+                // (selection.rs's trap pin).
+                if let Some(ref mut standing) = term.selection
+                    && !standing.is_empty()
+                {
+                    standing.include_all();
+                }
                 term.selection_to_string()
             };
             if let Some(text) = &text {
@@ -3480,5 +3496,172 @@ mod tests {
              painted its glyphs but not the run's background, the hidden-paste \
              veil"
         );
+    }
+
+    // --- select-accuracy S1: the release expands its sides ---
+
+    #[gpui::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pane's whole gesture scene — the boot, the URL's paint wait, the drag's staging, the release, and the WYSIWYG witness pair are one story"
+    )]
+    fn a_released_drag_includes_both_boundary_cells(cx: &mut gpui::TestAppContext) {
+        // The owner's report: a drag from the right half of a URL's
+        // first cell to the left half of its last kept copying
+        // `ttp://…dropter` — both boundary cells dropped. Alacritty's
+        // `range_simple` drops a Right-anchored start's own cell and a
+        // Left-ended release's own cell (the selection.rs pin); the
+        // pane's release must expand the standing selection's sides so
+        // the overlay and a Copy read every touched cell. Staged here
+        // the way the gesture handlers stage it (viewport point +
+        // side), released through the pane's own release path, and
+        // witnessed by both the range the overlay paints and the
+        // string a Copy takes — the WYSIWYG pair.
+        cx.update(gpui_component::init);
+        let config = request_config();
+        let (terminal, pane) = cx
+            .update(|cx| {
+                let request = PaneRequest {
+                    program: "/bin/sh".to_string(),
+                    // Output only, then park: the URL lands alone on
+                    // its row and the sleep keeps the shell (and the
+                    // engine's reader) alive past the pin's end.
+                    args: vec![
+                        "-c".to_string(),
+                        "printf 'http://0.0.0.0:4000/dropterm/\\n'; sleep 30".to_string(),
+                    ],
+                    cwd: None,
+                    env: std::collections::HashMap::default(),
+                    spawned_as: "sh".to_string(),
+                    profile_id: None,
+                    appearance: PaneAppearance {
+                        colors: boot_colors(&config, &[]),
+                        font_size: config.font_size,
+                        scrollback: config.scrollback_lines,
+                    },
+                };
+                boot_pane(cx, &config, request, None, TabId(0), None)
+            })
+            .expect("boot the pane");
+        let pane_read = pane.clone();
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(900.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |_, _| pane,
+                )
+            })
+            .expect("open the pane's window");
+        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+
+        // The paint clock (the reverse-video pin's own shape): the
+        // gesture stages on painted content, so the URL must be in the
+        // grid first — and the walk log names the display row it sits
+        // on, the very row a pointer drag would land on.
+        let url = "http://0.0.0.0:4000/dropterm/";
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let url_row = loop {
+            frame(cx);
+            let row = cx.update(|_, cx| {
+                pane_read
+                    .read(cx)
+                    .walk_log
+                    .lock()
+                    .expect("walk log")
+                    .rows
+                    .iter()
+                    .position(|row| row.starts_with(url))
+            });
+            if let Some(row) = row {
+                break row;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the URL never painted: {:?}",
+                cx.update(|_, cx| {
+                    pane_read
+                        .read(cx)
+                        .walk_log
+                        .lock()
+                        .expect("walk log")
+                        .rows
+                        .clone()
+                })
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+
+        // The reported gesture's exact shape, staged as on_press and
+        // on_left_drag stage it: the press landed on the RIGHT half of
+        // the cell at column 2, the release on the LEFT half of the
+        // cell at column 9.
+        {
+            let terminal = terminal.lock().expect("engine lock");
+            let start = terminal
+                .viewport_to_point(alacritty_terminal::index::Point::new(url_row, Column(2)));
+            let end = terminal
+                .viewport_to_point(alacritty_terminal::index::Point::new(url_row, Column(9)));
+            let mut drag = alacritty_terminal::selection::Selection::new(
+                alacritty_terminal::selection::SelectionType::Simple,
+                start,
+                alacritty_terminal::index::Side::Right,
+            );
+            drag.update(end, alacritty_terminal::index::Side::Left);
+            terminal.term.lock().selection = Some(drag);
+        }
+
+        // The release itself, through the pane's own path.
+        cx.update(|_, cx| {
+            pane_read.update(cx, |pane, cx| {
+                pane.on_release(
+                    gpui::MouseButton::Left,
+                    gpui::Point::default(),
+                    gpui::Modifiers::default(),
+                    cx,
+                );
+            });
+        });
+
+        // The WYSIWYG pair after the release: the range the overlay
+        // paints and the string a Copy takes both include the anchored
+        // and released cells.
+        let (range, copied) = {
+            let terminal = terminal.lock().expect("engine lock");
+            let term = terminal.term.lock();
+            (
+                term.selection.as_ref().and_then(|sel| sel.to_range(&term)),
+                term.selection_to_string(),
+            )
+        };
+        assert_eq!(
+            range.map(|r| (r.start.column.0, r.end.column.0)),
+            Some((2, 9)),
+            "the released range must include the anchored cell 2 and the released cell 9"
+        );
+        assert_eq!(
+            copied.as_deref(),
+            Some(&url[2..10]),
+            "Copy takes both boundary cells — the un-expanded release drops them \
+             (the owner's `ttp://…dropter` copies)"
+        );
+
+        // The engine outlives the pin (the tab pin's own note: dropping
+        // it here closes the PTY, whose reader-thread exit wakes the
+        // pump from a foreign thread and trips the gpui test
+        // scheduler's determinism gate at teardown).
+        std::mem::forget(terminal);
     }
 }

@@ -131,6 +131,40 @@ pub(crate) fn selection_kind_of(click: ClickKind) -> alacritty_terminal::selecti
 mod tests {
     use super::*;
 
+    /// The probe listener: events go nowhere (pure grid semantics).
+    #[derive(Clone)]
+    struct Nop;
+    impl alacritty_terminal::event::EventListener for Nop {
+        fn send_event(&self, _event: alacritty_terminal::event::Event) {}
+    }
+
+    /// The probe dimensions: a bare fixed grid.
+    struct Dims {
+        cols: usize,
+        lines: usize,
+    }
+    impl alacritty_terminal::grid::Dimensions for Dims {
+        fn columns(&self) -> usize {
+            self.cols
+        }
+        fn screen_lines(&self) -> usize {
+            self.lines
+        }
+        fn total_lines(&self) -> usize {
+            self.lines
+        }
+    }
+
+    /// A probe `Term` for `to_range` — the same real engine the view
+    /// drives, no PTY (grid.rs's own probe shape).
+    fn probe_term(cols: usize, lines: usize) -> alacritty_terminal::Term<Nop> {
+        alacritty_terminal::Term::new(
+            alacritty_terminal::term::Config::default(),
+            &Dims { cols, lines },
+            Nop,
+        )
+    }
+
     fn range(start: (i32, usize), end: (i32, usize)) -> SelectionRange {
         SelectionRange {
             start: Point::new(Line(start.0), Column(start.1)),
@@ -216,6 +250,75 @@ mod tests {
             cell_at(14.9, 41.6, 10., 20.),
             (1, 2),
             "the unconverted window coordinate lands rows below the pointer"
+        );
+    }
+
+    // --- select-accuracy S1: the release expands its sides ---
+
+    #[test]
+    fn an_unexpanded_drag_drops_both_boundary_cells_until_the_release_expands() {
+        // `range_simple`'s side rules: a Right-anchored start excludes
+        // its own cell, a Left-ended release excludes its own — the
+        // owner's `ttp://0.0.0.0:4000/dropter` copies. DropTerm's
+        // release never expanded, so every drag's first and last
+        // character hinged on which sub-cell half the pointer landed
+        // in. This is the rule the view's release call rides, probed
+        // on the real engine selection.
+        use alacritty_terminal::index::Side;
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let term = probe_term(16, 4);
+        let mut drag = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(2)),
+            Side::Right,
+        );
+        drag.update(Point::new(Line(0), Column(9)), Side::Left);
+        let before = drag.to_range(&term).expect("the dragged range exists");
+        assert_eq!(
+            (before.start.column.0, before.end.column.0),
+            (3, 8),
+            "un-expanded: the anchored cell 2 and the released cell 9 both drop"
+        );
+        // The release's expansion (`Selection::include_all`): the
+        // anchor sides widen so every touched cell joins the range.
+        drag.include_all();
+        let after = drag.to_range(&term).expect("the expanded range exists");
+        assert_eq!(
+            (after.start.column.0, after.end.column.0),
+            (2, 9),
+            "expanded: both boundary cells are in"
+        );
+    }
+
+    #[test]
+    fn a_bare_expansion_conjures_a_click_selection_the_release_must_skip() {
+        // The trap in the expansion, probed at the engine: a plain
+        // click anchors both ends at one cell and `is_empty` reads it
+        // as nothing, but `include_all` splits the anchors' sides and
+        // defeats that same-anchor rule — an unguarded release call
+        // would leave a one-cell selection standing after every click.
+        // The view's guard skips the empty case (this pin is why).
+        use alacritty_terminal::index::Side;
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let term = probe_term(16, 4);
+        let mut click = Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(5)),
+            Side::Right,
+        );
+        assert!(click.is_empty(), "a never-dragged click is empty");
+        assert!(click.to_range(&term).is_none(), "and selects nothing");
+        click.include_all();
+        assert!(
+            !click.is_empty(),
+            "after a bare include_all the anchors' sides differ, so is_empty reads false"
+        );
+        assert_eq!(
+            click
+                .to_range(&term)
+                .map(|r| (r.start.column.0, r.end.column.0)),
+            Some((5, 5)),
+            "the unguarded expansion conjures a one-cell click selection"
         );
     }
 }
