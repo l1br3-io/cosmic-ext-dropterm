@@ -182,7 +182,6 @@ struct GridGeometry {
     font_size: Pixels,
     cell_width: Pixels,
     cell_height: Pixels,
-    cols: usize,
 }
 
 /// The pane view: one engine terminal, its resolved scheme, and the
@@ -1869,7 +1868,6 @@ fn paint_pane(
         font_size,
         cell_width: px(cell.cell_width),
         cell_height: px(cell.cell_height),
-        cols,
     };
 
     // The walk's grid evidence row: the resting grid, once per change.
@@ -2404,8 +2402,14 @@ fn resize_px(
     Some(px_size)
 }
 
-/// Paint one projected row: one shaped line, forced to the cell
-/// grid's exact width, one text run per styled run.
+/// Paint one projected row: each run shaped alone, forced to its own
+/// cell span, and placed at its start column — every glyph sits on
+/// its grid columns whatever the wide chars before it did (the old
+/// whole-row shape let gpui's force-width snap place glyphs by
+/// count, one cell left per wide char — select-accuracy S2's
+/// defect). All run backgrounds land before any glyphs, so a spacer
+/// run's cell rect — the wide glyph's tail cell, at its own column —
+/// never covers the glyph it overlaps.
 fn paint_row(
     runs: &[StyledRun],
     skin: &PaneSkin,
@@ -2414,9 +2418,37 @@ fn paint_row(
     window: &mut gpui::Window,
     cx: &mut App,
 ) {
-    let mut text = String::new();
-    let mut text_runs = Vec::with_capacity(runs.len());
+    let mut painted: Vec<(gpui::Point<Pixels>, gpui::ShapedLine)> = Vec::with_capacity(runs.len());
     for run in runs {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a grid's column count is far below 2^24: exact in f32"
+        )]
+        let run_origin = point(
+            origin.x + geometry.cell_width * run.start_col as f32,
+            origin.y,
+        );
+        // A spacer run owns its cell but no glyphs: its rect paints
+        // straight (the shaper has nothing to place), and the run's
+        // empty text keeps the joined row text — the walk-log's
+        // evidence — byte-identical.
+        if run.text.is_empty() {
+            if let Some(bg) = run.bg {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a run's cell count is far below 2^24: exact in f32"
+                )]
+                let width = geometry.cell_width * run.cell_len as f32;
+                window.paint_quad(fill(
+                    gpui::Bounds {
+                        origin: run_origin,
+                        size: gpui::Size::new(width, geometry.cell_height),
+                    },
+                    bg,
+                ));
+            }
+            continue;
+        }
         let mut font = skin.font.clone();
         if run.bold {
             font.weight = FontWeight::BOLD;
@@ -2433,41 +2465,49 @@ fn paint_row(
             color: Some(run.fg),
             thickness: px(1.),
         });
-        text_runs.push(gpui::TextRun {
+        let text_runs = [gpui::TextRun {
             len: run.text.len(),
             font,
             color: run.fg,
             background_color: run.bg,
             underline,
             strikethrough,
-        });
-        text.push_str(&run.text);
+        }];
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a run's cell count is far below 2^24: exact in f32"
+        )]
+        let forced = geometry.cell_width * run.cell_len as f32;
+        let shaped = window.text_system().shape_line(
+            run.text.as_str().into(),
+            geometry.font_size,
+            &text_runs,
+            Some(forced),
+        );
+        // The background pass under this run's own glyphs.
+        // `ShapedLine::paint` draws glyphs, underlines and strikes
+        // only — a run's `background_color` reaches pixels solely
+        // through this pass, without which an INVERSE span (bash's
+        // bracketed-paste preview among them) paints its glyphs in
+        // the swapped foreground over the pane background: text
+        // present, the line reading blank until the program redraws
+        // it plain. Runs without a background skip the pass and pay
+        // nothing.
+        if run.bg.is_some() {
+            let _ = shaped.paint_background(
+                run_origin,
+                geometry.cell_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        painted.push((run_origin, shaped));
     }
-    if text.is_empty() {
-        return;
-    }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a grid's column count is far below 2^24: exact in f32"
-    )]
-    let forced = geometry.cell_width * geometry.cols as f32;
-    let shaped =
-        window
-            .text_system()
-            .shape_line(text.into(), geometry.font_size, &text_runs, Some(forced));
-    // The background pass. `ShapedLine::paint` draws glyphs,
-    // underlines and strikes only — a run's `background_color`
-    // reaches pixels solely through the separate `paint_background`.
-    // A row holding any explicit background (an INVERSE cell's
-    // swapped pair, bash's whole bracketed-paste preview among them)
-    // needs that pass under its glyphs, or its glyphs paint in the
-    // swapped foreground — the pane background — over the pane
-    // background: text and caret present, line reading as blank
-    // until the program redraws the span plain. Rows without a
-    // background skip the pass and pay nothing.
-    if runs.iter().any(|run| run.bg.is_some()) {
-        let _ = shaped.paint_background(
-            origin,
+    for (run_origin, shaped) in &painted {
+        let _ = shaped.paint(
+            *run_origin,
             geometry.cell_height,
             TextAlign::Left,
             None,
@@ -2475,14 +2515,6 @@ fn paint_row(
             cx,
         );
     }
-    let _ = shaped.paint(
-        origin,
-        geometry.cell_height,
-        TextAlign::Left,
-        None,
-        window,
-        cx,
-    );
 }
 
 /// The scheme the pane resolves for a config at boot — the effective

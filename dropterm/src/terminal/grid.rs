@@ -3,11 +3,13 @@
 //! The grid→run projection (gpui-terminal Task 1): one alacritty
 //! grid row projected into styled text runs the GPUI view shapes and
 //! paints — colors and attributes resolved off the scheme, the block
-//! caret's cell inverted in place, wide-char spacers skipped (the
-//! row's shaped width is forced to the cell grid, so a wide glyph
-//! naturally claims its two cells). Pure over `alacritty_terminal`
-//! data: every rule here is headless-tested; the paint that consumes
-//! the runs is compositor-evidenced (the spec's testing strategy).
+//! caret's cell inverted in place, runs cell-aligned (a wide glyph
+//! owns a two-cell run, spacers their own text-less cells, so the
+//! paint places every run on its own columns and glyphs after wide
+//! chars stop drifting — select-accuracy S2). Pure over
+//! `alacritty_terminal` data: every rule here is headless-tested;
+//! the paint that consumes the runs is compositor-evidenced (the
+//! spec's testing strategy).
 
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::Colors;
@@ -25,7 +27,7 @@ const WINDOW_BG_FALLBACK: Rgb = Rgb {
 
 /// One run of same-styled text within a projected row: the unit the
 /// paint feeds GPUI's shaper (one `TextRun` per run, one shaped line
-/// per row).
+/// per run, forced to the run's own cell span).
 #[derive(Debug, Clone, PartialEq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -33,10 +35,18 @@ const WINDOW_BG_FALLBACK: Rgb = Rgb {
 )]
 pub(crate) struct StyledRun {
     /// The run's text — cell chars in order, zero-width combining
-    /// marks appended to the cell they decorate, wide-char spacers
-    /// absent (the wide glyph claims their cells through the forced
-    /// row width).
+    /// marks appended to the cell they decorate. A spacer run carries
+    /// no text: its cell is accounted by `start_col`/`cell_len`, and
+    /// the joined texts stay byte-identical to the row's cells.
     pub text: String,
+    /// The run's first cell's grid column — the paint places the
+    /// run's forced span exactly there, so every glyph sits on its
+    /// own columns no matter what the wide chars before it did.
+    pub start_col: usize,
+    /// The cells the run spans: two for a wide glyph (its cell and
+    /// the spacer's), one for every other cell. Zero-width marks add
+    /// glyphs, never cells.
+    pub cell_len: usize,
     /// The resolved foreground.
     pub fg: Hsla,
     /// A resolved background the paint fills behind exactly this
@@ -91,6 +101,11 @@ pub(crate) fn window_background(colors: &Colors) -> Hsla {
 /// the unset background resolving to the window background first),
 /// so the caret paints as an inverse cell in the very frame that
 /// shows it — before any keystroke.
+///
+/// Runs are cell-aligned (select-accuracy S2): each carries its
+/// first cell's column and its cell span, so the paint places every
+/// run exactly on its columns instead of trusting whole-row glyph
+/// counting past wide chars.
 pub(crate) fn project_row(
     cells: &[Cell],
     colors: &Colors,
@@ -98,13 +113,11 @@ pub(crate) fn project_row(
 ) -> Vec<StyledRun> {
     let window_bg = window_background(colors);
     let mut runs: Vec<StyledRun> = Vec::new();
+    // Whether the trailing run accepts more cells: a wide glyph's
+    // run, a spacer's run, and the caret's are terminal — each owns
+    // exactly its own cells.
+    let mut trailing_accepts = false;
     for (col, cell) in cells.iter().enumerate() {
-        // A wide char's spacer follower contributes no text — the
-        // wide glyph claims both cells through the row's forced
-        // width (a duplicated char would double-advance).
-        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-            continue;
-        }
         let is_cursor = cursor == Some(col);
         let fg = hsla(resolve_color(colors, cell.fg));
         let bg = match cell.bg {
@@ -121,16 +134,42 @@ pub(crate) fn project_row(
         } else {
             (fg, bg)
         };
-        let styled = (fg, bg);
         let attrs = (
             cell.flags.contains(Flags::BOLD),
             cell.flags.contains(Flags::ITALIC),
             cell.flags.contains(Flags::UNDERLINE),
             cell.flags.contains(Flags::STRIKEOUT),
         );
+        // A spacer is its own text-less run counting one cell: the
+        // wide glyph's trailing spacer and the wrapped-wide leading
+        // placeholder both stay accounted at their own columns, and
+        // the empty text keeps the joined row text byte-identical
+        // (the walk-log rows never move).
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
+            runs.push(StyledRun {
+                text: String::new(),
+                start_col: col,
+                cell_len: 1,
+                fg,
+                bg,
+                bold: attrs.0,
+                italic: attrs.1,
+                underline: attrs.2,
+                strikethrough: attrs.3,
+            });
+            trailing_accepts = false;
+            continue;
+        }
+        let wide = cell.flags.contains(Flags::WIDE_CHAR);
         // The caret cell never merges in either direction, so the
-        // block caret is exactly its own run.
-        let merges = !is_cursor
+        // block caret is exactly its own run; a wide glyph splits
+        // too — its run owns the cell and the spacer's.
+        let merges = trailing_accepts
+            && !is_cursor
+            && !wide
             && runs.last().is_some_and(|last| {
                 (
                     last.fg,
@@ -139,7 +178,7 @@ pub(crate) fn project_row(
                     last.italic,
                     last.underline,
                     last.strikethrough,
-                ) == (styled.0, styled.1, attrs.0, attrs.1, attrs.2, attrs.3)
+                ) == (fg, bg, attrs.0, attrs.1, attrs.2, attrs.3)
             });
         let mut text = String::new();
         // Tabs land as cells holding the raw character (the engine's
@@ -151,16 +190,23 @@ pub(crate) fn project_row(
         }
         if merges && let Some(last) = runs.last_mut() {
             last.text.push_str(&text);
+            // Same-style narrow cells only ever merge, so every
+            // merged cell counts exactly one (zero-width marks
+            // added glyphs, never cells).
+            last.cell_len += 1;
         } else {
             runs.push(StyledRun {
                 text,
-                fg: styled.0,
-                bg: styled.1,
+                start_col: col,
+                cell_len: usize::from(wide) + 1,
+                fg,
+                bg,
                 bold: attrs.0,
                 italic: attrs.1,
                 underline: attrs.2,
                 strikethrough: attrs.3,
             });
+            trailing_accepts = !wide && !is_cursor;
         }
     }
     runs
@@ -404,12 +450,15 @@ mod tests {
         // A row of plain cells is one run: default fg, no per-cell
         // background rect (the window background already covers it),
         // every cell's char in the text — spaces included, because
-        // the shaper advances on them.
+        // the shaper advances on them — spanning the row's cells from
+        // column zero.
         let colors = Colors::default();
         let cells: Vec<Cell> = "hi  you".chars().map(plain_cell).collect();
         let runs = project_row(&cells, &colors, None);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "hi  you");
+        assert_eq!(runs[0].start_col, 0);
+        assert_eq!(runs[0].cell_len, 7);
         assert_eq!(runs[0].bg, None);
         assert!(!runs[0].bold && !runs[0].italic && !runs[0].underline);
     }
@@ -437,18 +486,21 @@ mod tests {
         let runs = project_row(&cells, &colors, None);
         assert_eq!(runs.len(), 3, "{runs:?}");
         assert_eq!(runs[0].text, "a");
+        assert_eq!((runs[0].start_col, runs[0].cell_len), (0, 1));
         assert!(!runs[0].bold && !runs[0].underline);
         assert_eq!(runs[1].text, "B");
+        assert_eq!((runs[1].start_col, runs[1].cell_len), (1, 1));
         assert!(runs[1].bold && runs[1].underline);
         assert_eq!(
             runs[1].fg,
             hsla(Rgb {
                 r: 0x55,
                 g: 0xff,
-                b: 0x55
+                b: 0x55,
             })
         );
         assert_eq!(runs[2].text, "c");
+        assert_eq!((runs[2].start_col, runs[2].cell_len), (2, 1));
     }
 
     #[test]
@@ -571,9 +623,11 @@ mod tests {
 
     #[test]
     fn wide_char_spacers_contribute_no_text() {
-        // A wide char claims two cells; its spacer follower is absent
-        // from the run text (the row's forced width gives the glyph
-        // both cells; a duplicated char would double-advance).
+        // A wide char claims two cells; its spacer follower joins no
+        // text — the wide glyph owns both cells and the spacer rides
+        // as its own text-less run, so the joined text (the walk-log
+        // rows' own evidence) never gains a phantom char. The runs'
+        // full split shape is the cell-alignment pin's clause.
         let colors = Colors::default();
         let mut wide = plain_cell('漢');
         wide.flags.insert(Flags::WIDE_CHAR);
@@ -586,7 +640,6 @@ mod tests {
             "a漢b",
             "the wide glyph once; the spacer never"
         );
-        assert_eq!(runs.len(), 1, "the spacer carries no style of its own");
     }
 
     #[test]
@@ -599,6 +652,84 @@ mod tests {
         let cells = vec![base, plain_cell('!')];
         let runs = project_row(&cells, &colors, None);
         assert_eq!(run_text(&runs), "e\u{301}!");
+    }
+
+    // --- select-accuracy S2: cell-aligned runs ---
+
+    /// The run shape the S2 pins read: text, its first cell's column,
+    /// and its cell span.
+    fn run_shape(runs: &[StyledRun]) -> Vec<(&str, usize, usize)> {
+        runs.iter()
+            .map(|r| (r.text.as_str(), r.start_col, r.cell_len))
+            .collect()
+    }
+
+    #[test]
+    fn an_emoji_adjacent_row_splits_into_cell_aligned_runs() {
+        // The emoji-line defect's pin: painted as one whole-row line,
+        // gpui's force-width snap places every glyph after a wide
+        // char one cell left per wide char — the painted glyphs lied
+        // about their columns while the selection math told the
+        // truth. The projection must split instead: [a][漢][spacer][b]
+        // projects as "a" on its column, the wide glyph owning a
+        // two-cell run, the spacer a text-less run of its own cell,
+        // and "b" starting at the emoji's column + 2 — and the joined
+        // text stays byte-identical (the walk-log's row evidence
+        // rides that join).
+        let colors = Colors::default();
+        let mut wide = plain_cell('漢');
+        wide.flags.insert(Flags::WIDE_CHAR);
+        let mut spacer = plain_cell(' ');
+        spacer.flags.insert(Flags::WIDE_CHAR_SPACER);
+        let cells = vec![plain_cell('a'), wide, spacer, plain_cell('b')];
+        let runs = project_row(&cells, &colors, None);
+        assert_eq!(
+            run_shape(&runs),
+            vec![("a", 0, 1), ("漢", 1, 2), ("", 2, 1), ("b", 3, 1)],
+            "the wide glyph owns its two cells, the spacer is its own text-less \
+             cell, and the run after the emoji starts at its column + 2"
+        );
+        assert_eq!(
+            run_text(&runs),
+            "a漢b",
+            "the joined text is byte-identical — the walk-log rows never move"
+        );
+    }
+
+    #[test]
+    fn a_leading_spacer_row_counts_its_spacer_cell() {
+        // The wrapped-wide placeholder: a wide char that missed the
+        // row's end leaves a LEADING_WIDE_CHAR_SPACER in the last
+        // column (the glyph itself paints on the next row) — the row
+        // must still account that cell as its own text-less run, or
+        // everything after the (absent) glyph would mis-place.
+        let colors = Colors::default();
+        let mut leading = plain_cell(' ');
+        leading.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+        let cells = vec![plain_cell('a'), plain_cell('b'), leading];
+        let runs = project_row(&cells, &colors, None);
+        assert_eq!(
+            run_shape(&runs),
+            vec![("ab", 0, 2), ("", 2, 1)],
+            "the placeholder counts one cell at its own column"
+        );
+    }
+
+    #[test]
+    fn zero_width_marks_ride_their_base_run_adding_no_cells() {
+        // The marks pin beside the split rule: a mark joins its base
+        // char's text but never grows the run's cell span — one
+        // marked cell is one cell, two glyphs.
+        let colors = Colors::default();
+        let mut base = plain_cell('e');
+        base.push_zerowidth('\u{0301}'); // combining acute
+        let cells = vec![base];
+        let runs = project_row(&cells, &colors, None);
+        assert_eq!(
+            run_shape(&runs),
+            vec![("e\u{301}", 0, 1)],
+            "the mark adds a glyph, never a cell"
+        );
     }
 
     #[test]
