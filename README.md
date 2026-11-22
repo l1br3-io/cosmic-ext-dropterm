@@ -94,6 +94,7 @@ The details live in the `docs/` directory:
 - [Plugins](docs/plugins.md) - your own Lua 5.4 scripts under `~/.config/io.github.l1br3_io.dropterm/plugins/`: the `dropterm.on`/`emit` event bus, hot reload, timeouts, and the full-trust model stated plainly
 - [Script status segments](docs/status-segments.md) - plugins' own band segments: `dropterm.status_segment`, the ctx table it receives, the refresh triggers, and the `status_script_segments` ordering key
 - [Script tab titles](docs/tab-titles.md) - plugins deriving the tabs' names: `dropterm.tab_title`, the `{ tab, title }` ctx, the change-gated asks, and the stale ladder; a manual rename still wins in every mode
+- [Script commands](docs/script-commands.md) - plugins registering keybindable commands: `dropterm.command` rows beside the built-ins in the Keybindings editor, fire-and-forget dispatch with `{ tab }`, and `dropterm.send_text` as v1's one host verb
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
