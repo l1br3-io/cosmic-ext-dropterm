@@ -1134,11 +1134,34 @@ fn tab_title_mode_serde_round_trips_all_variants() {
         TabTitleMode::LastSegment,
         TabTitleMode::Numbered,
         TabTitleMode::Profile,
+        TabTitleMode::Script,
     ] {
         let serialized = ron::to_string(&variant).expect("serialize TabTitleMode");
         let deserialized: TabTitleMode =
             ron::from_str(&serialized).expect("deserialize TabTitleMode");
         assert_eq!(deserialized, variant);
+    }
+}
+
+#[test]
+fn script_mode_serializes_as_the_variant_name_and_old_arms_load_unchanged() {
+    // The arm's on-disk spelling, pinned so a hand-edited config can
+    // opt in; the stale-config pin: a file carrying only the old
+    // arms loads exactly as before (the key list is additive, and a
+    // new arm never rewrites an old one's meaning).
+    assert_eq!(
+        ron::to_string(&TabTitleMode::Script).expect("serialize Script"),
+        "Script"
+    );
+    for old in [
+        "Shell",
+        "AbbreviatedPath",
+        "LastSegment",
+        "Numbered",
+        "Profile",
+    ] {
+        let loaded: TabTitleMode = ron::from_str(old).expect("an old arm still loads");
+        assert_eq!(ron::to_string(&loaded).expect("reserialize"), old);
     }
 }
 

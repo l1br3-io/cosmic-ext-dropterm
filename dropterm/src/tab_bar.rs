@@ -173,6 +173,10 @@ pub(crate) struct TabRecord {
     /// reset or an empty payload) — the retitle input, stored by
     /// core's own rule.
     pub(crate) shell_title: Option<String>,
+    /// The last script-resolved title (tab-titles spec), `shell_title`'s
+    /// own shape: landed by the shell's drain, read by `Script` mode
+    /// through `resolve_title`, reset with the terminal on respawn.
+    pub(crate) script_title: Option<String>,
     /// The tab's working directory (the engine's `/proc` cwd read,
     /// the same input the libcosmic retitle path caches) — the cwd
     /// title modes' input.
@@ -219,6 +223,7 @@ fn resolve_record_title(tab: &TabRecord, mode: TabTitleMode) -> String {
     resolve_title(
         mode,
         tab.shell_title.as_deref(),
+        tab.script_title.as_deref(),
         tab.cwd.as_deref(),
         None,
         tab.id,
@@ -252,6 +257,7 @@ impl TabList {
             id,
             title: next_default_title(id),
             shell_title: None,
+            script_title: None,
             cwd: None,
             title_override: None,
             pinned: false,
@@ -299,6 +305,7 @@ impl TabList {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
             tab.title = fields.title;
             tab.shell_title = None;
+            tab.script_title = None;
             tab.title_override = fields.title_override;
             tab.attention = Attention::None;
             tab.bell_notified = false;
@@ -442,6 +449,7 @@ impl TabList {
         commit_rename(
             mode,
             tab.shell_title.as_deref(),
+            tab.script_title.as_deref(),
             tab.cwd.as_deref(),
             None,
             tab.id,
@@ -518,6 +526,7 @@ impl TabList {
             id,
             title: next_default_title(id),
             shell_title: None,
+            script_title: None,
             cwd,
             last_running_comm: None,
             pasted_images: Vec::new(),
@@ -588,6 +597,7 @@ impl TabList {
             id,
             title,
             shell_title: None,
+            script_title: None,
             cwd,
             title_override,
             pinned,

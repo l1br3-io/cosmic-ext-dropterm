@@ -1539,7 +1539,7 @@ fn the_tabs_card_groups_the_tab_strip_keys() {
 }
 
 #[test]
-fn tab_title_mode_options_are_exactly_the_five_modes() {
+fn tab_title_mode_options_are_exactly_the_six_modes() {
     // Shell title first, so the default config's selection is
     // index 0 (the Follow system pattern).
     assert_eq!(
@@ -1550,6 +1550,7 @@ fn tab_title_mode_options_are_exactly_the_five_modes() {
             (TabTitleMode::LastSegment, "Last segment"),
             (TabTitleMode::Numbered, "Terminal number"),
             (TabTitleMode::Profile, "Profile name"),
+            (TabTitleMode::Script, "Script provider"),
         ]
     );
 }
@@ -1579,7 +1580,11 @@ fn tab_title_mode_picks_round_trip_and_out_of_range_rejects() {
         dropdown_write(ConfigKey::TabTitleMode, 4, &[]),
         Some(PlannedWrite::TabTitleMode(TabTitleMode::Profile))
     );
-    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 5, &[]), None);
+    assert_eq!(
+        dropdown_write(ConfigKey::TabTitleMode, 5, &[]),
+        Some(PlannedWrite::TabTitleMode(TabTitleMode::Script))
+    );
+    assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 6, &[]), None);
     assert_eq!(dropdown_write(ConfigKey::TabTitleMode, 99, &[]), None);
     // The write targets exactly its own key, nothing else.
     assert_eq!(

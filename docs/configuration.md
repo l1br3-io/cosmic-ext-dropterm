@@ -139,6 +139,7 @@ A change never resizes anything - the strip reorders immediately on a shown surf
 | `LastSegment` | The cwd's final component - `ced`, or `(root)` at `/`. |
 | `Numbered` | Always `Terminal N`; shell titles never land. |
 | `Profile` | The profile's name ([profiles](#profiles)). A tab with no profile - or a deleted one - falls back to `Shell`'s behavior. |
+| `Script` | A plugin script derives the title. With no provider registered - or before it answers - the tab shows `Terminal N`, the same fallback, never a blank. |
 
 A manual rename wins in every mode. Changing the mode re-titles every live tab immediately, renamed ones excepted; while in `Profile` mode, renaming a profile retitles its running tabs at once.
 

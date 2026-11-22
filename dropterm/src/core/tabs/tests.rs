@@ -490,6 +490,7 @@ fn shell_mode_lands_the_raw_report() {
         Some("vim — src/main.rs"),
         None,
         None,
+        None,
         TabId(0),
         None,
     );
@@ -500,7 +501,7 @@ fn shell_mode_lands_the_raw_report() {
 fn a_missing_report_shows_the_default_number() {
     // Also the RIS story: a reset clears the stored report and
     // the default comes back.
-    let title = resolve_title(TabTitleMode::Shell, None, None, None, TabId(4), None);
+    let title = resolve_title(TabTitleMode::Shell, None, None, None, None, TabId(4), None);
     assert_eq!(title, "Terminal 5");
 }
 
@@ -524,6 +525,7 @@ fn an_empty_report_stores_as_no_report() {
             stored.as_deref(),
             None,
             None,
+            None,
             TabId(4),
             None
         ),
@@ -539,11 +541,13 @@ fn a_rename_wins_in_every_mode() {
         TabTitleMode::LastSegment,
         TabTitleMode::Numbered,
         TabTitleMode::Profile,
+        TabTitleMode::Script,
     ] {
         assert_eq!(
             resolve_title(
                 mode,
                 Some("jpt@box:~/src"),
+                Some("from script"),
                 Some(Path::new("/home/jpt/src")),
                 None,
                 TabId(0),
@@ -565,6 +569,7 @@ fn profile_mode_shows_the_tab_recorded_profile_name() {
             TabTitleMode::Profile,
             Some("user@host: ~"),
             None,
+            None,
             Some("ssh-prod"),
             TabId(0),
             None
@@ -580,6 +585,7 @@ fn profile_mode_shows_the_name_before_any_report() {
     assert_eq!(
         resolve_title(
             TabTitleMode::Profile,
+            None,
             None,
             None,
             Some("top"),
@@ -599,6 +605,7 @@ fn profile_mode_rename_pin_wins_over_the_name() {
             TabTitleMode::Profile,
             Some("user@host"),
             None,
+            None,
             Some("ssh-prod"),
             TabId(0),
             Some("prod box")
@@ -617,6 +624,7 @@ fn profile_mode_falls_back_to_shell_behavior_without_a_profile() {
             Some("zsh"),
             None,
             None,
+            None,
             TabId(0),
             None
         ),
@@ -624,7 +632,15 @@ fn profile_mode_falls_back_to_shell_behavior_without_a_profile() {
     );
     // ...and the `Terminal N` default when none does.
     assert_eq!(
-        resolve_title(TabTitleMode::Profile, None, None, None, TabId(2), None),
+        resolve_title(
+            TabTitleMode::Profile,
+            None,
+            None,
+            None,
+            None,
+            TabId(2),
+            None
+        ),
         "Terminal 3"
     );
 }
@@ -640,15 +656,157 @@ fn profile_mode_dangling_id_renders_the_shell_fallback() {
             Some("zsh"),
             None,
             None,
+            None,
             TabId(0),
             None
         ),
         "zsh"
     );
     assert_eq!(
-        resolve_title(TabTitleMode::Profile, None, None, None, TabId(4), None),
+        resolve_title(
+            TabTitleMode::Profile,
+            None,
+            None,
+            None,
+            None,
+            TabId(4),
+            None
+        ),
         "Terminal 5"
     );
+}
+
+// --- the Script arm (tab-titles) ---
+
+#[test]
+fn script_mode_shows_the_last_script_answer() {
+    // The arm reads whatever the last drain landed — stale until
+    // then (the runtime contract), the default before any answer.
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Script,
+            Some("jpt@box:~/src"),
+            Some("dev box"),
+            None,
+            None,
+            TabId(0),
+            None
+        ),
+        "dev box"
+    );
+}
+
+#[test]
+fn script_mode_unanswered_falls_back_to_the_default() {
+    // The ladder's floor: no provider, no answer yet, or a nil
+    // answer — exactly today's Shell mode with no OSC reports.
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Script,
+            Some("jpt@box:~/src"),
+            None,
+            None,
+            None,
+            TabId(3),
+            None
+        ),
+        "Terminal 4"
+    );
+}
+
+#[test]
+fn script_mode_honors_an_empty_answer_verbatim() {
+    // OQ-1's pin: a returned string is honored verbatim — the empty
+    // string included (a provider wanting the default returns nil).
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Script,
+            Some("jpt@box:~/src"),
+            Some(""),
+            None,
+            None,
+            TabId(0),
+            None
+        ),
+        ""
+    );
+}
+
+#[test]
+fn script_mode_a_rename_after_an_answer_wins_and_a_clear_returns_to_the_answer() {
+    // The precedence orderings: a rename committed after an answer
+    // keeps winning, and clearing it re-resolves to the standing
+    // answer at once — never a flicker of the default in between.
+    let mut title = String::from("dev box");
+    let mut title_override = None;
+    commit_rename(
+        TabTitleMode::Script,
+        Some("jpt@box:~/src"),
+        Some("dev box"),
+        None,
+        None,
+        TabId(0),
+        &mut title,
+        &mut title_override,
+        "work",
+    );
+    assert_eq!(title, "work");
+    assert_eq!(title_override.as_deref(), Some("work"));
+    commit_rename(
+        TabTitleMode::Script,
+        Some("jpt@box:~/src"),
+        Some("dev box"),
+        None,
+        None,
+        TabId(0),
+        &mut title,
+        &mut title_override,
+        "",
+    );
+    assert_eq!(title_override, None);
+    assert_eq!(title, "dev box");
+}
+
+#[test]
+fn script_mode_flips_away_and_back_keep_the_answer() {
+    // A flip away reads the other arm's inputs (the answer is
+    // ignored, not cleared); flipping back re-resolves to the
+    // standing answer.
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Shell,
+            Some("jpt@box:~/src"),
+            Some("dev box"),
+            None,
+            None,
+            TabId(0),
+            None
+        ),
+        "jpt@box:~/src"
+    );
+    assert_eq!(
+        resolve_title(
+            TabTitleMode::Script,
+            Some("jpt@box:~/src"),
+            Some("dev box"),
+            None,
+            None,
+            TabId(0),
+            None
+        ),
+        "dev box"
+    );
+}
+
+#[test]
+fn plan_respawn_in_script_mode_titles_from_the_fresh_terminal_number() {
+    // The respawn resets the script answer with the new PTY (the
+    // OSC tracker's own rule): the default number until the new
+    // shell's material re-asks — the rename surviving above it.
+    let plan = plan_respawn(TabTitleMode::Script, TabId(6), None, None, "htop");
+    assert_eq!(plan.title, "Terminal 7");
+    let renamed = plan_respawn(TabTitleMode::Script, TabId(6), None, Some("work"), "htop");
+    assert_eq!(renamed.title, "work");
 }
 
 #[test]
@@ -658,6 +816,7 @@ fn numbered_mode_ignores_reports_and_parks_at_the_number() {
     let title = resolve_title(
         TabTitleMode::Numbered,
         Some("jpt@box:~/src"),
+        None,
         Some(Path::new("/home/jpt/src")),
         None,
         TabId(0),
@@ -676,6 +835,7 @@ fn abbreviated_path_shortens_a_tilde_suffix() {
     let title = resolve_title(
         TabTitleMode::AbbreviatedPath,
         Some("jpt@box:~/src/oss/l1br3/ced"),
+        None,
         Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
         None,
         TabId(0),
@@ -688,6 +848,7 @@ fn abbreviated_path_shortens_a_tilde_suffix() {
     let spawned = resolve_title(
         TabTitleMode::AbbreviatedPath,
         None,
+        None,
         Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
         None,
         TabId(0),
@@ -695,6 +856,7 @@ fn abbreviated_path_shortens_a_tilde_suffix() {
     );
     let spawned_home = resolve_title(
         TabTitleMode::AbbreviatedPath,
+        None,
         None,
         Some(Path::new("/home/jpt")),
         None,
@@ -717,6 +879,7 @@ fn abbreviated_path_shortens_an_absolute_suffix_identically() {
     let title = resolve_title(
         TabTitleMode::AbbreviatedPath,
         Some("jpt@box:/home/jpt/src/oss/l1br3/ced"),
+        None,
         Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
         None,
         TabId(0),
@@ -730,6 +893,7 @@ fn abbreviated_path_leaves_a_non_directory_title_verbatim() {
     let title = resolve_title(
         TabTitleMode::AbbreviatedPath,
         Some("vim — src/main.rs"),
+        None,
         Some(Path::new("/home/jpt/src")),
         None,
         TabId(0),
@@ -743,6 +907,7 @@ fn abbreviated_path_without_a_cwd_shows_the_report_verbatim() {
     let title = resolve_title(
         TabTitleMode::AbbreviatedPath,
         Some("jpt@box:~/src"),
+        None,
         None,
         None,
         TabId(0),
@@ -759,6 +924,7 @@ fn abbreviated_path_without_a_report_abbreviates_the_cwd_itself() {
     let title = resolve_title(
         TabTitleMode::AbbreviatedPath,
         None,
+        None,
         Some(Path::new("/tmp/a/bc/de")),
         None,
         TabId(0),
@@ -774,6 +940,7 @@ fn abbreviated_path_without_a_report_or_cwd_shows_the_default_number() {
         None,
         None,
         None,
+        None,
         TabId(2),
         None,
     );
@@ -785,6 +952,7 @@ fn last_segment_shows_the_cwds_final_component() {
     let title = resolve_title(
         TabTitleMode::LastSegment,
         Some("jpt@box:~/src/oss/l1br3/ced"),
+        None,
         Some(Path::new("/home/jpt/src/oss/l1br3/ced")),
         None,
         TabId(0),
@@ -799,6 +967,7 @@ fn last_segment_renders_root_for_the_root_directory() {
     let title = resolve_title(
         TabTitleMode::LastSegment,
         Some("jpt@box:/"),
+        None,
         Some(Path::new("/")),
         None,
         TabId(0),
@@ -816,6 +985,7 @@ fn last_segment_without_a_cwd_shows_the_report_verbatim() {
         Some("jpt@box:~/src"),
         None,
         None,
+        None,
         TabId(0),
         None,
     );
@@ -830,6 +1000,7 @@ fn last_segment_at_spawn_shows_the_spawn_cwd_before_any_report() {
     let title = resolve_title(
         TabTitleMode::LastSegment,
         None,
+        None,
         Some(Path::new("/home/jpt")),
         None,
         TabId(4),
@@ -840,7 +1011,15 @@ fn last_segment_at_spawn_shows_the_spawn_cwd_before_any_report() {
 
 #[test]
 fn last_segment_with_neither_report_nor_cwd_shows_the_default_number() {
-    let title = resolve_title(TabTitleMode::LastSegment, None, None, None, TabId(0), None);
+    let title = resolve_title(
+        TabTitleMode::LastSegment,
+        None,
+        None,
+        None,
+        None,
+        TabId(0),
+        None,
+    );
     assert_eq!(title, "Terminal 1");
 }
 
@@ -851,6 +1030,7 @@ fn committed_rename_sets_override_and_displayed_title() {
     commit_rename(
         TabTitleMode::Shell,
         Some("vim — src/main.rs"),
+        None,
         None,
         None,
         TabId(1),
@@ -871,6 +1051,7 @@ fn committed_rename_survives_shell_title_changes() {
         None,
         None,
         None,
+        None,
         TabId(0),
         &mut title,
         &mut title_override,
@@ -880,6 +1061,7 @@ fn committed_rename_survives_shell_title_changes() {
     let resolved = resolve_title(
         TabTitleMode::Shell,
         Some("vim — src/main.rs"),
+        None,
         None,
         None,
         TabId(0),
@@ -899,6 +1081,7 @@ fn committing_an_empty_rename_clears_the_override_and_re_resolves() {
         Some("vim — src/main.rs"),
         None,
         None,
+        None,
         TabId(1),
         &mut title,
         &mut title_override,
@@ -915,6 +1098,7 @@ fn clearing_a_rename_in_numbered_mode_parks_at_the_terminal_number() {
     commit_rename(
         TabTitleMode::Numbered,
         Some("jpt@box:~"),
+        None,
         None,
         None,
         TabId(2),

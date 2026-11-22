@@ -140,6 +140,13 @@ pub enum TabTitleMode {
     /// [`TabTitleMode::Shell`]'s behavior: the raw report, else
     /// `Terminal N`.
     Profile,
+    /// A plugin script derives the title (tab-titles spec): the last
+    /// script-resolved answer, else the `Terminal N` default — never a
+    /// block, never a spinner. The answer lands on the tick's drain
+    /// (the shell asks through the Lua host), so an unanswered or
+    /// raised-against tab keeps its prior title; a user rename still
+    /// wins, as in every mode.
+    Script,
 }
 
 impl std::fmt::Display for TabTitleMode {
@@ -150,6 +157,7 @@ impl std::fmt::Display for TabTitleMode {
             Self::LastSegment => write!(f, "last_segment"),
             Self::Numbered => write!(f, "numbered"),
             Self::Profile => write!(f, "profile"),
+            Self::Script => write!(f, "script"),
         }
     }
 }

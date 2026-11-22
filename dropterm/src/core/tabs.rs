@@ -229,6 +229,14 @@ pub struct Tab {
     /// Deliberately not serialized — the session saves the resolved
     /// `title`, not its inputs.
     pub shell_title: Option<String>,
+    /// The last script-resolved title (tab-titles spec), mirroring
+    /// `shell_title`'s shape: the drain lands it, `Script` mode reads
+    /// it, and every other mode carries it untouched for a flip back.
+    /// `None` before the first answer and after a nil answer — the
+    /// default-title ladder floor; unlike a shell report, `Some("")`
+    /// is a real answer (honored verbatim, spec OQ-1). Deliberately
+    /// not serialized, and reset with the terminal on respawn.
+    pub script_title: Option<String>,
     /// A user rename, which shell title changes never clobber.
     pub title_override: Option<String>,
     /// The shell this tab runs, recorded at spawn: a mid-run config
@@ -296,6 +304,7 @@ impl Tab {
             id,
             title: next_default_title(id),
             shell_title: None,
+            script_title: None,
             title_override: None,
             shell,
             last_running_comm: None,
@@ -553,10 +562,16 @@ pub fn next_default_title(id: TabId) -> String {
 ///   call site at retitle time (ruling 2: a dangling id passes
 ///   `None`, never a stale name), so profile renames and deletes
 ///   reflect on the next retitle. No name — a plain tab or a dangling
-///   id — falls back to exactly `Shell`'s behavior.
+///   id — falls back to exactly `Shell`'s behavior;
+/// - `Script` shows the tab's last script-resolved title (tab-titles
+///   spec) — `script_title`, whatever the last tick's drain landed,
+///   stale until then — falling back to the `Terminal N` default
+///   while unanswered. Core stays pure: the shell owns the ask and
+///   the drain, so this arm never blocks and never asks.
 pub fn resolve_title(
     mode: TabTitleMode,
     shell_title: Option<&str>,
+    script_title: Option<&str>,
     cwd: Option<&Path>,
     profile_name: Option<&str>,
     id: TabId,
@@ -575,6 +590,7 @@ pub fn resolve_title(
         TabTitleMode::Profile => {
             profile_name.map_or_else(|| raw_report_or_default(shell_title, id), str::to_owned)
         }
+        TabTitleMode::Script => script_title.map_or_else(|| next_default_title(id), str::to_owned),
     }
 }
 
@@ -702,6 +718,7 @@ fn abbreviate_suffix(report: &str, suffix: &str) -> String {
 pub fn commit_rename(
     mode: TabTitleMode,
     shell_title: Option<&str>,
+    script_title: Option<&str>,
     cwd: Option<&Path>,
     profile_name: Option<&str>,
     id: TabId,
@@ -717,6 +734,7 @@ pub fn commit_rename(
     resolve_title(
         mode,
         shell_title,
+        script_title,
         cwd,
         profile_name,
         id,
@@ -759,7 +777,7 @@ pub fn plan_respawn(
     profile_name: &str,
 ) -> RespawnFields {
     RespawnFields {
-        title: resolve_title(mode, None, cwd, Some(profile_name), id, old_override),
+        title: resolve_title(mode, None, None, cwd, Some(profile_name), id, old_override),
         shell_title: None,
         title_override: old_override.map(str::to_owned),
         attention: Attention::None,

@@ -1115,6 +1115,7 @@ pub const TAB_TITLE_MODE_OPTIONS: &[(TabTitleMode, &str)] = &[
     (TabTitleMode::LastSegment, "Last segment"),
     (TabTitleMode::Numbered, "Terminal number"),
     (TabTitleMode::Profile, "Profile name"),
+    (TabTitleMode::Script, "Script provider"),
 ];
 pub const NEW_TAB_CWD_OPTIONS: &[(NewTabCwd, &str)] = &[
     (NewTabCwd::Inherit, "Inherit active tab"),
