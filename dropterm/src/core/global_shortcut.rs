@@ -809,5 +809,151 @@ pub fn revert_plan(custom: &CustomShortcuts, exe_stem: &str) -> CustomShortcuts 
             .collect(),
     )
 }
+
+// --- the write seam and the defaults loader ---
+
+/// Why a write refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WriteRefusal {
+    /// The fresh `custom` read was unreadable or unparseable — the
+    /// wipe hazard's gate: nothing is ever written over a store in
+    /// that state (an Absent store is a fresh session, not a
+    /// refusal).
+    StoreNotLoaded,
+    /// The planned output failed to re-parse with the same shapes:
+    /// the file must parse under COSMIC's own reader, so drift
+    /// refuses, never a guess.
+    OutputUnparseable(String),
+    /// The output re-parsed but did not equal the plan: refused.
+    OutputMismatch,
+}
+
+/// What a write attempt yielded — the seat's branch on it.
+#[derive(Debug, PartialEq)]
+pub enum WriteOutcome {
+    /// The store now holds the planned map (the file replaced
+    /// atomically through the house write helper).
+    Written(CustomShortcuts),
+    /// Refused before touching the file.
+    Refused(WriteRefusal),
+    /// The file I/O failed after the gates passed (permissions, disk,
+    /// ...). The store's previous file is intact — the helper writes
+    /// a temp sibling and renames, so a failure never clobbers.
+    Io(String),
+}
+
+/// The read-modify-write seam: a fresh read immediately before the
+/// write, refusal on any store state that must not be written over,
+/// the planned output re-parsed and re-verified before it touches
+/// the file, and an atomic same-directory replace through the house
+/// write helper (`config::store::save_atomic` — temp sibling, fsync,
+/// rename, dir fsync; its pretty RON is the exact serialization
+/// cosmic-config's own writer makes). No logic lives here — the
+/// planner comes from the caller (`commit_plan` / `revert_plan`);
+/// this function only gates and writes.
+pub fn write_custom<F>(path: &Path, plan: F) -> WriteOutcome
+where
+    F: FnOnce(&CustomShortcuts) -> CustomShortcuts,
+{
+    // The fresh read immediately before the write.
+    let store = match read_custom(path) {
+        ReadCustom::Loaded(store) => store,
+        ReadCustom::Absent => CustomShortcuts::default(),
+        ReadCustom::Unreadable | ReadCustom::Unparseable => {
+            return WriteOutcome::Refused(WriteRefusal::StoreNotLoaded);
+        }
+    };
+    let planned = plan(&store);
+    // The output gate: the same serialization the write will make
+    // (`PrettyConfig::default()` is what `save_atomic` and
+    // cosmic-config's own writer both run) must parse with these
+    // shapes and equal the plan.
+    let text = match ron::ser::to_string_pretty(&planned, ron::ser::PrettyConfig::default()) {
+        Ok(text) => text,
+        Err(err) => {
+            return WriteOutcome::Refused(WriteRefusal::OutputUnparseable(err.to_string()));
+        }
+    };
+    match parse_custom(&text) {
+        Ok(reparsed) if reparsed == planned => {}
+        Ok(_) => return WriteOutcome::Refused(WriteRefusal::OutputMismatch),
+        Err(err) => {
+            return WriteOutcome::Refused(WriteRefusal::OutputUnparseable(err));
+        }
+    }
+    match crate::core::config::store::save_atomic(path, &planned) {
+        Ok(()) => WriteOutcome::Written(planned),
+        Err(err) => WriteOutcome::Io(err.to_string()),
+    }
+}
+
+/// The `defaults` file's candidate paths, nearest first: the user's
+/// config dir, then the XDG data dirs under the `cosmic` prefix —
+/// `data_home` (an absolute `XDG_DATA_HOME`; anything else is
+/// ignored per the base-directory spec) then every `data_dirs`
+/// entry, falling back to the spec defaults when empty.
+/// cosmic-config's own `Config::new` lookup, in its own order.
+pub fn defaults_path_candidates(
+    home: &Path,
+    data_home: Option<&Path>,
+    data_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut candidates =
+        vec![home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults")];
+    let mut data_roots: Vec<PathBuf> = data_home
+        .map(|home| vec![home.to_path_buf()])
+        .unwrap_or_default();
+    if data_dirs.is_empty() {
+        data_roots.push(PathBuf::from("/usr/local/share"));
+        data_roots.push(PathBuf::from("/usr/share"));
+    } else {
+        data_roots.extend(data_dirs.iter().cloned());
+    }
+    for root in data_roots {
+        candidates.push(root.join("cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"));
+    }
+    candidates
+}
+
+/// The session's defaults candidates — [`defaults_path_candidates`]
+/// over the environment (`HOME`, `XDG_DATA_HOME`, `XDG_DATA_DIRS`).
+pub fn defaults_paths() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let data_dirs: Vec<PathBuf> = std::env::var_os("XDG_DATA_DIRS")
+        .map(|dirs| {
+            dirs.to_string_lossy()
+                .split(':')
+                .filter(|part| !part.is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    defaults_path_candidates(&home, data_home.as_deref(), &data_dirs)
+}
+
+/// The system defaults as they stand — the first candidate that
+/// loads; an unreadable or unparseable candidate answers the empty
+/// map, exactly the keyboard pages' own fallback (a broken defaults
+/// file never blocks a session). Nothing here is ever written.
+pub fn load_defaults(candidates: &[PathBuf]) -> CustomShortcuts {
+    for path in candidates {
+        match read_custom(path) {
+            ReadCustom::Loaded(defaults) => return defaults,
+            ReadCustom::Absent => {}
+            ReadCustom::Unreadable | ReadCustom::Unparseable => {
+                log::warn!(
+                    "the COSMIC shortcuts defaults at {} do not parse; treating them as empty",
+                    path.display()
+                );
+                return CustomShortcuts::default();
+            }
+        }
+    }
+    CustomShortcuts::default()
+}
+
 #[cfg(test)]
 mod tests;

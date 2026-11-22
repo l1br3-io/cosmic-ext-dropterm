@@ -785,3 +785,212 @@ fn environment_detection_reads_the_session_variable() {
     assert_eq!(detect_environment(Some("GNOME")), Environment::Other);
     assert_eq!(detect_environment(None), Environment::Other);
 }
+
+// --- the write seam (W2) ---
+
+/// A scratch path the test cleans up — the house temp pattern.
+fn scratch(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "dropterm-global-shortcut-{name}-{}",
+        std::process::id()
+    ))
+}
+
+#[test]
+fn the_write_seam_replaces_a_loaded_store_and_the_file_reparses() {
+    let path = scratch("write-loaded");
+    std::fs::write(&path, FIXTURE).expect("the store seeds");
+    let binding = binding_of("F9", Modifiers::new());
+    let outcome = write_custom(&path, |custom| {
+        commit_plan(custom, &binding, "dropterm", "/usr/bin/dropterm toggle")
+    });
+    let WriteOutcome::Written(written) = outcome else {
+        panic!("a loaded store writes: {outcome:?}");
+    };
+    assert_eq!(
+        written.0.len(),
+        parse_custom(FIXTURE).expect("the fixture parses").0.len() + 1,
+        "the marker joined the fixture's entries"
+    );
+
+    // The bytes on disk are the plan: they parse with the same
+    // shapes and carry the same entries (the write's own re-parse
+    // gate, verified end to end).
+    let on_disk = std::fs::read_to_string(&path).expect("the written file reads");
+    let reparsed = parse_custom(&on_disk).expect("the written file parses");
+    assert_eq!(reparsed, written);
+    let marker_chord = binding_of("F9", Modifiers::new());
+    assert!(
+        reparsed
+            .0
+            .get(&marker_chord)
+            .expect("the marker survives the write")
+            .spawn_command()
+            .is_some(),
+        "the marker's action is on disk"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_write_seam_fresh_store_when_absent_creates_the_file() {
+    // The Absent case: a machine that never opened the keyboard
+    // page — the parents are created, the fresh map lands.
+    let path = scratch("write-absent").join("nested/v1/custom");
+    let binding = binding_of("F12", Modifiers::new());
+    let outcome = write_custom(&path, |custom| {
+        commit_plan(custom, &binding, "dropterm", "/usr/bin/dropterm toggle")
+    });
+    assert!(
+        matches!(outcome, WriteOutcome::Written(_)),
+        "an absent store is a fresh session, not a refusal: {outcome:?}"
+    );
+    let on_disk = std::fs::read_to_string(&path).expect("the created file reads");
+    let reparsed = parse_custom(&on_disk).expect("the created file parses");
+    assert_eq!(reparsed.0.len(), 1, "the marker alone");
+    std::fs::remove_dir_all(scratch("write-absent")).expect("the scratch cleans");
+}
+
+#[test]
+fn the_write_seam_refuses_an_unparseable_store_and_leaves_it_untouched() {
+    let path = scratch("write-refused");
+    let garbage = "not ron at all";
+    std::fs::write(&path, garbage).expect("the garbage seeds");
+    let binding = binding_of("F12", Modifiers::new());
+    let outcome = write_custom(&path, |custom| {
+        commit_plan(custom, &binding, "dropterm", "/usr/bin/dropterm toggle")
+    });
+    assert_eq!(
+        outcome,
+        WriteOutcome::Refused(WriteRefusal::StoreNotLoaded),
+        "the wipe hazard's gate refuses"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file survives"),
+        garbage,
+        "the refused write leaves the file byte-identical"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_write_seam_refuses_an_output_that_does_not_reparse() {
+    // The drift gate, forced: a plan carrying the zero keysym
+    // serializes its key as a name no reader resolves — the seam must
+    // refuse before touching the file. (Every named keysym and even
+    // unnamed ones carry numeric names, so this is the one entry that
+    // cannot round-trip.)
+    let path = scratch("write-output-gate");
+    std::fs::write(&path, FIXTURE).expect("the store seeds");
+    let before = std::fs::read_to_string(&path).expect("the file reads");
+    let outcome = write_custom(&path, |custom| {
+        let mut mutated = custom.clone();
+        let unnamed = Binding {
+            modifiers: Modifiers::new().logo(),
+            key: Some(Keysym::new(0)),
+            keycode: None,
+            description: None,
+        };
+        mutated.0.insert(
+            unnamed,
+            CustomActionValue(
+                ron::value::RawValue::from_boxed_ron(
+                    r#"Spawn("dropterm toggle")"#.to_string().into_boxed_str(),
+                )
+                .expect("the action parses"),
+            ),
+        );
+        mutated
+    });
+    assert!(
+        matches!(
+            outcome,
+            WriteOutcome::Refused(WriteRefusal::OutputUnparseable(_))
+        ),
+        "an output that cannot re-parse refuses: {outcome:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file survives"),
+        before,
+        "the refused write leaves the file byte-identical"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn the_defaults_candidates_reach_the_user_file_then_the_data_dirs() {
+    let home = Path::new("/home/tester");
+    // The XDG defaults: user config first, then the data dirs in
+    // their spec order.
+    let candidates = defaults_path_candidates(home, None, &[]);
+    assert_eq!(
+        candidates[0],
+        home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"),
+        "the user's own defaults file shadows the seeds"
+    );
+    assert_eq!(
+        candidates[1],
+        Path::new("/usr/local/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"),
+        "the first spec default data dir"
+    );
+    assert_eq!(
+        candidates[2],
+        Path::new("/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"),
+        "the second spec default data dir"
+    );
+    // Explicit XDG values replace the spec defaults.
+    let candidates = defaults_path_candidates(
+        home,
+        Some(Path::new("/xdg/data")),
+        &[PathBuf::from("/opt/share")],
+    );
+    assert_eq!(
+        candidates[1],
+        Path::new("/xdg/data/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"),
+        "an absolute XDG_DATA_HOME wins"
+    );
+    assert_eq!(
+        candidates[2],
+        Path::new("/opt/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"),
+        "XDG_DATA_DIRS entries follow"
+    );
+    assert_eq!(
+        candidates.len(),
+        3,
+        "no spec defaults alongside explicit dirs"
+    );
+}
+
+#[test]
+fn the_defaults_load_the_first_candidate_and_degrade_to_empty() {
+    // A loaded user file wins over the (absent) seeds.
+    let dir = scratch("defaults-loaded");
+    let user = dir.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults");
+    std::fs::create_dir_all(user.parent().expect("the parent")).expect("the dirs create");
+    std::fs::write(&user, STOCK_DEFAULTS).expect("the defaults seed");
+    let loaded = load_defaults(std::slice::from_ref(&user));
+    assert_eq!(
+        loaded.0.len(),
+        parse_custom(STOCK_DEFAULTS)
+            .expect("the stock fixture parses")
+            .0
+            .len(),
+        "the stock defaults load"
+    );
+    std::fs::remove_dir_all(&dir).expect("the scratch cleans");
+
+    // A broken defaults file answers empty — the keyboard pages' own
+    // fallback; a broken defaults file never blocks a session.
+    let broken = scratch("defaults-broken");
+    std::fs::write(&broken, "not ron at all").expect("the garbage seeds");
+    let empty = load_defaults(std::slice::from_ref(&broken));
+    assert_eq!(empty.0.len(), 0, "broken defaults are empty");
+    let _ = std::fs::remove_file(&broken);
+
+    // Nothing anywhere is empty too.
+    assert_eq!(
+        load_defaults(&[scratch("defaults-missing")]).0.len(),
+        0,
+        "no defaults anywhere is the empty map"
+    );
+}
