@@ -440,6 +440,11 @@ pub(crate) struct Shell {
     /// channel, so the host never spawns and the session stays
     /// byte-identical.
     lua_bus: Option<dropterm::core::lua_host::LuaHostHandle>,
+    /// The focus flips awaiting their tick ride (event-hooks spec,
+    /// EH2): `(gained?, tab)` captured at the render's activation
+    /// transition, forwarded once per flip by the pump — never from
+    /// render itself. Empty unless the dir-gate stood.
+    lua_focus_flips: Vec<(bool, TabId)>,
     /// When a focus-loss hide last hid the surface (the tray-click
     /// fix): the click that activates the tray unfocuses a shown
     /// surface, so [`tray_toggle_swallowed`] can pair the two halves
@@ -810,6 +815,7 @@ impl Shell {
             tray_actions,
             lua_host,
             lua_bus,
+            lua_focus_flips: Vec::new(),
             focus_loss_hide_at: None,
             specs,
             session_save: dropterm::core::session::SessionSave::default(),
@@ -964,6 +970,10 @@ impl Shell {
         // way the drain never blocks; try_recv on the tick is the
         // pty-test-gate pin: no waker ever crosses the host thread
         // into the foreground executor's pump.
+        // The queued focus flips ride the same apply point (EH2),
+        // forwarded before the drain so a handler's own print lands
+        // in this tick's drain.
+        self.forward_lua_focus_flips();
         self.drain_lua_host(cx);
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -2073,6 +2083,70 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
 }
 
 impl Shell {
+    /// The render poll's activation transition (event-hooks spec,
+    /// EH2, rides it): the keyboard/focus-loss wiring the render
+    /// always owned, plus one queued Lua flip per real transition —
+    /// `focus-gained` with the newly active tab, `focus-lost` with
+    /// the one that lost — captured here at the flip and forwarded
+    /// on the tick ([`Self::forward_lua_focus_flips`]), never from
+    /// render itself. A first-ever LOST is no flip of anything
+    /// gained (the seatless rest state reads LOST every frame
+    /// without ever having gained).
+    fn note_activation(&mut self, active: bool) {
+        let prev = self.last_active;
+        if prev == Some(active) {
+            return;
+        }
+        println!(
+            "dropterm: activation {} at +{}ms (frame {}) — the keyboard re-grab \
+             evidence",
+            if active { "GAINED" } else { "LOST" },
+            self.boot.elapsed().as_millis(),
+            self.frames
+        );
+        // The transition itself carries both halves of the
+        // focus-loss wiring: GAINED arms the machine's focus latch
+        // (the `LayerFocused` analog), a LOST that leaves a shown
+        // surface queues the focus-loss decision for the tick —
+        // never the seatless rest state, which reads LOST every
+        // frame without ever having gained.
+        if active {
+            self.machine.focused = true;
+        } else if activation_loss_queues(prev, active) {
+            self.focus_lost = true;
+        }
+        self.last_active = Some(active);
+        // The bus flip: one queue entry per real transition — a gain
+        // is any move to active, a loss only a fall from a real gain
+        // — and only when the dir-gate's inlet stands (a no-plugins
+        // boot never queues).
+        if self.lua_bus.is_some() {
+            let gained = active && prev != Some(true);
+            let lost = !active && prev == Some(true);
+            if (gained || lost)
+                && let Some(tab) = self.tabs.active_id()
+            {
+                self.lua_focus_flips.push((gained, tab));
+            }
+        }
+    }
+
+    /// Drain the queued focus flips onto the Lua bus (event-hooks
+    /// spec, EH2): the pump's apply point beside the host drain —
+    /// one `Emit` per flip, fire-and-forget, the same minimal
+    /// `{ tab }` payload as the engine five. Steady polling queues
+    /// nothing, so this is a no-op except right after a flip.
+    fn forward_lua_focus_flips(&mut self) {
+        for (gained, tab) in std::mem::take(&mut self.lua_focus_flips) {
+            if let Some(bus) = self.lua_bus.as_ref() {
+                bus.emit(
+                    if gained { "focus-gained" } else { "focus-lost" },
+                    serde_json::json!({ "tab": tab.0 }),
+                );
+            }
+        }
+    }
+
     /// The active tab's pane, if the list holds one.
     fn active_pane(&self) -> Option<Entity<TerminalPane>> {
         self.tabs
@@ -5123,27 +5197,7 @@ impl gpui::Render for Shell {
             }
         }
         let active = window.is_window_active();
-        if self.last_active != Some(active) {
-            println!(
-                "dropterm: activation {} at +{}ms (frame {}) — the keyboard re-grab \
-                 evidence",
-                if active { "GAINED" } else { "LOST" },
-                self.boot.elapsed().as_millis(),
-                self.frames
-            );
-            // The transition itself carries both halves of the
-            // focus-loss wiring: GAINED arms the machine's focus latch
-            // (the `LayerFocused` analog), a LOST that leaves a shown
-            // surface queues the focus-loss decision for the tick —
-            // never the seatless rest state, which reads LOST every
-            // frame without ever having gained.
-            if active {
-                self.machine.focused = true;
-            } else if activation_loss_queues(self.last_active, active) {
-                self.focus_lost = true;
-            }
-            self.last_active = Some(active);
-        }
+        self.note_activation(active);
         // The modal's focus repair: a resolved or vanished
         // confirmation leaves its handle dangling (an armed modal
         // dismissed without a keyboard-carrying path — its tab exited
@@ -8374,5 +8428,195 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    // --- event-hooks Task EH2: the focus pair off the poll transition ---
+
+    /// A scratch plugins dir holding one probe script (the view tests'
+    /// own `PluginsDir` shape).
+    struct FocusPluginsDir(std::path::PathBuf);
+
+    impl FocusPluginsDir {
+        fn new(tag: &str, script: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let unique = format!(
+                "dropterm-eh2-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&path).expect("create scratch plugins dir");
+            std::fs::write(path.join("probe.lua"), script).expect("write probe script");
+            Self(path)
+        }
+    }
+
+    impl Drop for FocusPluginsDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// The event-hooks EH2 scaffold: a shell whose Lua host stands
+    /// over the given plugins dir (a real dir opens the gate and
+    /// loads its script; a missing one is the closed-gate norm), one
+    /// tab in the list, no panes — the focus pair reads only the tab
+    /// id. The windowed context rides home with the shell (updates
+    /// need the visual context).
+    fn shell_over_lua_plugins(
+        cx: &mut gpui::TestAppContext,
+        plugins_dir: std::path::PathBuf,
+    ) -> (Entity<Shell>, TabId, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = DropTermConfig::default();
+        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let mut tabs = tab_bar::TabList::default();
+        let tab = tabs.spawn(false);
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&config),
+                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
+                    Arc::new(Mutex::new(0u32)),
+                    verbs_rx,
+                    cli::Action::default(),
+                    tabs,
+                    HashMap::new(),
+                    config.clone(),
+                    signals_tx.clone(),
+                    signals_rx,
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    dropterm::core::lua_host::LuaHost::new(plugins_dir),
+                )
+            })
+        });
+        (shell, tab, cx)
+    }
+
+    /// Drain the shell's Lua log lines until one matches `wanted`
+    /// (everything seen, the match included) or five seconds pass —
+    /// the same poll-and-sleep the view tests use, through the
+    /// windowed context the shell reads need.
+    fn shell_lua_lines_until(
+        shell: &Entity<Shell>,
+        cx: &mut gpui::VisualTestContext,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut lines = Vec::new();
+        while Instant::now() < deadline {
+            let mut batch = Vec::new();
+            cx.update(|_window, cx| {
+                let shell = shell.read(cx);
+                while let Some(event) = shell.lua_host.try_event() {
+                    if let dropterm::core::lua_host::HostEvent::Log(line) = event {
+                        batch.push(line);
+                    }
+                }
+            });
+            let hit = batch.iter().any(|line| wanted(line));
+            lines.extend(batch);
+            if hit {
+                return lines;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        lines
+    }
+
+    #[gpui::test]
+    fn focus_transitions_forward_once_per_flip(cx: &mut gpui::TestAppContext) {
+        // EH2's pin: the poll's transitions deliver exactly one bus
+        // event per real flip — focus-gained with the newly active
+        // tab, focus-lost with the one that lost — and steady polling
+        // delivers nothing. A first-ever LOST (the seatless rest
+        // state's read) is no flip of anything gained and forwards
+        // nothing, mirroring the focus-loss wiring's own guard.
+        let script = r"
+local d = require('dropterm')
+d.on('focus-gained', function(p) print('EH focus-gained tab=' .. tostring(p.tab)) end)
+d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) end)
+";
+        let dir = FocusPluginsDir::new("flips", script);
+        let (shell, tab, cx) = shell_over_lua_plugins(cx, dir.0.clone());
+        let expected_tab = tab.0;
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.note_activation(false); // first-ever LOST: no flip
+                shell.note_activation(true); // gained
+                shell.note_activation(false); // lost
+                shell.note_activation(false); // steady poll: no flip
+                shell.note_activation(true); // gained again
+                shell.forward_lua_focus_flips(); // the tick's apply point
+            });
+        });
+        let through_lost = shell_lua_lines_until(&shell, cx, |line| {
+            line.contains(&format!("EH focus-lost tab={expected_tab}"))
+        });
+        let after_lost = shell_lua_lines_until(&shell, cx, |line| {
+            line.contains(&format!("EH focus-gained tab={expected_tab}"))
+        });
+        let seq: Vec<String> = through_lost
+            .iter()
+            .chain(after_lost.iter())
+            .filter_map(|line| line.split("EH ").nth(1))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            seq,
+            [
+                format!("focus-gained tab={expected_tab}"),
+                format!("focus-lost tab={expected_tab}"),
+                format!("focus-gained tab={expected_tab}"),
+            ],
+            "one event per real flip, the transitioning tab each way — saw \
+             {through_lost:?} {after_lost:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn focus_flips_without_plugins_never_reach_the_channel(cx: &mut gpui::TestAppContext) {
+        // The closed-gate norm: a plugins dir that never stood keeps
+        // `lua_bus` None, so flips queue nowhere and the forward is
+        // silent — the host stays dormant at the channel surface.
+        let absent =
+            std::env::temp_dir().join(format!("dropterm-eh2-absent-{}-never", std::process::id()));
+        let (shell, _tab, cx) = shell_over_lua_plugins(cx, absent);
+        cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.note_activation(true);
+                shell.note_activation(false);
+                shell.forward_lua_focus_flips();
+            });
+            let spawned = shell.read(cx).lua_host.spawned();
+            assert!(
+                !spawned,
+                "focus flips on a closed gate must never reach the channel"
+            );
+        });
     }
 }
