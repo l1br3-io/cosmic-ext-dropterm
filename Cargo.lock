@@ -1599,6 +1599,7 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "toml 0.5.11",
  "wayland-client",

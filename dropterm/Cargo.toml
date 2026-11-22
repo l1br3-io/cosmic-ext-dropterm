@@ -203,4 +203,9 @@ dev-identity = []
 # rename slot's paint walk reads glyphs and selection paths off the
 # rendered frame (the tab_bar tests' caret walk).
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support", "bench-support"] }
+# The face-integrity pin (gnome-window Task 5's hardening): the tests
+# re-hash the embedded font bytes against the recorded digests —
+# test builds only, never the shipped binary. Already vendored in the
+# lock via transitive pulls; owner-approved 2026-11-22.
+sha2 = "0.10"
 
