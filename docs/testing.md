@@ -135,7 +135,7 @@ Against an installed release build on a desktop with an SNI host; the degrade ro
 - [ ] Opens/closes from keybind, gear, and menu; layout, backdrop veil, five-tab strip, scheme and font pickers (live apply, Escape layering), page turns keep drafts, input never reaches the shell beneath it
 - [ ] Drag-resize: live both ways, clamped, one write on release, double-click resets; focus-loss hide preserves tab and drafts; width floor and stale-config safety hold
 - [ ] Keybindings editor: live search, rebind round-trip and undo, conflict errors, capture consumption, multi-chord defaults; config ranges respected; the apply-timing table honored; session persistence, slide-off, and the race check behave
-- [ ] Global summon group and the first-run prompt (global-toggle-guidance): the Global group lists the machine's own toggle chords read-only (`None` when unbound), the walk names `dropterm toggle`, the deep link opens cosmic-settings keyboard; cold start unbound and undismissed opens the prompt - unticked close re-asks next cold start, any set key retires it, the Don't-ask-again tick persists `summon_prompt_dismissed` and retires it across restarts; off-COSMIC the walk is generic with no button
+- [ ] Global summon group and the first-run prompt (global-toggle-guidance): the Global group lists the machine's own toggle chords read-only (`None` when unbound), the walk names `dropterm toggle`, the deep link opens cosmic-settings keyboard; cold start unbound and undismissed opens the prompt - unticked close re-asks next cold start, any set key retires it, the Don't-ask-again tick persists `onboarding_dismissed` and retires it across restarts; off-COSMIC the walk is generic with no button
 
 ### Appearance and themes
 

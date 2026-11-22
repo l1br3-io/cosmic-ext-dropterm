@@ -6301,7 +6301,7 @@ pub(crate) fn boot(
     // retired the prompt; a binding through any path retires it.
     shell.update(cx, |shell, cx| {
         let bound = !shell.settings.summon.display.is_empty();
-        let dismissed = shell.config.summon_prompt_dismissed;
+        let dismissed = shell.config.onboarding_dismissed;
         if dropterm::core::global_shortcut::prompt_should_show(bound, dismissed) {
             let entity = cx.entity();
             crate::drawer::open_summon_prompt(cx, entity);

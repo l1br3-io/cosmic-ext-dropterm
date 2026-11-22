@@ -305,7 +305,7 @@ pub enum ConfigKey {
     /// The first-run summon prompt's retire flag (global-toggle-
     /// guidance spec) — written programmatically from the prompt's
     /// checkbox, never a drawer control row.
-    SummonPromptDismissed,
+    OnboardingDismissed,
 }
 
 /// A settings drawer tab: a view-only regrouping of the same
@@ -475,7 +475,7 @@ impl ConfigKey {
             ConfigKey::TabBarBorder => "tab_bar_border",
             ConfigKey::StatusBarBorder => "status_bar_border",
             ConfigKey::StatusBarActivityMark => "status_bar_activity_mark",
-            ConfigKey::SummonPromptDismissed => "summon_prompt_dismissed",
+            ConfigKey::OnboardingDismissed => "onboarding_dismissed",
         }
     }
 }
@@ -589,7 +589,7 @@ pub enum PlannedWrite {
     /// nag flag only; the binding itself stays in the system config.
     /// Not a drawer control row (it is written programmatically),
     /// so it sits outside the section map like `output`.
-    SummonPromptDismissed(bool),
+    OnboardingDismissed(bool),
 }
 
 impl PlannedWrite {
@@ -660,7 +660,7 @@ impl PlannedWrite {
             PlannedWrite::TabBarBorder(_) => ConfigKey::TabBarBorder,
             PlannedWrite::StatusBarBorder(_) => ConfigKey::StatusBarBorder,
             PlannedWrite::StatusBarActivityMark(_) => ConfigKey::StatusBarActivityMark,
-            PlannedWrite::SummonPromptDismissed(_) => ConfigKey::SummonPromptDismissed,
+            PlannedWrite::OnboardingDismissed(_) => ConfigKey::OnboardingDismissed,
         }
     }
 
@@ -819,8 +819,8 @@ impl PlannedWrite {
             PlannedWrite::StatusBarActivityMark(value) => {
                 section.status_bar_activity_mark = *value;
             }
-            PlannedWrite::SummonPromptDismissed(value) => {
-                section.summon_prompt_dismissed = *value;
+            PlannedWrite::OnboardingDismissed(value) => {
+                section.onboarding_dismissed = *value;
             }
         }
         store::save_atomic(&path, &section)
@@ -1082,7 +1082,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // The summon prompt's retire flag rides the same live pass
         // (global-toggle-guidance spec): the prompt's tick persists
         // at once; the decision re-reads it at the next cold boot.
-        | ConfigKey::SummonPromptDismissed
+        | ConfigKey::OnboardingDismissed
         // The delay resolves per update like the toggles
         // (suggest-delay spec): a lowered value can reveal a
         // withheld suggestion at the next update, a raised one
@@ -2546,7 +2546,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
         ConfigKey::StatusBarBorder => Some(PlannedWrite::StatusBarBorder(checked)),
         ConfigKey::StatusBarActivityMark => Some(PlannedWrite::StatusBarActivityMark(checked)),
-        ConfigKey::SummonPromptDismissed => Some(PlannedWrite::SummonPromptDismissed(checked)),
+        ConfigKey::OnboardingDismissed => Some(PlannedWrite::OnboardingDismissed(checked)),
         ConfigKey::StatusBarShowProcess => Some(PlannedWrite::StatusBarShowProcess(checked)),
         ConfigKey::StatusBarShowPath => Some(PlannedWrite::StatusBarShowPath(checked)),
         ConfigKey::StatusBarShowBranch => Some(PlannedWrite::StatusBarShowBranch(checked)),
@@ -2650,7 +2650,7 @@ impl ConfigKey {
     pub const fn label(self) -> &'static str {
         match self {
             ConfigKey::HeightPercent => "Height",
-            ConfigKey::SummonPromptDismissed => "Don't ask again",
+            ConfigKey::OnboardingDismissed => "Don't ask again",
             ConfigKey::WidthPercent => "Width",
             ConfigKey::HAlign => "Alignment",
             ConfigKey::Edge => "Edge",

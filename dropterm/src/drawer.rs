@@ -270,7 +270,7 @@ impl Default for SettingsState {
 /// The first-run summon prompt (global-toggle-guidance spec): the
 /// Yakuake-style ask-once dialog at cold startup — the summon walk,
 /// the COSMIC deep link, and the don't-ask-again retire whose tick
-/// persists `summon_prompt_dismissed` at once (the drawer toggles'
+/// persists `onboarding_dismissed` at once (the drawer toggles'
 /// own write path). The writer module adds its action buttons beside
 /// the guidance (global-toggle-cosmic-writer).
 pub(crate) struct SummonPromptView {
@@ -306,9 +306,7 @@ impl gpui::Render for SummonPromptView {
                     // un-tick before closing writes it back off.
                     shell.update(cx, |shell, _| {
                         shell.write_settings(
-                            &dropterm::core::settings::PlannedWrite::SummonPromptDismissed(
-                                *checked,
-                            ),
+                            &dropterm::core::settings::PlannedWrite::OnboardingDismissed(*checked),
                         );
                     });
                 }
