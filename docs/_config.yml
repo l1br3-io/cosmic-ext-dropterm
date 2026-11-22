@@ -4,8 +4,8 @@
 # plain `jekyll build` (just docs-serve) activate them.
 title: DropTerm
 description: >-
-  A native, Yakuake/Guake-style drop-down terminal for the COSMIC
-  desktop, written in Rust with libcosmic.
+  A native, Yakuake/Guake-style drop-down terminal for every platform:
+  COSMIC, GNOME, X11, macOS, and Windows. Written in Rust on GPUI.
 
 # Project pages serve under the repository subpath.
 baseurl: /dropterm

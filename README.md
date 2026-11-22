@@ -1,6 +1,6 @@
 # DropTerm
 
-A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust on [GPUI](https://github.com/zed-industries/gpui).
+A native, Yakuake/Guake-style cross-platform drop-down terminal, written in Rust on [GPUI](https://github.com/zed-industries/gpui).
 
 The terminal slides down from the top (or bottom) edge of the screen and is toggled with a global keyboard shortcut. It is a true layer-shell overlay - not a minimize/restore window trick - so it stays above other windows, is hidden from Alt-Tab and the dock, and keeps your shell session alive while hidden.
 
@@ -120,7 +120,6 @@ A few known rough edges — the surface recreate-on-hide workaround, Shift-modif
 
 ## Non-goals
 
-- Non-COSMIC compositors as a priority, and X11 support
 - Flatpak packaging (COSMIC does not expose layer-shell/toplevel protocols to sandboxed clients)
 - Built-in global hotkey registration (no GlobalShortcuts portal on COSMIC yet)
 - Wrapping an external terminal emulator (may be reconsidered later; see the ROADMAP)

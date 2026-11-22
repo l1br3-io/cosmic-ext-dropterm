@@ -4,10 +4,10 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
   <name>DropTerm</name>
-  <summary>Drop-down terminal for COSMIC</summary>
+  <summary>Cross-platform drop-down terminal</summary>
   <description>
-    <p>DropTerm is a drop-down terminal for the COSMIC™ desktop in the Yakuake and Guake tradition: one keypress slides a full terminal overlay down from the top of the screen, the same keypress hides it again, and the shell session keeps running in between.</p>
-    <p>It supports multiple tabs with per-tab titles, launch profiles, theming that follows the COSMIC accent colors, a bell that surfaces as a desktop notification, and remote control over D-Bus — so a keyboard shortcut, a command, or the companion panel applet can all toggle the terminal.</p>
+    <p>DropTerm is a cross-platform drop-down terminal in the Yakuake and Guake tradition: one keypress slides a full terminal overlay down from the top of the screen, the same keypress hides it again, and the shell session keeps running in between. It is built for every platform: COSMIC, GNOME, X11, macOS, and Windows.</p>
+    <p>It supports multiple tabs with per-tab titles, launch profiles, a light/dark theme pin with twelve built-in color schemes, a bell that surfaces as a desktop notification, and remote control over D-Bus — so a keyboard shortcut, a command, or the tray icon can all toggle the terminal.</p>
   </description>
   <launchable type="desktop-id">io.github.l1br3_io.dropterm.desktop</launchable>
   <developer id="io.github.l1br3_io">
@@ -24,7 +24,7 @@
   <releases>
     <release version="0.5.0" date="2026-11-12">
       <description>
-        <p>DropTerm becomes plain dropterm: the binary, the app id, the repository, and the release assets all drop the cosmic-ext- prefix, and the configuration moves with them - settings, profiles, and keybindings now live as RON sections under ~/.config/io.github.l1br3_io.dropterm/ (config.ron, profiles.ron, keybinds.ron, and the optional completions.toml), replacing the one-file-per-key layout under the old cosmic-config directory. The move is greenfield: nothing imports the old layout, so the first start begins from the defaults; the panel applet renames with it. Editing the files applies live, and sessions follow the new id.</p>
+        <p>DropTerm becomes plain dropterm: the binary, the app id, the repository, and the release assets all drop the cosmic-ext- prefix, and the configuration moves with them - settings, profiles, and keybindings now live as RON sections under ~/.config/io.github.l1br3_io.dropterm/ (config.ron, profiles.ron, keybinds.ron, and the optional completions.toml), replacing the one-file-per-key layout under the old cosmic-config directory. The move is greenfield: nothing imports the old layout, so the first start begins from the defaults. Editing the files applies live, and sessions follow the new id.</p>
         <p>Also carries the never-published 0.4.0 payload: pasted images with a per-tab images panel, the status band's leading glyphs, hairlines, and hover tips, and always-on autosuggestion generators with a background-loaded completions table. Where the compositor offers no layer-shell protocol, the binary now names it and exits non-zero instead of silently never appearing.</p>
       </description>
     </release>

@@ -13,6 +13,9 @@ COSMIC does not yet implement the XDG `GlobalShortcuts` portal, so no app can re
 **Is there a Flatpak?**
 No, and not for want of trying: cosmic-comp does not expose the layer-shell and toplevel-management protocols a true drop-down needs to sandboxed clients. A sandboxed DropTerm could not drop down at all ([Known issues](known-issues.md)).
 
+**Which platforms does it run on?**
+DropTerm is built for every platform: COSMIC, GNOME, X11, macOS, and Windows ([portability plan](research/portability-plan.md)).
+
 **How do I uninstall it?**
 Remove the two `dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.dropterm*` files under `/usr/share/{applications,icons,metainfo}/` - or, from a source checkout, `sudo just uninstall` ([README: Installing](https://github.com/l1br3-io/dropterm#installing)).
 
