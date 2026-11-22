@@ -1781,12 +1781,16 @@ impl SettingsDrawer {
         }
         // The re-trigger (summon-onboarding spec): the same step the
         // cold boot opens, from the settings panel. Closing from this
-        // origin persists nothing.
+        // origin persists nothing. The dropdown leaves first (the
+        // onboarding-over-drawer shape): this surface's Overlay layer
+        // always stacks above a toplevel, so the flow's window only
+        // stands above everything once the drawer is down.
         let shell = self.shell.clone();
         group = group.child(small_button(
             "summon-open-onboarding",
             "Set up the summon key…",
             move |_, cx| {
+                shell.update(cx, |shell, _| shell.dismiss_for_summon_setup());
                 crate::onboarding::open_onboarding(
                     cx,
                     shell.clone(),

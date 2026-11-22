@@ -4298,6 +4298,23 @@ impl Shell {
         }
     }
 
+    /// The summon-key setup's dismissal (the onboarding-over-drawer
+    /// shape): this surface rides the Overlay layer, which the
+    /// compositor stacks above every toplevel, so the flow's window
+    /// can only stand alone once the dropdown is down. With
+    /// hide-on-focus-loss on, the window's own focus handoff hides
+    /// it; off, the explicit Hide rides the same pane-signal funnel,
+    /// decided at the tick's window point, never inside the verb's
+    /// event handler. `Origin::FirstRun` never calls this — nothing
+    /// is mapped at a cold boot.
+    pub(crate) fn dismiss_for_summon_setup(&mut self) {
+        if !dropterm::core::surface_lifecycle::focus_loss_hides(self.inputs.hide_on_focus_loss)
+            && let Err(err) = self.signals_tx.send(view::PaneSignal::Hide)
+        {
+            println!("dropterm: setup hide signal failed: {err}");
+        }
+    }
+
     /// The covering report's rule, lifted off the one signal it
     /// first rode: ANY paste that lands text on the grid — an image
     /// paste's path, the panel's own re-paste, or a plain keyboard
