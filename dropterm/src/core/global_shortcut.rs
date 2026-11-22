@@ -485,6 +485,106 @@ pub fn setup_options(environment: Environment, store: &ReadCustom) -> SetupOptio
     }
 }
 
+// --- the writer (global-toggle-cosmic-writer spec): the captured
+// chord's conversion, the verdict over the effective map, the commit
+// and revert planners, and the write seam ---
+
+/// The description on the one entry this module owns; hand-made
+/// entries are never touched.
+pub const MARKER_DESCRIPTION: &str = "DropTerm";
+
+/// A captured chord's conversion outcome — what the onboarding's
+/// configure-for-me capture hands the verdict path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapturedChord {
+    /// The binding the store can hold: the verdict decides its fate.
+    Binding(Binding),
+    /// A bare modifier press (`shift`, `ctrl`, …) — the capture stays
+    /// armed, exactly the keyboard page's own listener behavior
+    /// (cosmic-settings filters Super/Alt/Control/Shift presses while
+    /// listening).
+    BareModifier,
+    /// The key name resolves to no keysym: unsupported, the capture
+    /// disarms and nothing writes.
+    Unresolvable,
+}
+
+/// gpui's lowercase platform key names onto xkb's canonical keysym
+/// names — the named keys the capture can deliver (the mirror image
+/// of `terminal/input.rs`'s `gpui_key_name`). Anything outside this
+/// bridge falls through to `keysym_from_name` exact then
+/// case-insensitive; a single character routes through
+/// `Keysym::from_char` — the daemon's own capture path
+/// (`Binding::from_str_partial`).
+fn xkb_key_name(key: &str) -> Option<&'static str> {
+    match key {
+        "space" => Some("space"),
+        "pageup" => Some("Page_Up"),
+        "pagedown" => Some("Page_Down"),
+        "home" => Some("Home"),
+        "end" => Some("End"),
+        "insert" => Some("Insert"),
+        "delete" => Some("Delete"),
+        "backspace" => Some("Backspace"),
+        "tab" => Some("Tab"),
+        "enter" => Some("Return"),
+        "escape" => Some("Escape"),
+        "left" => Some("Left"),
+        "right" => Some("Right"),
+        "up" => Some("Up"),
+        "down" => Some("Down"),
+        _ => None,
+    }
+}
+
+/// The modifier names gpui delivers for a bare press — the same
+/// refusal list `core::keybinds`' capture carries.
+fn is_modifier_name(key: &str) -> bool {
+    matches!(
+        key,
+        "control" | "ctrl" | "shift" | "alt" | "super" | "meta" | "logo"
+    )
+}
+
+/// A captured chord — gpui's modifier flags and key name — as the
+/// store can hold it. Single ASCII letters lowercase to the exact
+/// form cosmic-settings itself writes (the shipped store's `key:
+/// "e"` entries beside `modifiers: [Super, Shift]`).
+pub fn captured_chord(modifiers: Modifiers, key: &str) -> CapturedChord {
+    if is_modifier_name(key) {
+        return CapturedChord::BareModifier;
+    }
+    let keysym = match key {
+        "" => return CapturedChord::Unresolvable,
+        single if single.chars().count() == 1 => {
+            // The daemon's capture route: one character is its own
+            // keysym, lowercased to the shipped entries' form.
+            let lowered = single.to_lowercase();
+            Some(xkb::Keysym::from_char(
+                lowered.chars().next().expect("one character"),
+            ))
+        }
+        named => xkb_key_name(named)
+            .and_then(|name| {
+                let keysym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+                (keysym.raw() != 0).then_some(keysym)
+            })
+            .or_else(|| {
+                let keysym = xkb::keysym_from_name(named, xkb::KEYSYM_CASE_INSENSITIVE);
+                (keysym.raw() != 0).then_some(keysym)
+            }),
+    };
+    match keysym {
+        Some(key) => CapturedChord::Binding(Binding {
+            modifiers,
+            key: Some(key),
+            keycode: None,
+            description: None,
+        }),
+        None => CapturedChord::Unresolvable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,6 +902,67 @@ mod tests {
                 .iter()
                 .any(|step| step.contains("F12")),
             "the COSMIC walk carries the unshifted-key advice"
+        );
+    }
+
+    // --- the writer: the captured chord's conversion (W1) ---
+
+    /// The gpui key name a conversion pins, resolved to its store
+    /// keysym name (what `serialize_custom` writes into the file).
+    fn chord_key(modifiers: Modifiers, key: &str) -> String {
+        match captured_chord(modifiers, key) {
+            CapturedChord::Binding(binding) => {
+                let key = binding.key.expect("a converted chord carries a key");
+                xkb::keysym_get_name(key)
+            }
+            CapturedChord::BareModifier => "BareModifier".to_string(),
+            CapturedChord::Unresolvable => "Unresolvable".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_captured_chord_converts_the_pinned_vocabulary() {
+        // Single ASCII letters resolve through the daemon's own
+        // from_char route, lowercased like the entries cosmic-settings
+        // itself writes (the GU1 fixture's `key: "e"` form).
+        assert_eq!(chord_key(Modifiers::new(), "c"), "c");
+        assert_eq!(chord_key(Modifiers::new().shift(), "C"), "c", "gpui's shifted form lands on the same keysym");
+        // Digits and the printable punctuation the zoom rows use.
+        assert_eq!(chord_key(Modifiers::new(), "1"), "1");
+        assert_eq!(chord_key(Modifiers::new(), "="), "equal");
+        assert_eq!(chord_key(Modifiers::new(), "+"), "plus");
+        assert_eq!(chord_key(Modifiers::new(), "-"), "minus");
+        // The named keys, in gpui's lowercase platform vocabulary.
+        // PageUp/PageDown carry their historical X11 names ("Prior",
+        // "Next") — `keysym_get_name`'s canonical forms, the exact
+        // strings the store holds and the daemon's own serializer
+        // writes.
+        assert_eq!(chord_key(Modifiers::new(), "space"), "space");
+        assert_eq!(chord_key(Modifiers::new(), "pageup"), "Prior");
+        assert_eq!(chord_key(Modifiers::new(), "pagedown"), "Next");
+        assert_eq!(chord_key(Modifiers::new(), "end"), "End");
+        assert_eq!(chord_key(Modifiers::new(), "tab"), "Tab");
+        assert_eq!(chord_key(Modifiers::new(), "escape"), "Escape");
+        assert_eq!(chord_key(Modifiers::new(), "f12"), "F12");
+    }
+
+    #[test]
+    fn a_modifier_press_keeps_the_capture_armed_and_a_bad_name_stays_out() {
+        // The modifier names gpui delivers for a bare press: the
+        // capture stays armed (the seat's contract).
+        for name in ["shift", "control", "ctrl", "alt", "super", "meta", "logo"] {
+            assert_eq!(
+                captured_chord(Modifiers::new(), name),
+                CapturedChord::BareModifier,
+                "bare {name} keeps the capture armed"
+            );
+        }
+        // Anything else that resolves to no keysym is refused — an
+        // empty name and an unknown word both.
+        assert_eq!(captured_chord(Modifiers::new(), ""), CapturedChord::Unresolvable);
+        assert_eq!(
+            captured_chord(Modifiers::new(), "not-a-real-key"),
+            CapturedChord::Unresolvable
         );
     }
 
