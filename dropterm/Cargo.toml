@@ -135,6 +135,14 @@ log = "0.4"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 
+# The COSMIC custom-shortcuts file's keysym names (global-toggle-
+# guidance spec): the Global row reads `com.system76.CosmicSettings.
+# Shortcuts`'s `custom` map and ron — already a direct dependency
+# above — parses the file; xkbcommon parses the binding keys' keysym
+# names, the same parser cosmic-comp applies. Already rides the lock
+# as a transitive; this is its direct declaration.
+xkbcommon = "0.8"
+
 # The font picker's enumeration (gpui-chrome spec): walks the system
 # font dirs once at startup. Version-matched to the 0.23.0 line
 # cosmic-text already pulls into the lock — with every default

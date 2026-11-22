@@ -1603,6 +1603,7 @@ dependencies = [
  "toml 0.5.11",
  "wayland-client",
  "wl-clipboard-rs",
+ "xkbcommon",
  "zbus",
 ]
 

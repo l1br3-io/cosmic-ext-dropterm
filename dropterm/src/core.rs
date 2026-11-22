@@ -36,6 +36,7 @@ pub mod context_menu;
 pub mod dbus_state;
 pub mod font_list;
 pub mod geometry;
+pub mod global_shortcut;
 pub mod intent;
 pub mod keybinds;
 pub mod lua_host;

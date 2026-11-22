@@ -591,6 +591,14 @@ pub struct DropTermConfig {
     /// render nothing either way. Flips apply live on the config
     /// echo.
     pub images_enabled: bool,
+    /// The first-run summon prompt's retirement flag (global-toggle-
+    /// guidance spec): set when the user ticks "Don't ask again" on
+    /// the cold-start prompt that offers to set the summon key. The
+    /// binding itself lives in the system's shortcut config — this
+    /// key owns only the nag. Defaults to `false`: the prompt shows
+    /// at cold startup while no summon binding exists, and a bound
+    /// key retires it regardless of this flag.
+    pub summon_prompt_dismissed: bool,
 }
 
 impl Default for DropTermConfig {
@@ -658,6 +666,7 @@ impl Default for DropTermConfig {
             autosuggestions_aliases: HashMap::new(),
             autosuggestions_completions_extended: true,
             images_enabled: true,
+            summon_prompt_dismissed: false,
         }
     }
 }

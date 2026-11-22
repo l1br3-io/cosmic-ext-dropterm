@@ -1,0 +1,629 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The global summon key — the OS-level show/hide hotkey (global-
+//! toggle-guidance spec). `DropTerm`'s in-app chords die with focus
+//! (they are the `core::keybinds` domain); this module owns the
+//! external half: reading the COSMIC custom-shortcuts config that
+//! actually summons the overlay while it is hidden, recognizing the
+//! entries that spawn this binary's toggle verb, and the first-run
+//! prompt's trigger decision.
+//!
+//! The config shapes below port `cosmic-settings-config`'s shortcuts
+//! module (pop-os/cosmic-settings-daemon, MPL-2.0,
+//! `config/src/shortcuts/{binding,sym,modifier}.rs`) — the file format
+//! is that crate's contract, and carrying it keeps the port aligned
+//! the way `core::keybinds` carries cosmic-term's vocabulary. The
+//! action side is the minimal typed surface: the custom file's values
+//! are `Spawn(..)` and `Disable`; any other variant fails the parse
+//! and the callers degrade to guidance (the refuse-on-parse contract
+//! — nothing is ever written over an unreadable map).
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::path::{Path, PathBuf};
+use xkbcommon::xkb::{self, Keysym};
+
+// --- the ported shapes (cosmic-settings-config, MPL-2.0) ---
+
+/// A modifier name in the shortcuts file's array form (`Super`, `Ctrl`,
+/// `Alt`, `Shift`) — the same four the house [`crate::core::keybinds`]
+/// persists, spelled the way cosmic-settings serializes them.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum Modifier {
+    Ctrl,
+    Alt,
+    Shift,
+    Super,
+}
+
+/// The modifier flags one binding carries.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "format contract: the file's four flag fields are the on-disk shape the port carries"
+)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+}
+
+impl Modifiers {
+    pub const fn new() -> Self {
+        Self {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            logo: false,
+        }
+    }
+
+    pub const fn ctrl(mut self) -> Self {
+        self.ctrl = true;
+        self
+    }
+
+    pub const fn alt(mut self) -> Self {
+        self.alt = true;
+        self
+    }
+
+    pub const fn shift(mut self) -> Self {
+        self.shift = true;
+        self
+    }
+
+    pub const fn logo(mut self) -> Self {
+        self.logo = true;
+        self
+    }
+}
+
+impl std::ops::AddAssign<Modifier> for Modifiers {
+    fn add_assign(&mut self, rhs: Modifier) {
+        match rhs {
+            Modifier::Ctrl => self.ctrl = true,
+            Modifier::Alt => self.alt = true,
+            Modifier::Shift => self.shift = true,
+            Modifier::Super => self.logo = true,
+        }
+    }
+}
+
+/// The file's array form of [`Modifiers`] — `[Super, Ctrl, ...]` — the
+/// bridge the crate's `ModifiersDef` carries.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ModifiersDef(pub Vec<Modifier>);
+
+impl From<Modifiers> for ModifiersDef {
+    fn from(src: Modifiers) -> Self {
+        let mut modifiers = Vec::new();
+        if src.logo {
+            modifiers.push(Modifier::Super);
+        }
+        if src.ctrl {
+            modifiers.push(Modifier::Ctrl);
+        }
+        if src.alt {
+            modifiers.push(Modifier::Alt);
+        }
+        if src.shift {
+            modifiers.push(Modifier::Shift);
+        }
+        Self(modifiers)
+    }
+}
+
+impl From<ModifiersDef> for Modifiers {
+    fn from(src: ModifiersDef) -> Self {
+        src.0
+            .into_iter()
+            .fold(Modifiers::new(), |mut modifiers, modifier| {
+                modifiers += modifier;
+                modifiers
+            })
+    }
+}
+
+/// One binding in the shortcuts file: the flags, the optional key (a
+/// keysym, parsed from its name), an optional raw keycode, and an
+/// optional human description — the shape cosmic-settings writes and
+/// cosmic-comp reads. Identity (the [`PartialEq`]/[`Hash`] pair) is
+/// flags + key, the crate's own rule: two entries differing only in
+/// description collide as one binding.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Binding {
+    #[serde(
+        deserialize_with = "deserialize_modifiers",
+        serialize_with = "serialize_modifiers"
+    )]
+    pub modifiers: Modifiers,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "sym::deserialize",
+        serialize_with = "sym::serialize"
+    )]
+    pub key: Option<Keysym>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keycode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl PartialEq for Binding {
+    fn eq(&self, other: &Self) -> bool {
+        self.modifiers == other.modifiers && self.key == other.key
+    }
+}
+
+impl Eq for Binding {}
+
+impl std::hash::Hash for Binding {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.modifiers.hash(state);
+    }
+}
+
+/// The keysym name's serde pair — the crate's `sym.rs`: parse via
+/// `keysym_from_name` (exact, then case-insensitive, never silently
+/// unresolved) and serialize via the canonical `keysym_get_name`.
+mod sym {
+    use super::{Keysym, xkb};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// `keysym_from_name`'s "no such keysym" sentinel (0).
+    const NO_SYMBOL: u32 = 0;
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Keysym>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        match xkb::keysym_from_name(&name, xkb::KEYSYM_NO_FLAGS) {
+            keysym if keysym.raw() == NO_SYMBOL => {
+                match xkb::keysym_from_name(&name, xkb::KEYSYM_CASE_INSENSITIVE) {
+                    keysym if keysym.raw() == NO_SYMBOL => {
+                        Err(<D::Error as serde::de::Error>::invalid_value(
+                            serde::de::Unexpected::Str(&name),
+                            &"one of xkbcommon's keysym names",
+                        ))
+                    }
+                    keysym => {
+                        log::warn!(
+                            "key binding '{}' only matched case-insensitive for {:?}",
+                            name,
+                            xkb::keysym_get_name(keysym)
+                        );
+                        Ok(Some(keysym))
+                    }
+                }
+            }
+            keysym => Ok(Some(keysym)),
+        }
+    }
+
+    /// serde's `serialize_with` signature contract pins `&Option<T>`
+    /// — both lints below are that signature, not a style choice.
+    #[expect(
+        clippy::ref_option,
+        reason = "serde's serialize_with signature contract"
+    )]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's serialize_with signature contract"
+    )]
+    pub(super) fn serialize<S>(key: &Option<Keysym>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match key {
+            Some(key) => serializer.serialize_str(&xkb::keysym_get_name(*key)),
+            None => serializer.serialize_str("None"),
+        }
+    }
+}
+
+/// The flags' serde pair: deserialize the array form, serialize it
+/// back in the crate's canonical order (Super, Ctrl, Alt, Shift).
+fn serialize_modifiers<S>(modifiers: &Modifiers, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    ModifiersDef::from(modifiers.clone()).serialize(serializer)
+}
+
+fn deserialize_modifiers<'de, D>(deserializer: D) -> Result<Modifiers, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Modifiers::from(ModifiersDef::deserialize(deserializer)?))
+}
+
+/// The custom file's action values — the two variants cosmic-settings
+/// writes for user-created shortcuts (the minimal typed slice of the
+/// crate's `Action` enum).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CustomActionValue {
+    /// The binding is disabled (the entry exists so the chord stays
+    /// free).
+    Disable,
+    /// The binding runs a shell command — `DropTerm`'s summon is one of
+    /// these.
+    Spawn(String),
+}
+
+/// The `custom` file's parsed map.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct CustomShortcuts(pub HashMap<Binding, CustomActionValue>);
+
+// --- the read seam and its degrade contract ---
+
+/// What reading the custom map yielded — everything but [`ReadCustom::Loaded`]
+/// degrades the Global row to plain guidance (never an error surface,
+/// never a write).
+#[derive(Debug, PartialEq)]
+pub enum ReadCustom {
+    Loaded(CustomShortcuts),
+    /// No shortcuts file: a fresh COSMIC session, or not COSMIC.
+    Absent,
+    /// The file exists but could not be read (permissions, ...).
+    Unreadable,
+    /// The file exists but does not parse (a foreign variant, a bad
+    /// keysym name, corrupt bytes).
+    Unparseable,
+}
+
+/// The COSMIC custom-shortcuts file, under the user's config home —
+/// the file cosmic-settings writes and cosmic-comp watches for live
+/// reloads (`com.system76.CosmicSettings.Shortcuts/v1/custom`).
+pub fn custom_shortcuts_path(home: &Path) -> PathBuf {
+    home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom")
+}
+
+/// Read and parse the custom map at `path`.
+pub fn read_custom(path: &Path) -> ReadCustom {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match parse_custom(&text) {
+            Ok(shortcuts) => ReadCustom::Loaded(shortcuts),
+            Err(_) => ReadCustom::Unparseable,
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => ReadCustom::Absent,
+        Err(_) => ReadCustom::Unreadable,
+    }
+}
+
+/// Parse the `custom` file's text.
+pub fn parse_custom(text: &str) -> Result<CustomShortcuts, String> {
+    ron::from_str(text).map_err(|err| err.to_string())
+}
+
+/// Serialize the custom map back to `custom` file text.
+pub fn serialize_custom(shortcuts: &CustomShortcuts) -> Result<String, String> {
+    ron::to_string(shortcuts).map_err(|err| err.to_string())
+}
+
+// --- recognition and display ---
+
+/// Whether a spawn command summons *this* `DropTerm`: its program is our
+/// own binary (the same file stem) and its final word is the toggle
+/// verb (`dropterm toggle`, `/usr/bin/dropterm toggle`, and — for the
+/// dev build — `~/.local/bin/dropterm-dev toggle`).
+pub fn is_toggle_spawn(command: &str, exe_stem: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    if words.len() < 2 || *words.last().expect("at least two words") != "toggle" {
+        return false;
+    }
+    Path::new(words[0])
+        .file_stem()
+        .is_some_and(|stem| stem == std::ffi::OsStr::new(exe_stem))
+}
+
+/// The custom map's entries that summon this `DropTerm` — the Global
+/// row's read-only display and the prompt's trigger input — sorted by
+/// their display form.
+pub fn summon_entries(shortcuts: &CustomShortcuts, exe_stem: &str) -> Vec<Binding> {
+    let mut found: Vec<Binding> = shortcuts
+        .0
+        .iter()
+        .filter(|(_, value)| {
+            matches!(value, CustomActionValue::Spawn(command) if is_toggle_spawn(command, exe_stem))
+        })
+        .map(|(binding, _)| binding.clone())
+        .collect();
+    found.sort_by_key(binding_display);
+    found
+}
+
+/// The human form of a binding — `Super + Shift + E` — the house chord
+/// display's labels and ` + ` join over the keysym name (single ASCII
+/// letters uppercase, the editor rows' vocabulary; a keyless binding
+/// renders its modifiers alone).
+pub fn binding_display(binding: &Binding) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if binding.modifiers.logo {
+        parts.push("Super".to_string());
+    }
+    if binding.modifiers.ctrl {
+        parts.push("Ctrl".to_string());
+    }
+    if binding.modifiers.alt {
+        parts.push("Alt".to_string());
+    }
+    if binding.modifiers.shift {
+        parts.push("Shift".to_string());
+    }
+    if let Some(key) = binding.key {
+        let name = xkb::keysym_get_name(key);
+        if name.len() == 1 && name.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            parts.push(name.to_uppercase());
+        } else {
+            parts.push(name);
+        }
+    }
+    parts.join(" + ")
+}
+
+/// This binary's file stem, for [`is_toggle_spawn`] and
+/// [`summon_entries`].
+pub fn own_exe_stem() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    exe.file_stem()?.to_str().map(str::to_string)
+}
+
+// --- environment, walk, prompt ---
+
+/// The desktop family the summon guidance speaks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Environment {
+    /// A COSMIC session — the walk is COSMIC's custom-shortcut page,
+    /// and the deep link exists.
+    Cosmic,
+    /// Anything else — the generic DE-shortcut walk.
+    Other,
+}
+
+/// Read the session family from `XDG_CURRENT_DESKTOP`'s value
+/// (colon-separated per the spec; `None` is no session variable).
+pub fn detect_environment(desktop: Option<&str>) -> Environment {
+    match desktop {
+        Some(desktop)
+            if desktop
+                .split(':')
+                .any(|part| part.eq_ignore_ascii_case("cosmic")) =>
+        {
+            Environment::Cosmic
+        }
+        _ => Environment::Other,
+    }
+}
+
+/// The summon-setup walk for the environment — the Global row's body
+/// and the first-run prompt's guidance half. Every walk names the
+/// toggle command verbatim.
+pub fn summon_walk(environment: Environment) -> &'static [&'static str] {
+    match environment {
+        Environment::Cosmic => &[
+            "Open COSMIC Settings → Keyboard → Custom Shortcuts.",
+            "Add a shortcut whose command is `dropterm toggle`.",
+            "Prefer an unshifted key such as F12 — some Shift-modified custom shortcuts fail to fire on COSMIC.",
+        ],
+        Environment::Other => &[
+            "Open your desktop's keyboard-shortcut settings.",
+            "Bind a key to the command `dropterm toggle`.",
+        ],
+    }
+}
+
+/// The first-run prompt's decision — consulted at cold startup only
+/// (never on a warm toggle forward): show while the environment holds
+/// no summon binding and the user has not retired the prompt.
+pub fn prompt_should_show(summon_bound: bool, dismissed: bool) -> bool {
+    !summon_bound && !dismissed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sanitized shape of a real COSMIC custom-shortcuts file:
+    /// two `DropTerm` summon entries, two foreign spawns, two disables
+    /// (one keyless), an escaped apostrophe in a foreign description.
+    const FIXTURE: &str = r#"{
+    (
+        modifiers: [
+            Super,
+            Shift,
+        ],
+        key: "e",
+        description: Some("dropterm"),
+    ): Spawn("dropterm toggle"),
+    (
+        modifiers: [],
+        key: "F12",
+        description: Some("dropterm-dev"),
+    ): Spawn("~/.local/bin/dropterm-dev toggle"),
+    (
+        modifiers: [
+            Alt,
+        ],
+        key: "grave",
+        description: Some("Assistant: every workspace\'s windows"),
+    ): Spawn("assistant show-all-windows"),
+    (
+        modifiers: [
+            Alt,
+            Shift,
+        ],
+        key: "grave",
+        description: Some("Assistant: same app windows, backwards"),
+    ): Spawn("assistant same-app-previous"),
+    (
+        modifiers: [
+            Super,
+        ],
+    ): Disable,
+    (
+        modifiers: [
+            Super,
+            Ctrl,
+        ],
+        key: "k",
+    ): Disable,
+}"#;
+
+    #[test]
+    fn the_fixture_parses_and_the_summon_entries_surface() {
+        let shortcuts = parse_custom(FIXTURE).expect("the fixture parses");
+        assert_eq!(shortcuts.0.len(), 6, "every fixture entry parsed");
+
+        let installed = summon_entries(&shortcuts, "dropterm");
+        let installed: Vec<String> = installed.iter().map(binding_display).collect();
+        assert_eq!(
+            installed,
+            vec!["Super + Shift + E".to_string()],
+            "the installed summon chord surfaces for its own stem"
+        );
+
+        let dev = summon_entries(&shortcuts, "dropterm-dev");
+        let dev: Vec<String> = dev.iter().map(binding_display).collect();
+        assert_eq!(dev, vec!["F12".to_string()], "the dev launcher owns F12");
+
+        let foreign = summon_entries(&shortcuts, "assistant");
+        assert_eq!(
+            foreign.len(),
+            0,
+            "the foreign spawns are not toggles: recognition needs the verb, not just the stem"
+        );
+    }
+
+    #[test]
+    fn foreign_entries_survive_the_round_trip() {
+        let parsed = parse_custom(FIXTURE).expect("the fixture parses");
+        let text = serialize_custom(&parsed).expect("the map serializes");
+        let reparsed = parse_custom(&text).expect("the round-trip parses");
+
+        assert_eq!(reparsed.0.len(), parsed.0.len(), "no entry lost or gained");
+        for (binding, value) in &parsed.0 {
+            assert_eq!(
+                reparsed.0.get(binding),
+                Some(value),
+                "entry {binding:?} survives the round-trip unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_map_and_a_bad_keysym_never_parse() {
+        assert!(parse_custom("not ron at all").is_err(), "corrupt text");
+        let bad_key = r#"{ (modifiers: [], key: "NotARealKeyname"): Spawn("x") }"#;
+        assert!(parse_custom(bad_key).is_err(), "an unresolvable keysym");
+        let foreign_variant = r#"{ (modifiers: [], key: "F12"): System(Launcher) }"#;
+        assert!(
+            parse_custom(foreign_variant).is_err(),
+            "a variant outside the custom surface fails the parse (the degrade contract)"
+        );
+    }
+
+    #[test]
+    fn the_read_states_degrade_explicitly() {
+        let missing = std::env::temp_dir().join(format!(
+            "dropterm-global-shortcut-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&missing);
+        assert_eq!(read_custom(&missing), ReadCustom::Absent);
+
+        let present = std::env::temp_dir().join(format!(
+            "dropterm-global-shortcut-present-{}",
+            std::process::id()
+        ));
+        std::fs::write(&present, FIXTURE).expect("the temp fixture writes");
+        let loaded = read_custom(&present);
+        assert!(
+            matches!(loaded, ReadCustom::Loaded(_)),
+            "the fixture file loads"
+        );
+        std::fs::write(&present, "not ron at all").expect("the garbage writes");
+        assert_eq!(read_custom(&present), ReadCustom::Unparseable);
+        let _ = std::fs::remove_file(&present);
+
+        let unreadable = std::env::temp_dir().join(format!(
+            "dropterm-global-shortcut-dir-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&unreadable).expect("the temp dir creates");
+        assert_eq!(read_custom(&unreadable), ReadCustom::Unreadable);
+        std::fs::remove_dir(&unreadable).expect("the temp dir cleans");
+    }
+
+    #[test]
+    fn the_config_path_lands_under_the_settings_id() {
+        let path = custom_shortcuts_path(Path::new("/home/tester"));
+        let path = path.to_str().expect("a utf-8 path");
+        assert!(
+            path.ends_with("com.system76.CosmicSettings.Shortcuts/v1/custom"),
+            "the watched file: {path}"
+        );
+    }
+
+    #[test]
+    fn toggle_spawn_recognition_owns_its_own_stem() {
+        assert!(is_toggle_spawn("dropterm toggle", "dropterm"));
+        assert!(is_toggle_spawn("/usr/bin/dropterm toggle", "dropterm"));
+        assert!(is_toggle_spawn(
+            "~/.local/bin/dropterm-dev toggle",
+            "dropterm-dev"
+        ));
+        assert!(!is_toggle_spawn("dropterm toggle", "dropterm-dev"));
+        assert!(!is_toggle_spawn("other-app toggle", "dropterm"));
+        assert!(!is_toggle_spawn("dropterm show", "dropterm"));
+        assert!(!is_toggle_spawn("dropterm", "dropterm"));
+    }
+
+    #[test]
+    fn the_prompt_trigger_matrix() {
+        assert!(
+            prompt_should_show(false, false),
+            "unbound and not retired: ask"
+        );
+        assert!(!prompt_should_show(false, true), "retired: never again");
+        assert!(!prompt_should_show(true, false), "bound: never again");
+        assert!(
+            !prompt_should_show(true, true),
+            "bound and retired: never again"
+        );
+    }
+
+    #[test]
+    fn every_walk_names_the_toggle_command() {
+        for environment in [Environment::Cosmic, Environment::Other] {
+            let walk = summon_walk(environment);
+            assert!(
+                walk.iter().any(|step| step.contains("`dropterm toggle`")),
+                "{environment:?}'s walk names the command"
+            );
+        }
+        assert!(
+            summon_walk(Environment::Cosmic)
+                .iter()
+                .any(|step| step.contains("F12")),
+            "the COSMIC walk carries the unshifted-key advice"
+        );
+    }
+
+    #[test]
+    fn environment_detection_reads_the_session_variable() {
+        assert_eq!(detect_environment(Some("COSMIC")), Environment::Cosmic);
+        assert_eq!(detect_environment(Some("cosmic")), Environment::Cosmic);
+        assert_eq!(detect_environment(Some("COSMIC:foo")), Environment::Cosmic);
+        assert_eq!(detect_environment(Some("GNOME")), Environment::Other);
+        assert_eq!(detect_environment(None), Environment::Other);
+    }
+}
