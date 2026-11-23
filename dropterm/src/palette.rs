@@ -284,8 +284,12 @@ impl ListDelegate for PaletteDelegate {
     }
 
     /// Escape — the List's own Cancel binding; the dismissal rides
-    /// the shell's close.
+    /// the shell's close. The Kit's handler propagates before it calls
+    /// the delegate, so the key is kept here: the palette's own
+    /// Escape binding sits above on the same path, and unkept it would
+    /// close a second time.
     fn cancel(&mut self, window: &mut gpui::Window, cx: &mut Context<ListState<Self>>) {
+        cx.stop_propagation();
         let dismiss = Rc::clone(&self.on_dismiss);
         dismiss(window, cx);
     }
@@ -403,10 +407,10 @@ impl Render for Palette {
             .flex()
             .justify_center()
             .items_start()
-            // The palette's key context: Escape rides the bound
-            // dismissal while the container holds focus; while the
-            // list holds it, the List's own Cancel (deeper in the
-            // context stack) wins — both paths close.
+            // The palette's key context: the container's own Escape,
+            // for a keyboard resting on the container. While the list
+            // holds it, the List's own Cancel is deeper in the context
+            // stack, closes, and keeps the key — one dismissal.
             .key_context("palette")
             .track_focus(&self.container_focus)
             .on_action(move |_: &DismissPalette, window, cx| dismiss(window, cx))
@@ -731,6 +735,17 @@ mod tests {
             *log.borrow(),
             [format!("pick {first}").as_str()],
             "Down selects the first row, Enter picks it"
+        );
+    }
+
+    #[gpui::test]
+    fn escape_dismisses_once(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            *log.borrow(),
+            ["dismiss"],
+            "Escape closes the palette through the List's own Cancel, once"
         );
     }
 
