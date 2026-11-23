@@ -28,7 +28,7 @@ the panel and dock unless you tell it not to ([theming](theming.md)).
 
 ## In depth
 
-- [Settings drawer](settings.md) — the five sections, and when each edit applies
+- [Settings window](settings.md) — the nine pages, and when each edit applies
 - [Status bar](status-bar.md) — the 28 px glance band: segments, click-to-copy, selection
 - [Session persistence](sessions.md) — what is saved, and how restore behaves
 - [Theming](theming.md) — the theme pin, the 12 built-in schemes, your own scheme files

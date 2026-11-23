@@ -4,7 +4,7 @@ How the DropTerm codebase is laid out: one package with two halves, one module i
 
 ## One package, two halves
 
-- **The bin** (`dropterm/src/main.rs` + the bin's modules) - the terminal itself, a GPUI program: the surface, the terminal pane, the chrome (tab strip, status band, settings drawer, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
+- **The bin** (`dropterm/src/main.rs` + the bin's modules) - the terminal itself, a GPUI program: the surface, the terminal pane, the chrome (tab strip, status band, the Settings window, menus), and the CLI. Built on the ruled `gpui-pre` pin through the [Kit](research/kit-root-border.md).
 - **The lib** (`dropterm/src/lib.rs` + the `core` module) - the toolkit-neutral core: the config store, session, profiles, the engine, the pure models (spawn resolution, tabs, geometry, keybinds, status segments, context-menu rows), and `dbus_state`. No toolkit dependency, pinned by test; the bin consumes it by name.
 
 ## How it connects
@@ -24,7 +24,7 @@ flowchart LR
         EXEC["GpuiExecutor"]
         CONFIG["config store: RON sections + watcher"]
         TABS["tab fleet: core's model + the pane entities"]
-        CHROME["chrome: tab strip, status band, drawer, menus, images panel"]
+        CHROME["chrome: tab strip, status band, settings window, menus, images panel"]
         THEME["theme_gen over theme_source: scheme registry"]
     end
     subgraph desktop["Desktop"]
@@ -66,7 +66,7 @@ The recurring split is *pure model* vs *wiring*, and the shared-core split made 
 | bin | `terminal/` | The pane's halves: `input.rs` (key/mouse translation), `grid.rs` (the projection), `selection.rs`, `images.rs` (the render-image cache), `clipboard.rs` (GPUI's clipboard + the data-control focus-free half), `host.rs` (the `TextHost` impl), `suggest.rs` (the view-model over core's completions model) |
 | bin | `tab_bar.rs` | The tab strip: view-only records over core's model, drag reorder, inline rename, the per-tab menu (the Switch Profile section included), the `+` and its dropdown |
 | bin | `status_bar.rs` | The 28 px status band: core's segments rendered through one view-model pass, the copy/jump verbs, the paste-refusal verdict |
-| bin | `drawer.rs` | The settings drawer: the Kit-sheet overlay, the five pages write-through over core's control map, the profile manager form, the keybind editor |
+| bin | `settings.rs` | The Settings window: the plain toplevel under the Kit Root, the nine pages write-through over core's control map, the profile manager form, the keybind editor |
 | bin | `context_menu.rs` | The terminal context menu: core's rows through the Kit popover, the profile folders as Kit submenus |
 | bin | `images_panel.rs` | The pasted-images panel: the band chip's door, newest-first rows, the labeled delete pair |
 | bin | `pickers.rs` | The Kit Select font/scheme pickers (the libcosmic fidelity) |
@@ -87,7 +87,7 @@ The recurring split is *pure model* vs *wiring*, and the shared-core split made 
 | core | `tabs.rs` | The pure tab model: insert/close/reorder/cycle, titles, the respawn plan, the pasted-image ledger |
 | core | `status.rs` | The status-band model: segments, the fit and drop order, the click/copy values |
 | core | `context_menu.rs` | The context-menu rows and the profile-folder composition |
-| core | `settings.rs` | The drawer's framework-free half: the control→key map, the write planners, the profile-draft transaction |
+| core | `settings.rs` | The window's framework-free half: the control→key map, the write planners, the profile-draft transaction |
 | core | `terminal/` | The engine adapted from cosmic-term: `engine.rs` (PTY + `alacritty_terminal` grid behind the `TextHost` seam, the image store, the paste cache), `suggest/` (the autosuggestion model and walker), `host.rs` (the `TextHost` trait - shaping without a toolkit) |
 | core | `theme_glue.rs` | The pure theme decisions: `window_bg_color`, `effective_colors`, `effective_is_dark`, `theme_override` |
 | core | `theme_source.rs` | The 12-scheme registry with per-scheme license provenance |
@@ -97,7 +97,7 @@ The recurring split is *pure model* vs *wiring*, and the shared-core split made 
 ## The load-bearing seams
 
 - **Single-instance D-Bus.** A second launch of the binary never starts a second app: `dropterm` owns its bus name itself (the control transport, `dbus_state`'s activation interface served beside the render loop), and a second launch forwards its verb — surface or tab, payload words included — through `org.freedesktop.DBus` to the running instance (`cli.rs`'s one encoder/decoder pair keeps the wire identical either direction). The applet's toggle uses the same activation surface; state flows out read-only through `dbus_state`'s V1 interface. Everything on this seam is fire-and-forget by design - it structurally cannot offer replies ([research](research/archive/remote-control-commands.md)). The trust boundary is the session bus: any process in the same session can drive the verbs, including `--cmd`'s shell execution.
-- **Config as the source of truth.** Every setting lives in plain RON under `$XDG_CONFIG_HOME` (the config store, `dropterm/src/core/config/store.rs`): one file per writer - settings, profiles, keybinds - plus `completions.toml`, all watched live. The settings drawer is a *writer* with the same contract - write-through per commit point, no Apply button - so drawer edits and hand edits are the same event stream to the app.
+- **Config as the source of truth.** Every setting lives in plain RON under `$XDG_CONFIG_HOME` (the config store, `dropterm/src/core/config/store.rs`): one file per writer - settings, profiles, keybinds - plus `completions.toml`, all watched live. The Settings window is a *writer* with the same contract - write-through per commit point, no Apply button - so window edits and hand edits are the same event stream to the app.
 - **One surface-intent path.** The surface lifecycle decides in the headless `SurfaceMachine` (core's `surface_lifecycle.rs`) and emits declarative intents (`intent.rs`, also core); the GPUI executor (`executor.rs`, frontend) translates each into the layer-shell window sequence. Every reshape still lands through one geometry triple, so no path can leave a stale anchor, margin, or size.
 - **One spawn funnel.** Core's `spawn.rs` decides what a new tab runs - shell, `--cmd`, or profile - and where it starts, composing `new_tab_cwd`/`default_cwd`/profile cwd with explicit degradation, never an error surface; the frontend's one spawning body (`PaneRequest::for_command` over `boot_pane`) applies it, per-profile appearance included.
 - **Theme by name.** Schemes are registry names resolved in core's `theme_source.rs`; the profile appearance rule is `profile ?? global` per field, re-resolved on every config pass so live tabs follow edits; the Kit tokens come from the carried `theme_gen.rs` generator applied at boot and at every scheme echo.
@@ -152,7 +152,7 @@ classDiagram
 |---|---|---|
 | Surface lifecycle | `SurfaceExecutor` over `SurfaceIntent` (core's `intent.rs`) | `GpuiExecutor` (`executor.rs`, frontend); `RecordingExecutor` (core tests) |
 | Control transport | V1 interface + `DbusActivation` at the owned bus name (core's `dbus_state.rs`, zbus) | the terminal binary serves; the CLI (`cli.rs`) is the client |
-| Config backend | section files, one per writer (core's `config/store.rs`) | plain RON + `notify` watcher; settings drawer is just another writer |
+| Config backend | section files, one per writer (core's `config/store.rs`) | plain RON + `notify` watcher; the Settings window is just another writer |
 | Session backend | versioned RON state file (core's `session.rs`) | capture / restore planning / quarantine / atomic save |
 | Theme | scheme registry names resolving to `alacritty` `Colors` (core's `theme_source.rs`) | the 12-scheme registry; `profile ?? global` re-resolved per config pass |
 | Clipboard | copy and paste paths | GPUI's clipboard while the pane holds the keyboard (focus+serial by construction); wl-clipboard-rs data-control for every focus-free write (OSC 52, the primary selection, the panel's image copies) |
