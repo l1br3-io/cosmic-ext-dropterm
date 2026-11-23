@@ -195,6 +195,16 @@ serde_json = "1"
 # its own host thread and never crosses one.
 mlua = { version = "0.12", default-features = false, features = ["lua54", "vendored", "serde"] }
 
+# The command palette's scorer (command-palette spec, approved with the
+# dependency named): `Pattern::new`'s multi-word fuzzy over the composed
+# catalog — the matcher WezTerm's palette, Zed's, and Helix all converged
+# on (the record's survey). 0.3.1, the current 0.3 line; MPL-2.0's
+# larger-work terms are GPL-3.0-compatible and the crate's LICENSE was
+# re-verified at pin (the spec's diligence line). `CaseMatching::Ignore`
+# + `Normalization::Smart` ride the pattern module, both behind the
+# crate's default features.
+nucleo-matcher = "0.3.1"
+
 [features]
 # Re-identifies the binary as `io.github.l1br3_io.dropterm.Dev` —
 # its own single-instance slot, bus name, config file, state
@@ -211,4 +221,9 @@ dev-identity = []
 # rename slot's paint walk reads glyphs and selection paths off the
 # rendered frame (the tab_bar tests' caret walk).
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support", "bench-support"] }
+# The face-integrity pin (gnome-window Task 5's hardening): the tests
+# re-hash the embedded font bytes against the recorded digests —
+# test builds only, never the shipped binary. Already vendored in the
+# lock via transitive pulls; owner-approved 2026-11-22.
+sha2 = "0.10"
 

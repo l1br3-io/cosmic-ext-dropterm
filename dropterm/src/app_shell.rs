@@ -55,7 +55,10 @@ use crate::terminal::view::{self, TerminalPane};
 // The close-confirm modal's Escape (bound in the `close-confirm`
 // key context; every other key the modal holds is swallowed — no
 // binds fire, nothing types).
-gpui::actions!(dropterm_gpui, [DismissCloseConfirm, DismissSettings]);
+gpui::actions!(
+    dropterm_gpui,
+    [DismissCloseConfirm, DismissSettings, DismissPalette]
+);
 
 /// The modal callback shape: the dismissal paths hand the shell both
 /// halves the strip's callbacks get.
@@ -453,6 +456,26 @@ pub(crate) struct Shell {
     /// the modal waits (the pane's render-time claim defers to it),
     /// handed back to the active pane when the decision resolves.
     modal_focus: gpui::FocusHandle,
+    /// The command palette (command-palette spec): `Some` while the
+    /// palette stands open — the entity is built at open over a fresh
+    /// compose (the live inputs read at open: tab titles, profile
+    /// list, scheme names, custom binds), dropped at every dismissal,
+    /// and cleared at every show (`reset_show_watch`), so the palette
+    /// dies with the surface and never re-opens on show. The keyboard
+    /// lives on the palette's own list handle; the pane's claim
+    /// defers to any holder.
+    pub(crate) palette: Option<gpui::Entity<crate::palette::Palette>>,
+    /// A dismissed palette's departed list handle: the render's
+    /// repair hands the keyboard back to the active pane while the
+    /// dead handle holds it — the rename input's own repair shape.
+    palette_focus_repair: Option<gpui::FocusHandle>,
+    /// The open palette's list handle, captured once at open — the
+    /// close path's repair source. Captured there because the close
+    /// itself cannot read: the blur dismissal runs inside the
+    /// palette's own entity update, where a read panics (the walk's
+    /// `cannot read dropterm::palette::Palette while it is already
+    /// being updated` abort).
+    palette_focus: Option<gpui::FocusHandle>,
     exit_at: Option<Instant>,
     /// When an explicit quit landed (tray Task T2: a forwarded `quit`
     /// verb or the tray's Quit mapped onto it): the session already
@@ -836,6 +859,9 @@ impl Shell {
             settings_capture_focus: settings_focus,
             rename_focus_repair: None,
             respawn_focus_repair: None,
+            palette: None,
+            palette_focus_repair: None,
+            palette_focus: None,
             modal_focus,
             status: dropterm::core::status::StatusSegments::default(),
             status_clock: None,
@@ -1975,6 +2001,10 @@ fn reset_show_watch(cx: &mut App, shell: &Entity<Shell>) {
         // window (the toggle-show flash of 2026-11-18). A fresh open
         // starts seatless, exactly like the first boot show.
         shell.last_active = None;
+        // The palette dies with the surface (command-palette spec):
+        // a palette open at hide is gone at the next show, never
+        // re-opening over the resurrected band.
+        shell.palette = None;
     });
 }
 
@@ -2457,6 +2487,7 @@ impl Shell {
                         tab: pane.0,
                     });
             }
+            crate::terminal::input::TermAction::CommandPalette => self.toggle_palette(window, cx),
             // The pane-owned verbs never reach this handoff; the
             // catch-all is unreachable by dispatch_shell_verb's gate.
             _ => {}
@@ -2489,6 +2520,188 @@ impl Shell {
             next,
         ));
         cx.notify();
+    }
+
+    /// The command palette's toggle — the `command_palette` chord's
+    /// shell arm, and the chord again while open (the peers'
+    /// `toggle_modal` rule). A pending close-confirm swallows it: one
+    /// key-context modal at a time, the palette never opens over
+    /// another modal (the inverse ordering cannot arise — the
+    /// close-confirm is reached only through a close flow, which the
+    /// palette's own rows route through the gate after the palette
+    /// has closed). The catalog composes at open over the live
+    /// inputs — tab titles, profile list, scheme names, custom binds
+    /// — so a mid-session edit is already in the next open, and a
+    /// pick that went stale while the palette stood dies in `route`.
+    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_close.is_some() {
+            println!(
+                "dropterm: palette chord swallowed (the close-confirm holds the modal) at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            return;
+        }
+        if self.palette.is_some() {
+            self.close_palette(cx);
+            return;
+        }
+        let custom_binds = self.config.custom_key_binds.clone();
+        let profiles = self.config.profiles.clone();
+        let tab_titles: Vec<String> = self
+            .tabs
+            .records()
+            .iter()
+            .map(|tab| tab.title.clone())
+            .collect();
+        let scheme_names = dropterm::core::theme_source::merged_scheme_names(&self.user_schemes);
+        let catalog = dropterm::core::palette::compose(
+            &custom_binds,
+            &profiles,
+            &tab_titles,
+            &scheme_names,
+            &[],
+        );
+        // The palette's two callbacks — the wiring only: the pick
+        // closes the palette then routes, every dismissal closes.
+        let shell = cx.entity();
+        let pick_shell = shell.clone();
+        let on_pick: crate::palette::PickFn = std::rc::Rc::new(move |command, window, cx| {
+            // Close first, then execute — activate-then-close, never
+            // act-under-the-modal (the peers' rule the spec pins).
+            pick_shell.update(cx, |shell, cx| {
+                shell.close_palette(cx);
+                shell.run_pick(command, window, cx);
+            });
+        });
+        let on_dismiss: crate::palette::DismissFn = std::rc::Rc::new(move |_window, cx| {
+            shell.update(cx, Shell::close_palette);
+        });
+        let row_count = catalog.len();
+        let toggle = crate::palette::toggle_chord(&custom_binds);
+        let palette = cx.new(|cx| {
+            crate::palette::Palette::new(catalog, toggle, on_pick, on_dismiss, window, cx)
+        });
+        palette.update(cx, |palette, cx| palette.focus(window, cx));
+        // The close path's repair handle, captured while the read is
+        // safe: construction is complete here, and the blur path that
+        // makes a close-time read panic has not armed yet.
+        self.palette_focus = Some(palette.read(cx).focus_handle(cx));
+        println!(
+            "dropterm: command palette opened ({row_count} rows) at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.palette = Some(palette);
+        cx.notify();
+    }
+
+    /// The palette's dismissal — the pick's first act, the Esc/scrim/
+    /// blur/toggle paths' common tail. The departed list handle rides
+    /// the repair slot, captured at open: this path can run inside
+    /// the palette's own entity update (the blur listener's shell
+    /// update), where reading the entity panics. The render hands the
+    /// keyboard back to the active pane once the element is gone.
+    pub(crate) fn close_palette(&mut self, cx: &mut Context<Self>) {
+        if self.palette.take().is_none() {
+            return;
+        }
+        self.palette_focus_repair = self.palette_focus.take();
+        println!(
+            "dropterm: command palette dismissed at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        cx.notify();
+    }
+
+    /// One palette pick's landing — the palette is already closed
+    /// (the pick closure's first act), and the route table's `None`
+    /// is the stale pick's swallowed no-op. Every arm lands in the
+    /// funnel its keybind or menu twin drives; nothing here is a new
+    /// verb path.
+    pub(crate) fn run_pick(
+        &mut self,
+        command: dropterm::core::palette::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::palette::Route;
+        let Some(route) = crate::palette::route(
+            command.verb,
+            &self.config.profiles,
+            self.tabs.records().len(),
+        ) else {
+            println!(
+                "dropterm: palette pick {} went stale; swallowed at +{}ms",
+                command.id,
+                self.boot.elapsed().as_millis()
+            );
+            return;
+        };
+        println!(
+            "dropterm: palette pick {} -> {route:?} at +{}ms",
+            command.id,
+            self.boot.elapsed().as_millis()
+        );
+        match route {
+            Route::Pane(action) => {
+                if let Some(pane) = self.active_pane() {
+                    pane.update(cx, |pane, cx| pane.perform_term_action(action, cx));
+                }
+            }
+            Route::ShellVerb(action) => {
+                // The palette's own registry row: the pick's close
+                // already delivered the toggle's effect (open ->
+                // closed); re-entering the toggle would reopen what
+                // the pick just dismissed.
+                if matches!(action, crate::terminal::input::TermAction::CommandPalette) {
+                    return;
+                }
+                let Some(id) = self.tabs.active_id() else {
+                    return;
+                };
+                self.shell_verb(&action, id, window, cx);
+            }
+            Route::CloseSweep(sweep) => {
+                // The tab menu's sweep keyed on the active tab, every
+                // target through the gated front door.
+                let Some(id) = self.tabs.active_id() else {
+                    return;
+                };
+                for target in self.tabs.close_sweep(id, sweep) {
+                    self.request_close(target, window, cx);
+                }
+            }
+            Route::NewProfileTab(index) => self.open_profile_tab(index, cx),
+            Route::SwitchProfile(index) => {
+                if let Some(id) = self.tabs.active_id() {
+                    self.switch_tab_profile(id, index, cx);
+                }
+            }
+            Route::SelectTab(index) => {
+                if let Some(tab) = self.tabs.records().get(index) {
+                    self.select_tab(tab.id, cx);
+                }
+            }
+            Route::OpenSettings(page) => {
+                // App level by the gc2 structural finding — the
+                // drawer's build reads the shell.
+                let shell = cx.entity();
+                window.defer(cx, move |window, cx| {
+                    Shell::open_settings_at(&shell, page, window, cx);
+                });
+            }
+            Route::ApplyScheme(name) => {
+                // The picker slot matching the resolved theme mode —
+                // the applied theme's own bool, the pickers' per-mode
+                // pairing (theming's rule).
+                let write = if self.theme.1 {
+                    dropterm::core::settings::PlannedWrite::ColorSchemeDark(name)
+                } else {
+                    dropterm::core::settings::PlannedWrite::ColorSchemeLight(name)
+                };
+                self.write_settings(&write);
+                cx.notify();
+            }
+        }
     }
 
     /// The gated front door every user-initiated close rides — the
@@ -3608,6 +3821,49 @@ impl Shell {
             shell.settings.open = true;
             println!(
                 "dropterm: settings drawer opened at +{}ms (the surface stays live beneath)",
+                shell.boot.elapsed().as_millis()
+            );
+            cx.notify();
+        });
+    }
+
+    /// Close the drawer: the explicit close clears the buffer (the
+    /// reopen-fresh rule; a focus-loss hide preserves — the shell
+    /// hides with the surface and this path never runs for a hide).
+    /// The palette's Settings rows' seam (command-palette spec, the
+    /// open-question default): the drawer opens at the page; an
+    /// already-open drawer swaps its page in place. The gc2 shape
+    /// applies — call at App level (the pick defers), the build
+    /// outside the update borrow, exactly [`Shell::toggle_settings`]'s
+    /// contract.
+    pub(crate) fn open_settings_at(
+        shell: &Entity<Shell>,
+        page: dropterm::core::settings::SettingsTab,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let open = shell.read(cx).settings.open;
+        if open {
+            shell.update(cx, |shell, cx| {
+                shell.settings.page = page;
+                println!(
+                    "dropterm: settings drawer page -> {page:?} at +{}ms",
+                    shell.boot.elapsed().as_millis()
+                );
+                cx.notify();
+            });
+            return;
+        }
+        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
+        shell.update(cx, |shell, cx| {
+            // The press commits an open rename first, exactly like
+            // the reference bar's corner affordances.
+            shell.commit_open_rename(cx);
+            shell.settings_drawer = Some(drawer);
+            shell.settings.open = true;
+            shell.settings.page = page;
+            println!(
+                "dropterm: settings drawer opened at {page:?} at +{}ms (the surface stays live beneath)",
                 shell.boot.elapsed().as_millis()
             );
             cx.notify();
@@ -5479,9 +5735,27 @@ impl gpui::Render for Shell {
                 self.respawn_focus_repair = Some(departed);
             }
         }
+        // The palette's repair: a dismissed palette's list handle
+        // dangles the same way a departed rename input's does — the
+        // keyboard returns to the active pane, the slot dropping once
+        // anything else holds it.
+        if let Some(departed) = self.palette_focus_repair.take()
+            && departed.is_focused(window)
+        {
+            if let Some(pane) = self.active_pane() {
+                pane.read(cx).focus_handle().focus(window, cx);
+            }
+            // Keep watching until the repair lands (anything else
+            // holding the keyboard needs no repair).
+            if departed.is_focused(window) {
+                self.palette_focus_repair = Some(departed);
+            }
+        }
         let pending = self.pending_close;
         let mut band = self.sliding_band(cx).into_any_element();
-        if self.settings.open {
+        if self.palette.is_some() {
+            band = self.palette_overlay(band);
+        } else if self.settings.open {
             band = self.settings_overlay(band, cx);
         } else if self.images_open {
             band = self.images_overlay(band, cx);
@@ -5497,6 +5771,25 @@ impl gpui::Render for Shell {
 }
 
 impl Shell {
+    /// Composes the open palette over the band — the close-confirm's
+    /// own shape: the band beneath, the palette entity above it
+    /// whole (its render is the full-surface scrim, the press-away,
+    /// and the top-centered panel; its occlusion keeps the panel's
+    /// presses off the scrim). The palette is in-window chrome, so
+    /// this composes identically in layer-shell and plain-window
+    /// modes.
+    fn palette_overlay(&self, band: impl IntoElement) -> gpui::AnyElement {
+        let Some(palette) = self.palette.as_ref() else {
+            return band.into_any_element();
+        };
+        div()
+            .size_full()
+            .relative()
+            .child(band.into_any_element())
+            .child(palette.clone())
+            .into_any_element()
+    }
+
     /// Composes the pending close-confirmation over the band —
     /// armed-only (no pending close passes the band through
     /// untouched): a full-surface scrim whose press cancels, carrying
@@ -6292,6 +6585,7 @@ pub(crate) fn boot(
     // while the modal holds the keyboard and dies there otherwise.
     cx.bind_keys([
         gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
+        gpui::KeyBinding::new("escape", DismissPalette, Some("palette")),
         gpui::KeyBinding::new("escape", DismissSettings, Some("settings-drawer")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);

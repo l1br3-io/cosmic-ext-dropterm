@@ -187,8 +187,13 @@ const BINDING_ROWS: &[BindingRow] = &[
         defaults: &[(CS, "Q")] },
     BindingRow { id: "settings", label: "Open settings", group: "Other",
         defaults: &[(CS, "I")] },
-    BindingRow { id: "images_panel", label: "Open the images panel", group: "Other",
+    // The command palette's chord (command-palette spec): the peers'
+    // P — `images_panel` moved to O (one chord, one action; the
+    // registry's `capture_verdict` refuses a held chord).
+    BindingRow { id: "command_palette", label: "Open the command palette", group: "Other",
         defaults: &[(CS, "P")] },
+    BindingRow { id: "images_panel", label: "Open the images panel", group: "Other",
+        defaults: &[(CS, "O")] },
     BindingRow { id: "toggle_status_bar", label: "Toggle the status bar", group: "Other",
         defaults: &[(CS, "B")] },
     BindingRow { id: "show_completions", label: "Show completions", group: "Other",
@@ -217,32 +222,41 @@ pub fn binding_display(binding: &Binding) -> String {
     chord_display(&binding.modifiers, &binding.key)
 }
 
-/// The row's effective binding display: its custom entry if one
-/// exists, else its defaults joined `" / "` in sorted order — the
-/// editor row's binding text. The custom check comes first for any
-/// id: script-command rows (which have no defaults and never appear
-/// in [`binding_rows`]) serve their custom entry or `None` through
-/// the same function.
-pub fn effective_binding_display(
+/// The row's effective binding in human form, or `None` when the row
+/// is unbound or unknown — the Option-shaped half of the display
+/// below, for consumers that render absence differently than the
+/// editor's `"None"` sentinel (the palette's chord hints). The
+/// custom check comes first for any id: script-command rows (which
+/// have no defaults and never appear in [`binding_rows`]) serve
+/// their custom entry through the same function.
+pub fn effective_binding(
     id: &str,
     custom: &std::collections::BTreeMap<String, Binding>,
-) -> String {
+) -> Option<String> {
     if let Some(binding) = custom.get(id) {
-        return binding_display(binding);
+        return Some(binding_display(binding));
     }
-    let Some(row) = binding_rows().iter().find(|row| row.id == id) else {
-        return "None".to_string();
-    };
+    let row = binding_rows().iter().find(|row| row.id == id)?;
     let mut chords: Vec<String> = row
         .defaults
         .iter()
         .map(|(modifiers, key)| chord_display(modifiers, key))
         .collect();
     if chords.is_empty() {
-        return "None".to_string();
+        return None;
     }
     chords.sort();
-    chords.join(" / ")
+    Some(chords.join(" / "))
+}
+
+/// The row's effective binding display: its custom entry if one
+/// exists, else its defaults joined `" / "` in sorted order — the
+/// editor row's binding text. Unbound and unknown rows read `"None"`.
+pub fn effective_binding_display(
+    id: &str,
+    custom: &std::collections::BTreeMap<String, Binding>,
+) -> String {
+    effective_binding(id, custom).unwrap_or_else(|| "None".to_string())
 }
 
 /// Whether a row matches the editor's search — case-insensitive
@@ -434,6 +448,61 @@ mod registry_tests {
     }
 
     #[test]
+    fn effective_binding_is_the_option_shaped_twin_of_the_display() {
+        let empty = std::collections::BTreeMap::default();
+        // A bound row carries its joined defaults.
+        assert_eq!(
+            effective_binding("copy", &empty),
+            Some("Ctrl + Shift + C".to_string())
+        );
+        // The unbound row is None — the display's "None" sentinel,
+        // Option-shaped.
+        assert_eq!(effective_binding("copy_primary", &empty), None);
+        // A custom binding wins wholesale.
+        let map = custom(&[("copy", &[ModifierName::Alt], "X")]);
+        assert_eq!(effective_binding("copy", &map), Some("Alt + X".to_string()));
+        // An unknown id is None, matching the display's sentinel.
+        assert_eq!(effective_binding("no_such_row", &empty), None);
+    }
+
+    #[test]
+    fn every_default_chord_collides_with_nothing() {
+        // The registry is one-chord-one-action: every row's every
+        // default chord resolves through the capture gate as Commit
+        // (a free chord) or Own (the row's own), never Conflict —
+        // the palette row's addition re-runs the whole registry
+        // through the same gate.
+        let empty = std::collections::BTreeMap::default();
+        for row in binding_rows() {
+            for (modifiers, key) in row.defaults {
+                let binding = Binding {
+                    modifiers: modifiers.to_vec(),
+                    key: (*key).to_string(),
+                };
+                let verdict = capture_verdict(row.id, &binding, &empty, &[]);
+                assert!(
+                    matches!(verdict, CaptureVerdict::Commit | CaptureVerdict::Own),
+                    "{}'s default {modifiers:?}+{key} conflicts: {verdict:?}",
+                    row.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_command_palette_row_defaults_to_ctrl_shift_p() {
+        let row = binding_rows()
+            .iter()
+            .find(|row| row.id == "command_palette")
+            .expect("the palette row is in the registry");
+        assert_eq!(row.group, "Other");
+        assert_eq!(
+            effective_binding_display("command_palette", &std::collections::BTreeMap::default()),
+            "Ctrl + Shift + P"
+        );
+    }
+
+    #[test]
     fn effective_display_prefers_the_custom_and_joins_defaults_sorted() {
         // The default display: Ctrl + Shift + C.
         assert_eq!(
@@ -531,6 +600,30 @@ mod registry_tests {
             ),
             CaptureVerdict::Unsupported
         );
+    }
+
+    /// The defaults table in docs/keybindings.md names every registry
+    /// row's action id — the docs gate's twin of
+    /// `every_config_key_is_documented`: a registry row without a doc
+    /// row fails here.
+    #[test]
+    fn every_binding_row_is_documented() {
+        let docs = include_str!("../../../docs/keybindings.md");
+        // The numbered activation family ships one collapsed doc row
+        // (`activate_tab_1` … `activate_tab_8`), so the family's
+        // endpoints stand in for its middle ids.
+        let collapsed = |id: &str| {
+            id.starts_with("activate_tab_")
+                && docs.contains("`activate_tab_1`")
+                && docs.contains("`activate_tab_8`")
+        };
+        for row in binding_rows() {
+            let id = row.id;
+            assert!(
+                docs.contains(&format!("`{id}`")) || collapsed(id),
+                "binding row `{id}` is not documented in docs/keybindings.md"
+            );
+        }
     }
 
     #[test]

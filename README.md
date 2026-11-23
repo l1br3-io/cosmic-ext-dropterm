@@ -1,6 +1,6 @@
 # DropTerm
 
-A native, Yakuake/Guake-style drop-down terminal for the [COSMIC desktop](https://github.com/pop-os/cosmic-epoch) (Pop!_OS 24.04+, Wayland, cosmic-comp), written in Rust on [GPUI](https://github.com/zed-industries/gpui).
+A native, Yakuake/Guake-style cross-platform drop-down terminal, written in Rust on [GPUI](https://github.com/zed-industries/gpui).
 
 The terminal slides down from the top (or bottom) edge of the screen and is toggled with a global keyboard shortcut. It is a true layer-shell overlay - not a minimize/restore window trick - so it stays above other windows, is hidden from Alt-Tab and the dock, and keeps your shell session alive while hidden.
 
@@ -89,6 +89,7 @@ The details live in the `docs/` directory:
 - [The D-Bus contract](docs/dbus.md) - the V1 surface for integrators: the address, both interfaces' members, the CLI verbs' wire encoding, and the stability promise
 - [Configuration](docs/configuration.md) - all 53 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
+- [Command palette](docs/command-palette.md) - `Ctrl+Shift+P` over every app verb: fuzzy search, every action one keystroke away
 - [Settings drawer](docs/settings.md) - the five sections and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves
@@ -124,7 +125,6 @@ A few known rough edges — the surface recreate-on-hide workaround, Shift-modif
 
 ## Non-goals
 
-- Non-COSMIC compositors as a priority, and X11 support
 - Flatpak packaging (COSMIC does not expose layer-shell/toplevel protocols to sandboxed clients)
 - Built-in global hotkey registration (no GlobalShortcuts portal on COSMIC yet)
 - Wrapping an external terminal emulator (may be reconsidered later; see the ROADMAP)

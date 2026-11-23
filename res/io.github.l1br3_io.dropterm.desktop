@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=DropTerm
 GenericName=Drop-down Terminal
-Comment=A Yakuake-style drop-down terminal for the COSMIC™ desktop
+Comment=A Yakuake-style cross-platform drop-down terminal
 Exec=dropterm
 Icon=io.github.l1br3_io.dropterm
 Terminal=false

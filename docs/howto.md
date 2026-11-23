@@ -1,6 +1,6 @@
 # Common tasks
 
-The task-shaped entry point for DropTerm, the drop-down terminal for COSMIC: what you most often want to do, the exact key or verb that does it, and a link to the page that owns the detail. "Writing" a key below means either of the two edit paths - a toggle or field in the [settings drawer](settings.md), or the RON files under `~/.config/io.github.l1br3_io.dropterm/` ([configuration](configuration.md)). Nothing here repeats the reference - every entry is one hop from the full story.
+The task-shaped entry point for DropTerm, the cross-platform drop-down terminal: what you most often want to do, the exact key or verb that does it, and a link to the page that owns the detail. "Writing" a key below means either of the two edit paths - a toggle or field in the [settings drawer](settings.md), or the RON files under `~/.config/io.github.l1br3_io.dropterm/` ([configuration](configuration.md)). Nothing here repeats the reference - every entry is one hop from the full story.
 
 ## First run
 
