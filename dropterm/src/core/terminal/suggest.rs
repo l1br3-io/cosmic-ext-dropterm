@@ -607,6 +607,29 @@ pub fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
     lcp
 }
 
+/// One row's fill continuation against the current line (suggest-parity
+/// fix, the owner's 2026-11-24 report): the bytes the row can still
+/// append at the cursor, re-derived per press — the menu's rows may
+/// predate the line's edits. A label that carries the whole typed
+/// segment reads past it (history's line-prefix walk, the collection's
+/// own anchor); otherwise a non-history label anchored at the word
+/// being completed (path labels begin with the path token, catalog
+/// names with the command word) reads past the token. A row anchored
+/// to neither contributes nothing: its bytes do not extend the line.
+/// A history row never rides the token tier — the token is the line's
+/// prefix only while the segment is one word long, and slicing past it
+/// on a multi-word line re-inserts bytes already typed (the grow-the-
+/// line bug: `cd` Tab → `cd cd` → Tab → `cd cd cd`, forever).
+pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -> Option<&'a str> {
+    if row.label.starts_with(typed) {
+        return Some(&row.label[typed.len()..]);
+    }
+    if row.source != SuggestionSource::History && row.label.starts_with(token) {
+        return Some(&row.label[token.len()..]);
+    }
+    None
+}
+
 /// The command-name provider's candidate function (command-catalog
 /// spec): complete the command word at the command position from the
 /// spawn-time PATH snapshot — among names with the typed word as a
@@ -1738,7 +1761,8 @@ pub enum MenuKey {
     Up,
     Down,
     /// Tab while the menu shows: the fill-else-cycle (Warp's
-    /// `input_tab`, suggest-parity spec) over the typed token.
+    /// `input_tab`, suggest-parity spec) over the rows' own
+    /// continuations against the typed line.
     Tab,
     Accept,
     Other,
@@ -1895,29 +1919,27 @@ impl MenuState {
     }
 
     /// Tab's fill-else-cycle (Warp's `input_tab`, suggest-parity
-    /// spec): over the rows whose labels carry the typed token as a
-    /// case-sensitive prefix, the longest common prefix fills when
-    /// it extends the token — the single remaining row closes the
-    /// menu after its fill — otherwise the selection cycles down.
+    /// spec): over the rows' own continuations against the current
+    /// line — what each can still append, per [`fill_continuation`] —
+    /// the longest common prefix fills when it is non-empty (the
+    /// single remaining row closes the menu after its fill),
+    /// otherwise the selection cycles down.
     fn fill_or_cycle(&mut self, typed: &str) -> MenuOutcome {
         let token = trailing_token(typed);
-        let labels: Vec<&str> = self
+        let continuations: Vec<&str> = self
             .rows
             .iter()
-            .filter(|row| row.label.starts_with(token))
-            .map(|row| row.label.as_str())
+            .filter_map(|row| fill_continuation(row, typed, token))
             .collect();
-        let lcp = longest_common_prefix(&labels);
-        if lcp.len() > token.len() {
-            let suffix = lcp[token.len()..].to_string();
-            if labels.len() == 1 {
-                self.close();
-            }
-            MenuOutcome::Accepted { suffix }
-        } else {
+        let lcp = longest_common_prefix(&continuations).to_string();
+        if lcp.is_empty() {
             self.move_down();
-            MenuOutcome::Noop
+            return MenuOutcome::Noop;
         }
+        if continuations.len() == 1 {
+            self.close();
+        }
+        MenuOutcome::Accepted { suffix: lcp }
     }
 
     /// Whether the typed line already equals the selected row's

@@ -135,31 +135,36 @@ pub(crate) enum TabAction {
 /// The Tab-while-closed decision itself — pure, pinned headless
 /// beside [`menu_routing`]: the gates (menu enabled, idle, focused,
 /// line-end, a non-empty typed segment) are the caller's; this reads
-/// only the collected rows and the typed token. `None` is nothing
-/// qualifying — no rows, or no row extending the token — and the Tab
-/// bytes flow. Warp's `explicit_tab_completion` shape (suggest-parity
-/// spec, record finding 5): exactly one prefix row inserts its
-/// remainder directly (the menu stays closed); a case-sensitive
-/// common prefix longer than the token inserts and opens; rows with
-/// nothing to insert open.
-pub(crate) fn tab_while_closed(
-    rows: &[suggest::MenuCandidate],
-    typed_token: &str,
-) -> Option<TabAction> {
+/// only the collected rows and the typed segment, the token carved
+/// here so the two stay consistent. `None` is nothing qualifying —
+/// no rows, or no row extending the line — and the Tab bytes flow.
+/// Warp's `explicit_tab_completion` shape (suggest-parity spec,
+/// record finding 5): exactly one extending row inserts its
+/// remainder directly (the menu stays closed); a shared continuation
+/// longer than the line inserts and opens; rows with nothing to
+/// insert open. The continuation anchor is each row's own (the
+/// owner's 2026-11-24 report: a token-anchored slice over whole-line
+/// history rows re-inserted bytes already typed, growing the line
+/// every press).
+pub(crate) fn tab_while_closed(rows: &[suggest::MenuCandidate], typed: &str) -> Option<TabAction> {
+    let token = suggest::trailing_token(typed);
     let matching: Vec<&suggest::MenuCandidate> = rows
         .iter()
-        .filter(|row| row.label.starts_with(typed_token))
+        .filter(|row| suggest::fill_continuation(row, typed, token).is_some())
         .collect();
     if matching.len() == 1 {
         return Some(TabAction::Insert {
             suffix: matching[0].suffix.clone(),
         });
     }
-    let labels: Vec<&str> = matching.iter().map(|row| row.label.as_str()).collect();
-    let lcp = suggest::longest_common_prefix(&labels);
-    if lcp.len() > typed_token.len() {
+    let continuations: Vec<&str> = matching
+        .iter()
+        .filter_map(|row| suggest::fill_continuation(row, typed, token))
+        .collect();
+    let lcp = suggest::longest_common_prefix(&continuations);
+    if !lcp.is_empty() {
         return Some(TabAction::InsertOpen {
-            suffix: lcp[typed_token.len()..].to_string(),
+            suffix: lcp.to_string(),
         });
     }
     if rows.is_empty() || matching.is_empty() {
@@ -393,6 +398,18 @@ mod tests {
             .collect()
     }
 
+    fn history_menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
+        entries
+            .iter()
+            .map(|(label, suffix)| suggest::MenuCandidate {
+                label: (*label).to_string(),
+                suffix: (*suffix).to_string(),
+                description: None,
+                source: suggest::SuggestionSource::History,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_printable_keeps_the_menu_open() {
         // The as-you-type rule (suggest-parity spec, record finding
@@ -495,6 +512,17 @@ mod tests {
         assert_eq!(tab_while_closed(&[], "gi"), None);
         let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
         assert_eq!(tab_while_closed(&rows, "zz"), None, "no prefix row");
+    }
+
+    #[test]
+    fn an_already_filled_line_opens_without_inserting_again() {
+        // The owner's 2026-11-24 report: history rows `cd cd` /
+        // `cd cd cd` over the typed line `cd cd` — the rows' shared
+        // prefix is already on the line, so nothing qualifies as an
+        // insert and the menu opens. The token-anchored slice used to
+        // return InsertOpen ` cd` again, growing the line every press.
+        let rows = history_menu_rows(&[("cd cd", " cd"), ("cd cd cd", " cd cd")]);
+        assert_eq!(tab_while_closed(&rows, "cd cd"), Some(TabAction::Open));
     }
 
     #[test]

@@ -2564,9 +2564,11 @@ impl Terminal {
     /// OQ-1): the gates — line-end (`after_cursor_blank`), not
     /// scrolled, a non-empty typed segment; the menu-enabled, idle,
     /// and focused gates ride [`Self::menu_candidates`]' own — hold,
-    /// and the freshly collected rows plus the typed token answer
-    /// through the pure decision the view pins. `None` is a failed
-    /// gate or an empty collection: the Tab bytes flow verbatim.
+    /// and the freshly collected rows plus the typed segment answer
+    /// through the pure decision the view pins (the segment, not its
+    /// token: the decision carves the token itself so the fill's
+    /// anchor stays the row's own). `None` is a failed gate or an
+    /// empty collection: the Tab bytes flow verbatim.
     pub fn menu_tab_open(&mut self) -> Option<(Vec<suggest::MenuCandidate>, String)> {
         let (before_cursor, after_cursor_blank, display_offset, ..) = self.scrape_cursor_line();
         if display_offset != 0 || !after_cursor_blank {
@@ -2580,7 +2582,7 @@ impl Terminal {
         if rows.is_empty() {
             return None;
         }
-        Some((rows, suggest::trailing_token(typed).to_string()))
+        Some((rows, typed.to_string()))
     }
 
     /// The Tab-while-closed insert (suggest-parity spec, Warp's

@@ -756,7 +756,7 @@ impl TerminalPane {
                 None if keystroke.key == "tab" && unmodified => {
                     let action = engine
                         .menu_tab_open()
-                        .and_then(|(rows, token)| suggest::tab_while_closed(&rows, &token));
+                        .and_then(|(rows, typed)| suggest::tab_while_closed(&rows, &typed));
                     match action {
                         Some(suggest::TabAction::Insert { suffix }) => {
                             engine.menu_tab_insert(&suffix);

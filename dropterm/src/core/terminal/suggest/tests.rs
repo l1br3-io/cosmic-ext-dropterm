@@ -2733,6 +2733,18 @@ fn menu_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
         .collect()
 }
 
+fn history_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
+    entries
+        .iter()
+        .map(|(label, suffix)| MenuCandidate {
+            label: (*label).to_string(),
+            suffix: (*suffix).to_string(),
+            description: None,
+            source: SuggestionSource::History,
+        })
+        .collect()
+}
+
 #[test]
 fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
     // The record's ruled contents: the merged collection's own
@@ -2885,6 +2897,56 @@ fn tab_without_an_extending_prefix_cycles_down_instead() {
     assert_eq!(menu.selected(), 1, "the selection advanced one");
     assert_eq!(menu.press(MenuKey::Tab, "g"), MenuOutcome::Noop);
     assert_eq!(menu.selected(), 0, "the cycle wraps");
+    assert!(menu.is_open());
+}
+
+#[test]
+fn tab_over_an_already_filled_line_cycles_instead_of_growing() {
+    // The fill's re-press (the owner's 2026-11-24 report): history
+    // rows `cd cd`/`cd cd cd` over the typed `cd` fill ` cd` once —
+    // and the re-press on the filled line `cd cd` must cycle: the
+    // rows' shared prefix is already on the line, nothing extends it,
+    // and appending ` cd` again would grow the line forever.
+    let mut menu = MenuState::new();
+    menu.open(history_rows(&[("cd cd", " cd"), ("cd cd cd", " cd cd")]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "cd"),
+        MenuOutcome::Accepted {
+            suffix: " cd".to_string()
+        }
+    );
+    assert_eq!(
+        menu.press(MenuKey::Tab, "cd cd"),
+        MenuOutcome::Noop,
+        "the filled line has nothing left to fill"
+    );
+    assert_eq!(menu.selected(), 1, "the re-press cycles instead");
+    assert!(menu.is_open());
+    assert_eq!(
+        menu.press(MenuKey::Tab, "cd cd cd"),
+        MenuOutcome::Noop,
+        "and the line never grows past the rows"
+    );
+}
+
+#[test]
+fn a_multi_word_line_fills_the_word_it_extends() {
+    // The same report's cousin: history rows `git checkout` /
+    // `git checkout main` over the typed `git che` — the word being
+    // completed is `che`, the rows' shared continuation is `ckout`,
+    // and the fill inserts it (the token anchor on the whole label
+    // found nothing here).
+    let mut menu = MenuState::new();
+    menu.open(history_rows(&[
+        ("git checkout", "ckout"),
+        ("git checkout main", "ckout main"),
+    ]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "git che"),
+        MenuOutcome::Accepted {
+            suffix: "ckout".to_string()
+        }
+    );
     assert!(menu.is_open());
 }
 
