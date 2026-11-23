@@ -1,6 +1,6 @@
 # Command palette
 
-One search box over every app verb: press `Ctrl+Shift+O`, type a fragment, press Enter. The palette opens over the live terminal as an in-window panel - the terminal stays visible beneath the dim scrim, and typing goes to the palette, never to the shell under it.
+One search box over every app verb: press `Ctrl+Shift+P`, type a fragment, press Enter. The palette opens over the live terminal as an in-window panel - the terminal stays visible beneath the dim scrim, and typing goes to the palette, never to the shell under it.
 
 ## What it lists
 
@@ -21,9 +21,9 @@ The match is fuzzy, multi-word, and case-insensitive - the same matcher WezTerm,
 
 ## Dismissal and the chord
 
-Four ways out: Escape, a click on the scrim outside the panel, the keyboard leaving the palette (a click on the terminal), or the open chord again - `Ctrl+Shift+O` is a toggle. The palette always closes before a picked action runs; nothing executes under the modal.
+Four ways out: Escape, a click on the scrim outside the panel, the keyboard leaving the palette (a click on the terminal), or the open chord again - `Ctrl+Shift+P` is a toggle. The palette always closes before a picked action runs; nothing executes under the modal.
 
-While the palette holds the keyboard, other app chords wait - typing filters, it never reaches the terminal. The chord is a normal bindable action (`command_palette`): rebind it in the [keybindings editor](keybindings.md#customizing) like any other, and the palette answers the chord your config holds, not the default. The default is `O` rather than the peers' `P` because `Ctrl+Shift+P` already opens the images panel, and one chord is one action.
+While the palette holds the keyboard, other app chords wait - typing filters, it never reaches the terminal. The chord is a normal bindable action (`command_palette`): rebind it in the [keybindings editor](keybindings.md#customizing) like any other, and the palette answers the chord your config holds, not the default. The default is the peers' `P`; the images panel rides `Ctrl+Shift+O`, and one chord is one action.
 
 ## Not in it (yet)
 

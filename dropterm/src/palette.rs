@@ -1170,16 +1170,16 @@ mod tests {
 
     #[test]
     fn the_toggle_chord_is_the_keybind_map_s_own_entry() {
-        // The default: the registry's Ctrl+Shift+O, matched the way
+        // The default: the registry's Ctrl+Shift+P, matched the way
         // the pane matches it.
         let chord = toggle_chord(&no_binds()).expect("the registry carries command_palette");
         assert!(chord_matches(
             &chord,
-            &Keystroke::parse("ctrl-shift-o").expect("a keystroke")
+            &Keystroke::parse("ctrl-shift-p").expect("a keystroke")
         ));
         assert!(!chord_matches(
             &chord,
-            &Keystroke::parse("ctrl-shift-p").expect("a keystroke")
+            &Keystroke::parse("ctrl-shift-o").expect("a keystroke")
         ));
 
         // A custom bind moves the toggle with it.
@@ -1190,14 +1190,14 @@ mod tests {
         ));
         assert!(!chord_matches(
             &chord,
-            &Keystroke::parse("ctrl-shift-o").expect("a keystroke")
+            &Keystroke::parse("ctrl-shift-p").expect("a keystroke")
         ));
     }
 
     #[gpui::test]
     fn the_toggle_chord_dismisses_from_the_held_keyboard(cx: &mut gpui::TestAppContext) {
         let (mut cx, _palette, log) = mount(cx, &no_binds());
-        cx.simulate_keystrokes("ctrl-shift-o");
+        cx.simulate_keystrokes("ctrl-shift-p");
         assert_eq!(
             *log.borrow(),
             ["dismiss"],
@@ -1208,7 +1208,7 @@ mod tests {
     #[gpui::test]
     fn another_owned_chord_stays_in_the_palette(cx: &mut gpui::TestAppContext) {
         let (mut cx, _palette, log) = mount(cx, &no_binds());
-        cx.simulate_keystrokes("ctrl-shift-p");
+        cx.simulate_keystrokes("ctrl-shift-o");
         assert!(
             log.borrow().is_empty(),
             "the images panel's chord is not the palette's to act on"
@@ -1218,7 +1218,7 @@ mod tests {
     #[gpui::test]
     fn a_custom_bind_moves_the_toggle(cx: &mut gpui::TestAppContext) {
         let (mut cx, _palette, log) = mount(cx, &alt_p_palette());
-        cx.simulate_keystrokes("ctrl-shift-o");
+        cx.simulate_keystrokes("ctrl-shift-p");
         assert!(
             log.borrow().is_empty(),
             "the released default no longer toggles"

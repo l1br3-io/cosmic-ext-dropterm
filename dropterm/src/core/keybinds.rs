@@ -131,13 +131,13 @@ const BINDING_ROWS: &[BindingRow] = &[
         defaults: &[(CS, "Q")] },
     BindingRow { id: "settings", label: "Open settings", group: "Other",
         defaults: &[(CS, "I")] },
-    // The command palette's chord (command-palette spec): O, not the
-    // peers' P — `images_panel` holds it and the registry is
-    // one-chord-one-action (`capture_verdict` refuses a held chord).
+    // The command palette's chord (command-palette spec): the peers'
+    // P — `images_panel` moved to O (one chord, one action; the
+    // registry's `capture_verdict` refuses a held chord).
     BindingRow { id: "command_palette", label: "Open the command palette", group: "Other",
-        defaults: &[(CS, "O")] },
-    BindingRow { id: "images_panel", label: "Open the images panel", group: "Other",
         defaults: &[(CS, "P")] },
+    BindingRow { id: "images_panel", label: "Open the images panel", group: "Other",
+        defaults: &[(CS, "O")] },
     BindingRow { id: "toggle_status_bar", label: "Toggle the status bar", group: "Other",
         defaults: &[(CS, "B")] },
     BindingRow { id: "show_completions", label: "Show completions", group: "Other",
@@ -415,7 +415,7 @@ mod registry_tests {
     }
 
     #[test]
-    fn the_command_palette_row_defaults_to_ctrl_shift_o() {
+    fn the_command_palette_row_defaults_to_ctrl_shift_p() {
         let row = binding_rows()
             .iter()
             .find(|row| row.id == "command_palette")
@@ -423,7 +423,7 @@ mod registry_tests {
         assert_eq!(row.group, "Other");
         assert_eq!(
             effective_binding_display("command_palette", &std::collections::BTreeMap::default()),
-            "Ctrl + Shift + O"
+            "Ctrl + Shift + P"
         );
     }
 

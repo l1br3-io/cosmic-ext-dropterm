@@ -63,7 +63,7 @@ pub(crate) enum TermAction {
     Settings,
     ImagesPanel,
     ToggleStatusBar,
-    /// Open or dismiss the command palette (`Ctrl+Shift+O`) — the
+    /// Open or dismiss the command palette (`Ctrl+Shift+P`) — the
     /// shell-owned toggle (command-palette spec): the verb hands up
     /// like every shell verb, the shell decides open vs. dismiss.
     CommandPalette,
@@ -258,7 +258,7 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     map.insert(chord(cs, "d"), TermAction::DuplicateTab);
     map.insert(chord(cs, "w"), TermAction::CloseTab);
     map.insert(chord(cs, "r"), TermAction::RenameTab);
-    map.insert(chord(cs, "o"), TermAction::CommandPalette);
+    map.insert(chord(cs, "p"), TermAction::CommandPalette);
     map.insert(
         chord(&[ModifierName::Ctrl], "pagedown"),
         TermAction::NextTab,
@@ -273,7 +273,7 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     }
     map.insert(chord(cs, "9"), TermAction::ActivateLastTab);
     map.insert(chord(cs, "i"), TermAction::Settings);
-    map.insert(chord(cs, "p"), TermAction::ImagesPanel);
+    map.insert(chord(cs, "o"), TermAction::ImagesPanel);
     map.insert(chord(cs, "b"), TermAction::ToggleStatusBar);
     map
 }
