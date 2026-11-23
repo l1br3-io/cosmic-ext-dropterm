@@ -288,6 +288,9 @@ pub(crate) struct Palette {
     /// The blur dismissal's subscription — held, never read: dropping
     /// the palette drops it (the status menu's own shape).
     _blur: gpui::Subscription,
+    /// The first paint's evidence line, once per open — the walk's
+    /// ground truth that the overlay's render actually runs.
+    painted_once: bool,
     on_dismiss: DismissFn,
 }
 
@@ -333,6 +336,7 @@ impl Palette {
                 let dismiss = Rc::clone(&this.on_dismiss);
                 dismiss(window, cx);
             }),
+            painted_once: false,
             on_dismiss: Rc::clone(&dismiss),
         }
     }
@@ -353,13 +357,33 @@ impl Palette {
 }
 
 impl Render for Palette {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let card = theme.background;
         let hairline = theme.border;
         let fg = theme.foreground;
+        // The keyboard's first-paint repair (the close-confirm's own
+        // windowless-arm pattern): focus applied at open races the
+        // element's first mount, and a lost race strands the surface
+        // chord-dead under an invisible palette. The first frame
+        // that carries the list takes the keyboard.
+        let list_focus = self.list.read(cx).focus_handle(cx);
+        if !self.painted_once
+            && !list_focus.is_focused(window)
+            && !self.container_focus.is_focused(window)
+        {
+            println!("dropterm: palette focus repaired on first paint");
+            list_focus.focus(window, cx);
+        }
+        if !self.painted_once {
+            self.painted_once = true;
+            println!("dropterm: palette overlay painted");
+        }
         let dismiss = Rc::clone(&self.on_dismiss);
-        div().size_full().child(
+        // The close-confirm's own composition, element for element:
+        // the positioned root, the scrim as its direct absolute
+        // child, the occluding panel inside the scrim.
+        div().size_full().relative().child(
             div()
                 .absolute()
                 .inset_0()
