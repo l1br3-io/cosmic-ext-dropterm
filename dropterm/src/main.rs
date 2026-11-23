@@ -25,7 +25,6 @@
 mod app_shell;
 mod context_menu;
 mod dbus;
-mod drawer;
 mod executor;
 mod fonts;
 mod images_panel;
@@ -34,6 +33,7 @@ mod notify;
 mod onboarding;
 mod palette;
 mod pickers;
+mod settings;
 mod startup;
 mod status_bar;
 mod tab_bar;

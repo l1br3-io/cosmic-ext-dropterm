@@ -1,6 +1,6 @@
 # Configuration
 
-DropTerm keeps every setting in plain RON files under one directory and reloads them live - changes apply without a restart, whether made in the [settings drawer](settings.md) or by editing a file directly.
+DropTerm keeps every setting in plain RON files under one directory and reloads them live - changes apply without a restart, whether made in the [Settings window](settings.md) or by editing a file directly.
 
 ```
 ~/.config/io.github.l1br3_io.dropterm/
@@ -20,7 +20,7 @@ The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.
 )
 ```
 
-Most keys are editable in the [settings drawer](settings.md); the exception writes itself (`settings_drawer_width`), and one more is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
+Most keys are editable in the [Settings window](settings.md); one is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
 This layout starts fresh: versions before it kept settings under `~/.config/cosmic/<app id>/v1/` (one file per key, through cosmic-config), and nothing here reads or imports those files - the first start of this version begins from the defaults. Copy over any setting you want to keep by writing it into the section file that owns it.
 
@@ -31,7 +31,7 @@ This layout starts fresh: versions before it kept settings under `~/.config/cosm
 - **A file that parses replaces its section whole.** Keys the file omits reset to their defaults on the live surface - the file is the section, not an overlay on the running values, and trimming a file down is a reset of everything removed. (Keys a file leaves out when no file parsed before are simply defaults; see the next rule for the ones that do not parse at all.)
 - **At startup, a file that does not parse is moved aside** to `<name>.bak` (`config.ron.bak`) and its keys start from their defaults; the other files are unaffected. Correct the `.bak` and move it back.
 - **The drawer rewrites the whole file it saves.** It re-reads the file first, so keys you edited by hand are kept - but every key is written out, and comments are not preserved. If the file does not parse at that moment, it is moved aside to `.bak` and the save starts from the settings DropTerm is running with, so a typo never turns one toggle into a reset.
-- **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, `output`, and `settings_drawer_width` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.
+- **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, and `output` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.
 
 ## The default config directory
 
@@ -63,7 +63,6 @@ A fresh install has no files here at all - each appears the first time something
 | `command_finish_notification_after_secs` | `5` |
 | `new_tab_after_current` | `true` |
 | `close_confirmation_enabled` | `true` |
-| `settings_drawer_click_close` | `true` |
 | `theme_preference` | `System` |
 | `new_tab_cwd` | `Inherit` |
 | `status_bar_enabled` | `true` |
@@ -93,7 +92,7 @@ A fresh install has no files here at all - each appears the first time something
 | `images_enabled` | `true` |
 | `onboarding_dismissed` | `false` |
 
-The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), `settings_drawer_width` (unset until the drawer's drag handle first writes it), and `status_script_segments` (unset - every registered script segment renders, in registration order). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
+The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `status_script_segments` (unset - every registered script segment renders, in registration order). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
 
 ## Geometry
 
@@ -110,7 +109,7 @@ Geometry applies live: a shown surface is reshaped in place, a hidden one picks 
 
 | Key | Values | Default | What it does |
 |---|---|---|---|
-| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The default family ships inside the app, so it renders on every platform — including systems that install no fonts at all (box-drawing and block glyphs included). The settings drawer's picker lists the installed monospace families; a name the renderer cannot resolve falls back through the platform natives (Menlo, Consolas, and their peers) to the bundled default, keeping your value in the file. |
+| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The default family ships inside the app, so it renders on every platform — including systems that install no fonts at all (box-drawing and block glyphs included). The Settings window's picker lists the installed monospace families; a name the renderer cannot resolve falls back through the platform natives (Menlo, Consolas, and their peers) to the bundled default, keeping your value in the file. |
 | `font_size` | points | `14` | The terminal's font size. |
 | `opacity` | 0-100 | `100` | Background opacity. |
 | `color_scheme_dark` | scheme name | `GitHub Dark` | Scheme used while the system is in dark mode. |
@@ -125,7 +124,7 @@ Scheme names come from the built-in registry - the same names the drawer's picke
 |---|---|---|---|
 | `tab_position` | `Auto`, `Top`, `Bottom` | `Auto` | Which slot the tab strip takes in the surface column, independent of `edge`. `Auto` keeps the historic layout - the strip beside the status band, the band adjacent to the grab bar. `Top`/`Bottom` pin the strip to the extreme slot on that side of the surface; when a pin claims the grab side, the status band yields one slot inward so the pin reads. All three entries differ on both anchor edges. |
 
-A change never resizes anything - the strip reorders immediately on a shown surface. Pick it in the Geometry section of the [settings drawer](settings.md).
+A change never resizes anything - the strip reorders immediately on a shown surface. Pick it in the Window page of the [Settings window](settings.md).
 
 ## Tab titles
 
@@ -150,7 +149,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 |---|---|---|---|
 | `tab_bar_min_tabs` | 1 and up | `2` | How many tabs the strip needs before tab rows render. The default `2` keeps a single tab's row hidden - the strip then carries only its `+` and gear. `1` keeps that row on, so the one tab reads, renames (a double-click), and closes from the strip; a higher value holds rows back until that many tabs exist. kitty's own knob, name and default. |
 
-The strip itself never hides either way - the corner affordances render at any count. A change is pure paint: the strip re-renders on the config echo's next view pass, nothing reshapes. Set it on the [settings drawer](settings.md)'s Tabs card, or by writing the key.
+The strip itself never hides either way - the corner affordances render at any count. A change is pure paint: the strip re-renders on the config echo's next view pass, nothing reshapes. Set it on the [Settings window](settings.md)'s Tabs page, or by writing the key.
 
 ## Status bar
 
@@ -264,17 +263,9 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
 )
 ```
 
-## Settings drawer width
-
-`settings_drawer_width` (default unset) is the settings pane's width in pixels, as last dragged. The drawer's drag handle writes it on release; double-clicking the handle resets it to unset. Stored values are clamped at render into 344 px to half the surface, so a stale or hand-edited value can never outgrow the surface. A never-dragged drawer renders the built-in default, 616 px, wherever the surface is wide enough that half of it reaches that.
-
-## Settings drawer click-close
-
-`settings_drawer_click_close` (default `true`) dismisses an open settings drawer on a left click anywhere on the exposed surface - the terminal, the tab strip, the status band. The press closes the drawer and is consumed: it does not also type into or focus the terminal. The drawer no longer dims or blocks the surface beneath it while open. `false` drops the click catcher entirely, leaving the terminal fully interactive (typing, selection, scrolling) beneath the open drawer; the drawer then closes only through its close button, the gear, the keyboard verb, or a surface hide. The key is read at render, so a flip applies to the very next press; the Behavior tab's Dropdown card carries its toggle.
-
 ## Profiles
 
-Profiles are named presets of what a tab runs, managed on the [settings drawer](settings.md)'s Profiles tab - or hand-edited in `profiles.ron`, in this shape:
+Profiles are named presets of what a tab runs, managed on the [Settings window](settings.md)'s Profiles page - or hand-edited in `profiles.ron`, in this shape:
 
 ```ron
 // ~/.config/io.github.l1br3_io.dropterm/profiles.ron
@@ -316,7 +307,7 @@ The appearance fields resolve per field, never per profile: a set field wins, an
 
 ## Keybindings
 
-Keybindings are customized in the drawer's Keybindings tab or by hand in `keybinds.ron`. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
+Keybindings are customized in the Settings window's Keybindings page or by hand in `keybinds.ron`. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
 
 ```ron
 // ~/.config/io.github.l1br3_io.dropterm/keybinds.ron

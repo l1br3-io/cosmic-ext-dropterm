@@ -20,7 +20,7 @@ use std::rc::Rc;
 use dropterm::core::keybinds::Binding;
 use dropterm::core::palette::{Command, Section, Verb};
 use dropterm::core::profile::Profile;
-use dropterm::core::settings::SettingsTab;
+use dropterm::core::settings::SettingsPage;
 use dropterm::core::tabs::{CloseSweep, select_tab_target};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -59,9 +59,9 @@ pub(crate) enum Route {
     /// The zero-based fleet index — resolved from the one-based verb
     /// through `select_tab_target`, the stale pick's boundary.
     SelectTab(usize),
-    /// The settings drawer at its page — the palette's open-at-page
+    /// Settings at its page — the palette's open-at-page
     /// seam (`open_settings_at`).
-    OpenSettings(SettingsTab),
+    OpenSettings(SettingsPage),
     /// The named scheme applied live to the picker slot matching the
     /// resolved theme mode — the drawer picker's own write.
     ApplyScheme(String),
@@ -112,6 +112,39 @@ pub(crate) fn toggle_chord(
     effective_key_binds(custom_binds)
         .into_iter()
         .find_map(|(chord, action)| (action == TermAction::CommandPalette).then_some(chord))
+}
+
+/// The settings action's effective chord as gpui keystroke syntax
+/// (settings-window SW3): the window binds it at open, so the chord
+/// inside the window answers to exactly the press the pane's own
+/// effective map does, a `custom_key_binds` override included.
+/// `None` when the effective map lacks the action.
+pub(crate) fn settings_chord_keystroke(
+    custom_binds: &std::collections::BTreeMap<String, Binding>,
+) -> Option<String> {
+    effective_key_binds(custom_binds)
+        .into_iter()
+        .find_map(|(chord, action)| {
+            (action == TermAction::Settings).then(|| {
+                // gpui's keystroke syntax, built in the parser's own
+                // vocabulary (any modifier order parses).
+                let mut parts: Vec<&str> = Vec::new();
+                if chord.modifiers.control {
+                    parts.push("ctrl");
+                }
+                if chord.modifiers.alt {
+                    parts.push("alt");
+                }
+                if chord.modifiers.platform {
+                    parts.push("super");
+                }
+                if chord.modifiers.shift {
+                    parts.push("shift");
+                }
+                parts.push(chord.key.as_str());
+                parts.join("-")
+            })
+        })
 }
 
 /// The palette's pick callback: the row's command, with the window
@@ -719,8 +752,8 @@ mod tests {
     #[test]
     fn settings_and_scheme_rows_route_by_name() {
         assert_eq!(
-            route(Verb::OpenSettings(SettingsTab::Keybindings), &[], 0),
-            Some(Route::OpenSettings(SettingsTab::Keybindings))
+            route(Verb::OpenSettings(SettingsPage::Keybindings), &[], 0),
+            Some(Route::OpenSettings(SettingsPage::Keybindings))
         );
         assert_eq!(
             route(Verb::ApplyScheme("Dracula".to_string()), &[], 0),

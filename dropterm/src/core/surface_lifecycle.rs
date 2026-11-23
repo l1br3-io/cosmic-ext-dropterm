@@ -857,7 +857,7 @@ pub fn layer_unfocused_acts_on(surface: &SurfaceState, id: SurfaceHandle) -> boo
 }
 
 /// Whether losing keyboard focus should hide the surface: exactly
-/// the `hide_on_focus_loss` config flag. No settings-drawer input
+/// the `hide_on_focus_loss` config flag. No settings-window input
 /// is needed: focus loss may hide the surface with the drawer open —
 /// the drawer and its drafts survive for the next show (spec
 /// criterion 8) — so the gate runs the same in the drawer-open

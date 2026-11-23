@@ -25,8 +25,6 @@ use gpui_component::{h_flex, v_flex};
 use gpui_component::Sizable as _;
 use gpui_component::button::{Button, ButtonVariants as _};
 
-use dropterm::core::settings::drawer_width;
-
 /// The panel's row order (the reference `images_panel_rows`): a view
 /// over the pruned ledger, newest first — the most recent paste is
 /// the row the eye lands on. Pure.
@@ -243,6 +241,20 @@ pub(crate) fn panel_content(
 /// Close the two doors. The width is the drawer's configured rule at
 /// its default seat (the drag handle is the settings drawer's own —
 /// the panel borrows the surface, not the key).
+/// The overlay pane's width in px: the drawer-era default-width rule
+/// the panel borrowed wholesale (616 px wherever half the surface
+/// reaches it, floored at 344 and capped at half the surface
+/// otherwise). The settings drawer's half of the policy — the stored
+/// preference and the drag — retired with the drawer
+/// (settings-window SW6); this is the panel's own copy now.
+fn pane_width(surface_width: f32) -> f32 {
+    const DEFAULT_WIDTH: f32 = 616.;
+    const MIN_WIDTH: f32 = 344.;
+    const CAP_FRACTION: f32 = 0.5;
+    let cap = (surface_width * CAP_FRACTION).max(MIN_WIDTH);
+    DEFAULT_WIDTH.clamp(MIN_WIDTH, cap)
+}
+
 pub(crate) fn overlay(
     band: gpui::AnyElement,
     rows: Vec<PanelRow<'_>>,
@@ -251,7 +263,7 @@ pub(crate) fn overlay(
     surface_width: f32,
     cx: &App,
 ) -> gpui::AnyElement {
-    let width = drawer_width(None, surface_width);
+    let width = pane_width(surface_width);
     let verb_header = Rc::clone(verb);
     let verb_backdrop = Rc::clone(verb);
     let verb_close = Rc::clone(verb);
@@ -489,7 +501,7 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        let width = drawer_width(None, 1280.);
+        let width = pane_width(1280.);
         let panel_mid_x = 1280. - width / 2.;
         // A press over the panel's interior, mouse-up included.
         cx.simulate_click(

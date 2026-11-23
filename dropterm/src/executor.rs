@@ -93,6 +93,13 @@ pub(crate) enum Action {
     /// a terminal surface; the executor never tracks it (closing it
     /// can never quit the daemon, `QuitMode::Explicit` holds).
     OpenAbout,
+    /// Close the Settings window ahead of a show (settings-window
+    /// SW4, the exclusive pair's other half): the terminal's own
+    /// re-show supersedes it, so the removal carries the `Superseded`
+    /// cause and the close queues no return. No surface handle — the
+    /// window is not a terminal surface; the shell's stored handle
+    /// names it.
+    CloseSettingsWindow,
 }
 
 /// Why a [`Action::SwapWindow`] recreates the window — the evidence

@@ -4,187 +4,155 @@ use std::collections::BTreeMap;
 use crate::core::theme_source::scheme_names;
 
 fn section_keys() -> Vec<ConfigKey> {
-    Section::ALL
+    // Across the pages, not the sections directly: the pin the
+    // settings window carries is every exposed key exactly once
+    // across the nine pages.
+    SettingsPage::ALL
         .iter()
+        .filter_map(|page| page_section(*page))
         .flat_map(|section| section.keys().iter().copied())
         .collect()
 }
 
-// --- the drawer pane's width (drawer-resize T1) ---
+// --- the page regrouping (settings-window SW1) ---
 
 #[test]
-fn drawer_width_defaults_to_616_where_the_cap_allows() {
-    // Spec drawer-resize criterion 1: never dragged (`None`)
-    // renders the wider default — 616px (560 grown 10% by the
-    // veil-less drawer revisit) on any surface wide enough that
-    // half of it reaches 616 (surfaces ≥ 1232px).
-    assert_eq!(drawer_width(None, 2000.0), 616.0);
-    assert_eq!(drawer_width(None, 1232.0), 616.0);
-}
-
-#[test]
-fn drawer_width_caps_the_default_at_half_the_surface() {
-    // Between 688px and 1232px the 50% cap wins over the
-    // default: the drawer never covers more than half the
-    // drop-down surface.
-    assert_eq!(drawer_width(None, 900.0), 450.0);
-    assert_eq!(drawer_width(None, 728.0), 364.0);
-    assert_eq!(drawer_width(None, 688.0), 344.0);
-}
-
-#[test]
-fn drawer_width_floors_at_344_on_narrow_surfaces() {
-    // Below 688px (2 × the floor) the cap falls under the
-    // floor; the floor wins and the overlay clamps the pane to
-    // the surface — the settings-drawer OQ-3 behavior carries
-    // over unchanged.
-    assert_eq!(drawer_width(None, 600.0), 344.0);
-    assert_eq!(drawer_width(None, 0.0), 344.0);
-}
-
-#[test]
-fn drawer_width_clamps_a_stored_preference_into_the_band() {
-    // Criterion 4: a stale or hand-edited stored width can
-    // never overflow the surface or crush the settings content
-    // — render clamps whatever it finds, both directions.
-    // 65_535 is `u16::MAX`, the largest a stored value can be.
-    assert_eq!(drawer_width(Some(100), 2000.0), 344.0);
-    assert_eq!(drawer_width(Some(65_535), 2000.0), 1000.0);
-    assert_eq!(drawer_width(Some(65_535), 728.0), 364.0);
-    assert_eq!(drawer_width(Some(400), 2000.0), 400.0);
-}
-
-#[test]
-fn drawer_width_writes_floor_at_the_minimum_only() {
-    // The write path's half of the width policy: the floor is
-    // static, so `clamped` enforces it; the cap needs the
-    // surface width this pure seam never sees, so render owns
-    // it (see `drawer_width`). `None` — the double-click reset
-    // — passes through untouched.
+fn the_pages_partition_every_section_exactly_once() {
+    // The pages are a view-only regrouping: the seven section
+    // pages each host exactly one Section — Profiles and
+    // Keybindings host none — so every Section is exactly one
+    // page's and the union is Section::ALL. Pinned so regrouping
+    // can never drop or duplicate a card.
     assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(Some(100)).clamped(),
-        PlannedWrite::SettingsDrawerWidth(Some(DRAWER_MIN_WIDTH))
+        page_section(SettingsPage::Appearance),
+        Some(Section::Appearance)
+    );
+    assert_eq!(page_section(SettingsPage::Window), Some(Section::Window));
+    assert_eq!(page_section(SettingsPage::Tabs), Some(Section::Tabs));
+    assert_eq!(
+        page_section(SettingsPage::StatusBar),
+        Some(Section::StatusBar)
     );
     assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(Some(600)).clamped(),
-        PlannedWrite::SettingsDrawerWidth(Some(600))
+        page_section(SettingsPage::Dropdown),
+        Some(Section::Dropdown)
     );
     assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(None).clamped(),
-        PlannedWrite::SettingsDrawerWidth(None)
-    );
-}
-
-#[test]
-fn drawer_drag_targets_the_pointer_absolutely() {
-    // Criterion 2: the pane is pinned to the surface's right
-    // edge, so the drag's width is the pointer's window-absolute
-    // distance from that edge — rounded to whole px, clamped
-    // through the same policy as render, so a live drag can
-    // never leave the band either.
-    assert_eq!(drawer_drag_px(1440.0, 2000.0), 560);
-    // Sub-px motion rounds, it doesn't tear.
-    assert_eq!(drawer_drag_px(1440.4, 2000.0), 560);
-    assert_eq!(drawer_drag_px(1439.6, 2000.0), 560);
-    // Beyond the cap (width 1100 > 1000) and below the floor
-    // (width 100) clamp exactly like render.
-    assert_eq!(drawer_drag_px(900.0, 2000.0), 1000);
-    assert_eq!(drawer_drag_px(1900.0, 2000.0), 344);
-    // A fling past the surface's right edge saturates low and
-    // floors — never negative, never a panic.
-    assert_eq!(drawer_drag_px(2100.0, 2000.0), 344);
-}
-
-#[test]
-fn drawer_release_commits_only_real_drags() {
-    // Criterion 3: one write per drag release — and no write at
-    // all without one. A plain click on the handle arms no live
-    // value; a drag that lands back on the stored px rewrites
-    // nothing (no file churn); only a real change persists.
-    assert_eq!(drawer_release_write(None, None), None);
-    assert_eq!(drawer_release_write(None, Some(480)), None);
-    assert_eq!(
-        drawer_release_write(Some(600), Some(600)),
-        None,
-        "dragged back to the stored width — no write"
+        page_section(SettingsPage::Terminal),
+        Some(Section::Terminal)
     );
     assert_eq!(
-        drawer_release_write(Some(600), None),
-        Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
+        page_section(SettingsPage::Advanced),
+        Some(Section::Advanced)
     );
-    assert_eq!(
-        drawer_release_write(Some(600), Some(500)),
-        Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
-    );
-}
-
-// --- the tab regrouping (settings-tabs ST-1) ---
-
-#[test]
-fn the_tabs_partition_every_section_exactly_once() {
-    // The tabs are a view-only regrouping (criterion 2): every
-    // Section appears in exactly one tab, the union is
-    // Section::ALL, and each tab's display order is pinned so
-    // the page composition cannot silently reshuffle. The
-    // Profiles and Keybindings tabs host no Section card — their
-    // pages are the manager and the editor.
-    assert_eq!(
-        tab_sections(SettingsTab::Appearance),
-        &[Section::Appearance, Section::Window]
-    );
-    assert_eq!(
-        tab_sections(SettingsTab::Behavior),
-        &[
-            Section::Tabs,
-            Section::StatusBar,
-            Section::Dropdown,
-            Section::Terminal,
-        ]
-    );
-    assert_eq!(tab_sections(SettingsTab::Profiles), &[]);
-    assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
-    assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
-    let across_tabs: Vec<Section> = SettingsTab::ALL
+    assert_eq!(page_section(SettingsPage::Profiles), None);
+    assert_eq!(page_section(SettingsPage::Keybindings), None);
+    let across_pages: Vec<Section> = SettingsPage::ALL
         .iter()
-        .flat_map(|tab| tab_sections(*tab).iter().copied())
+        .filter_map(|page| page_section(*page))
         .collect();
-    assert_eq!(across_tabs.len(), Section::ALL.len());
+    assert_eq!(across_pages.len(), Section::ALL.len());
     for section in Section::ALL {
         assert_eq!(
-            across_tabs
+            across_pages
                 .iter()
                 .filter(|listed| **listed == section)
                 .count(),
             1,
-            "{section:?} must appear in exactly one tab"
+            "{section:?} must appear in exactly one page"
         );
     }
 }
 
 #[test]
-fn tab_headers_are_the_strip_labels() {
-    // Hardcoded English like every label in this drawer — no
-    // fluent/i18n in this repo.
-    assert_eq!(tab_header(SettingsTab::Appearance), "Appearance");
-    assert_eq!(tab_header(SettingsTab::Behavior), "Behavior");
-    assert_eq!(tab_header(SettingsTab::Profiles), "Profiles");
-    assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
-    assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
+    // The sidebar's two headers: the seven section pages in page
+    // order under Terminal, then the two manager pages under
+    // "Profiles & keys". The flattened list is ALL — the page
+    // order the palette's Settings rows follow.
+    assert_eq!(
+        NAV_GROUPS,
+        [
+            (
+                "Terminal",
+                &[
+                    SettingsPage::Appearance,
+                    SettingsPage::Window,
+                    SettingsPage::Tabs,
+                    SettingsPage::StatusBar,
+                    SettingsPage::Dropdown,
+                    SettingsPage::Terminal,
+                    SettingsPage::Advanced,
+                ][..],
+            ),
+            (
+                "Profiles & keys",
+                &[SettingsPage::Profiles, SettingsPage::Keybindings][..],
+            ),
+        ]
+    );
+    let flattened: Vec<SettingsPage> = NAV_GROUPS
+        .iter()
+        .flat_map(|(_, pages)| pages.iter().copied())
+        .collect();
+    assert_eq!(flattened, SettingsPage::ALL);
 }
 
-// --- the drawer's lifecycle transitions (settings-drawer T3) ---
+#[test]
+fn page_group_names_the_header_each_page_sits_under() {
+    // The per-page view of NAV_GROUPS: one lookup, no second copy
+    // of the grouping.
+    for (header, pages) in NAV_GROUPS {
+        for page in pages {
+            assert_eq!(page_group(*page), header, "{page:?}'s group");
+        }
+    }
+}
 
 #[test]
-fn an_explicit_drawer_close_clears_the_buffer_for_a_fresh_reopen() {
-    // Criterion 8's close rule: Escape, the repeat toggle, and
-    // the Close button are explicit closes — the next open
-    // renders purely from config, the reopen-fresh rule the
-    // settings window carried.
+fn page_titles_are_the_strip_labels() {
+    // The section pages title themselves after their section (the
+    // card's heading is the page's label); the two manager pages
+    // carry their own. Hardcoded English like every label here —
+    // no fluent/i18n in this repo.
+    assert_eq!(page_title(SettingsPage::Appearance), "Appearance");
+    assert_eq!(page_title(SettingsPage::Window), "Window");
+    assert_eq!(page_title(SettingsPage::Tabs), "Tabs");
+    assert_eq!(page_title(SettingsPage::StatusBar), "Status bar");
+    assert_eq!(page_title(SettingsPage::Dropdown), "Dropdown");
+    assert_eq!(page_title(SettingsPage::Terminal), "Terminal");
+    assert_eq!(page_title(SettingsPage::Advanced), "Advanced");
+    assert_eq!(page_title(SettingsPage::Profiles), "Profiles");
+    assert_eq!(page_title(SettingsPage::Keybindings), "Keybindings");
+}
+
+// --- the close's terminal effect (settings-window SW2) ---
+
+#[test]
+fn a_user_close_returns_the_terminal_and_a_supersede_returns_nothing() {
+    // The exclusive pair's response rule: the user closed the
+    // window — the title bar's ✕, Escape at the top layer, the
+    // settings chord inside the window — so the drop-down returns;
+    // the terminal's own re-show closed it, there is nothing to
+    // return.
+    assert_eq!(terminal_effect(CloseCause::User), TerminalEffect::Return);
+    assert_eq!(
+        terminal_effect(CloseCause::Superseded),
+        TerminalEffect::None
+    );
+}
+
+#[test]
+fn a_close_clears_the_buffer_for_a_fresh_reopen() {
+    // The close-clears rule the window carries: the buffer's own
+    // `clear` is the whole story — the next open renders purely
+    // from config, the reopen-fresh rule. A hide preserves by
+    // default: nothing runs, the drafts stand for the next show.
     let config = DropTermConfig::default();
     let mut buffer = SettingsBuffer::default();
     buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
     buffer.set_slider(ConfigKey::Opacity, 42.0);
-    buffer.apply_drawer_transition(DrawerTransition::ExplicitClose);
+    buffer.clear();
     assert_eq!(
         buffer.text(TextField::Shell, &config),
         config.shell.clone().unwrap_or_default()
@@ -196,18 +164,12 @@ fn an_explicit_drawer_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
-fn a_focus_loss_hide_preserves_drafts_for_the_next_show() {
-    // Criterion 8's hide rule: the surface hiding — focus loss
-    // or an explicit hide, whatever re-shows later — never
-    // touches the drawer's state; the next show renders the
-    // drawer exactly as it was, drafts intact.
-    let config = DropTermConfig::default();
-    let mut buffer = SettingsBuffer::default();
-    buffer.set_text(TextField::Shell, "/bin/tcsh".to_string());
-    buffer.set_slider(ConfigKey::Opacity, 42.0);
-    buffer.apply_drawer_transition(DrawerTransition::FocusLossHide);
-    assert_eq!(buffer.text(TextField::Shell, &config), "/bin/tcsh");
-    assert_eq!(buffer.slider_value(ConfigKey::Opacity, &config), 42.0);
+fn the_exactly_once_count_is_54() {
+    // The settings window's count (settings-window SW6): the two
+    // drawer keys retired, the section-hosted map sits at 54 — one
+    // planned-write variant per exposed key, each in exactly one
+    // section.
+    assert_eq!(section_keys().len(), 54);
 }
 
 #[test]
@@ -242,7 +204,6 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
         PlannedWrite::CloseConfirmationEnabled(true),
-        PlannedWrite::SettingsDrawerClickClose(true),
         PlannedWrite::DefaultCwd(None),
         PlannedWrite::Shell(String::new()),
         PlannedWrite::Args(Vec::new()),
@@ -342,10 +303,6 @@ fn key_names_match_the_config_file_fields() {
             ConfigKey::CloseConfirmationEnabled,
             "close_confirmation_enabled",
         ),
-        (
-            ConfigKey::SettingsDrawerClickClose,
-            "settings_drawer_click_close",
-        ),
         (ConfigKey::Shell, "shell"),
         (ConfigKey::Args, "args"),
         (ConfigKey::ScrollbackLines, "scrollback_lines"),
@@ -355,7 +312,6 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::ColorSchemeDark, "color_scheme_dark"),
         (ConfigKey::ColorSchemeLight, "color_scheme_light"),
         (ConfigKey::ThemePreference, "theme_preference"),
-        (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
         (ConfigKey::TabBarMinTabs, "tab_bar_min_tabs"),
         (ConfigKey::TabBarBorder, "tab_bar_border"),
         (ConfigKey::StatusBarBorder, "status_bar_border"),
@@ -417,49 +373,6 @@ fn planned_writes_clamp_the_ranged_keys_and_pass_others_through() {
     assert_eq!(unchanged.clamped(), unchanged);
     let enum_key = PlannedWrite::TabPosition(TabPosition::Bottom);
     assert_eq!(enum_key.clamped(), enum_key);
-}
-
-#[test]
-fn a_bare_height_write_cancels_a_pending_drag_write_back() {
-    assert!(bare_write_cancels_pending_drag(
-        ConfigKey::HeightPercent,
-        true
-    ));
-}
-
-#[test]
-fn a_bare_write_without_a_pending_drag_write_cancels_nothing() {
-    assert!(!bare_write_cancels_pending_drag(
-        ConfigKey::HeightPercent,
-        false
-    ));
-}
-
-#[test]
-fn a_bare_write_of_a_non_geometry_key_never_touches_pending_drag_state() {
-    for key in [
-        ConfigKey::FontName,
-        ConfigKey::Opacity,
-        ConfigKey::SlideAnimationEnabled,
-    ] {
-        assert!(
-            !bare_write_cancels_pending_drag(key, true),
-            "{} must not cancel a pending height write",
-            key.key_name()
-        );
-    }
-}
-
-#[test]
-fn a_bare_width_write_leaves_a_pending_height_settle_alone() {
-    // Width is a geometry key but not *the drag's* key: the race
-    // rule cancels per key ("for the same key"), so moving the
-    // width slider while a height settle is debouncing does not
-    // drop it — the settle still lands.
-    assert!(!bare_write_cancels_pending_drag(
-        ConfigKey::WidthPercent,
-        true
-    ));
 }
 
 // --- parsing, timing copy, and buffer semantics ---
@@ -1038,17 +951,13 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
 }
 
 #[test]
-fn the_dropdown_card_hosts_the_dropdown_mechanics_and_click_close() {
-    // The Dropdown card: the drop-down's own mechanics — the
-    // focus-loss hide and the slide — plus the drawer's click-close
-    // row, un-parked by the veil-less drawer revisit.
+fn the_dropdown_card_hosts_the_dropdown_mechanics() {
+    // The Dropdown page: the drop-down's own mechanics — the
+    // focus-loss hide and the slide. The drawer's click-close row
+    // retired with the drawer (settings-window SW6).
     assert_eq!(
         Section::Dropdown.keys(),
-        &[
-            ConfigKey::HideOnFocusLoss,
-            ConfigKey::SlideAnimationEnabled,
-            ConfigKey::SettingsDrawerClickClose,
-        ]
+        &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled]
     );
 }
 
@@ -1062,15 +971,9 @@ fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_thirteen
     // "Show …" row per segment — each under its exact file spelling,
     // each flipping through the single planned-write path, all Live.
     assert_eq!(
-        SettingsTab::Behavior,
-        SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
-    );
-    assert_eq!(
-        tab_sections(SettingsTab::Behavior)
-            .iter()
-            .position(|section| matches!(section, Section::StatusBar)),
-        Some(1),
-        "the Status bar card sits directly after Tabs on Behavior"
+        page_section(SettingsPage::StatusBar),
+        Some(Section::StatusBar),
+        "the Status bar page hosts its section outright"
     );
     assert_eq!(
         Section::StatusBar.keys(),
@@ -2272,7 +2175,7 @@ fn typing_into_a_draft_field_clears_the_stale_error() {
 
 #[test]
 fn a_focus_loss_hide_preserves_the_profile_draft_and_its_text() {
-    // The DrawerTransition rule, page-local half: a hide keeps
+    // The close-clears/hide-preserves rule, page-local half: a hide keeps
     // the open draft and its buffered text for the next show.
     let mut draft = Some(ProfileDraft::add());
     draft.as_mut().unwrap().name = "half-typed".to_string();
@@ -3337,64 +3240,4 @@ fn the_blur_decision_commits_valid_and_reverts_invalid() {
         blur_decision(TextField::ScrollbackLines, "lots", "5000"),
         BlurDecision::Revert
     );
-}
-
-// --- the section cards' accordion ---
-
-#[test]
-fn a_fresh_accordion_expands_every_section() {
-    // The drawer never opens with anything hidden: the default
-    // state expands all seven cards, whatever page later shows
-    // them.
-    let state = AccordionState::default();
-    for section in Section::ALL {
-        assert!(state.is_expanded(section), "{section:?} starts collapsed");
-    }
-}
-
-#[test]
-fn collapsing_one_card_leaves_the_others_alone() {
-    // Sections are independent — the page regrouping can never
-    // couple two cards, so folding Terminal leaves its page
-    // neighbours (Tabs, Dropdown) standing.
-    let mut state = AccordionState::default();
-    state.set_expanded(Section::Terminal, false);
-    assert!(!state.is_expanded(Section::Terminal));
-    for section in Section::ALL {
-        if section != Section::Terminal {
-            assert!(
-                state.is_expanded(section),
-                "{section:?} followed Terminal down"
-            );
-        }
-    }
-}
-
-#[test]
-fn unfolding_restores_a_card_and_stays_idempotent() {
-    let mut state = AccordionState::default();
-    state.set_expanded(Section::StatusBar, false);
-    state.set_expanded(Section::StatusBar, false);
-    assert!(!state.is_expanded(Section::StatusBar));
-    // One unfold reopens, and repeats change nothing further.
-    state.set_expanded(Section::StatusBar, true);
-    assert!(state.is_expanded(Section::StatusBar));
-    state.set_expanded(Section::StatusBar, true);
-    assert!(state.is_expanded(Section::StatusBar));
-}
-
-#[test]
-fn every_section_of_every_tab_toggles_through_the_model() {
-    // The rendering face reads exactly this query per card — walk
-    // the whole tab partition through fold and unfold once, so a
-    // section the model cannot express cannot render either.
-    for tab in SettingsTab::ALL {
-        for section in tab_sections(tab) {
-            let mut state = AccordionState::default();
-            state.set_expanded(*section, false);
-            assert!(!state.is_expanded(*section), "{section:?} will not fold");
-            state.set_expanded(*section, true);
-            assert!(state.is_expanded(*section), "{section:?} will not unfold");
-        }
-    }
 }

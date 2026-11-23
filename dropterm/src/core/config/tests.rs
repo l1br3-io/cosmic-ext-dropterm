@@ -55,6 +55,36 @@ fn load_config(dir: &TempDir) -> DropTermConfig {
 }
 
 #[test]
+fn a_config_file_with_a_retired_drawer_line_still_loads() {
+    // The settings window's removal of the two drawer keys
+    // (settings-window SW6): a config file that still carries either
+    // retired line keeps loading, every other value intact —
+    // `#[serde(default)]` with no `deny_unknown_fields` ignores the
+    // stale lines, so an upgrade never resets a user's settings.
+    let dir = TempDir::new("retired-drawer-lines");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        r"(
+    height_percent: 55,
+    opacity: 80,
+    settings_drawer_width: Some(500),
+    settings_drawer_click_close: false,
+    scrollback_lines: 12_345,
+)",
+    );
+    let config = load_config(&dir);
+    assert_eq!(config.height_percent, 55);
+    assert_eq!(config.opacity, 80);
+    assert_eq!(config.scrollback_lines, 12_345);
+    // The retired lines themselves cannot assert: the fields are
+    // gone. That the load succeeds at all is the pin — a parser
+    // that rejected unknown fields would fail right here, and the
+    // research pass's hazard (a strict reader falling back to an
+    // empty map) is exactly what this refuses to be.
+}
+
+#[test]
 fn a_partial_settings_section_loads_missing_keys_as_defaults() {
     // The section file's whole contract: keys the file lists are
     // honored, keys it lacks land on their defaults — the per-key
@@ -169,10 +199,6 @@ fn defaults_are_sane() {
     assert_eq!(config.opacity, 100);
     assert!(config.hide_on_focus_loss);
     assert!(config.respect_panel);
-    // Never dragged: the drawer renders its built-in default
-    // width (drawer-resize spec criterion 1) until the first
-    // drag release stores a px value.
-    assert!(config.settings_drawer_width.is_none());
 }
 
 #[test]
@@ -319,50 +345,6 @@ fn close_confirmation_key_on_disk_is_honored() {
 
     let loaded = load_config(&dir);
     assert!(!loaded.close_confirmation_enabled);
-}
-
-#[test]
-fn drawer_click_close_defaults_to_on() {
-    // Drawer-click-close criterion 5: the gesture ships enabled —
-    // a fresh config dismisses the drawer on a terminal click
-    // without any opt-in. The Behavior toggle turns it off.
-    assert!(DropTermConfig::default().settings_drawer_click_close);
-}
-
-#[test]
-fn missing_settings_drawer_click_close_key_loads_as_true() {
-    // A settings section from a version that did not yet write
-    // `settings_drawer_click_close` loads as `true` through the
-    // same missing-key leniency pinned for
-    // `close_confirmation_enabled` — existing users get the
-    // gesture on (criterion 5); the key list is additive.
-    let dir = TempDir::new("missing-drawerclick-key");
-    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
-
-    let loaded = load_config(&dir);
-    assert!(loaded.settings_drawer_click_close);
-    // The file is live, not ignored: the written key comes back.
-    assert_eq!(loaded.height_percent, 70);
-}
-
-#[test]
-fn settings_drawer_click_close_key_on_disk_is_honored() {
-    // Control for
-    // `missing_settings_drawer_click_close_key_loads_as_true`: the
-    // same read path honors a key that does exist (the toggle off
-    // persists), so the leniency result above cannot be a vacuous
-    // pass.
-    let dir = TempDir::new("present-drawerclick-key");
-    save_sections(
-        &dir,
-        &DropTermConfig {
-            settings_drawer_click_close: false,
-            ..DropTermConfig::default()
-        },
-    );
-
-    let loaded = load_config(&dir);
-    assert!(!loaded.settings_drawer_click_close);
 }
 
 #[test]
@@ -1562,7 +1544,7 @@ fn the_dock_presence_mechanism_stays_out_of_the_source() {
         "src/app_shell.rs",
         "src/core/settings.rs",
         "src/core/config.rs",
-        "src/drawer.rs",
+        "src/settings.rs",
     ] {
         assert!(
             sources.iter().any(|(path, _)| path == carrier),

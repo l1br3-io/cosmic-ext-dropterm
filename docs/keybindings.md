@@ -1,6 +1,6 @@
 # Keybindings
 
-Every app-level shortcut and its default chords, in the same groups the settings drawer's editor uses; each row names the action's config id (the `custom_key_binds` vocabulary).
+Every app-level shortcut and its default chords, in the same groups the Settings window's editor uses; each row names the action's config id (the `custom_key_binds` vocabulary).
 
 ## The defaults
 
@@ -48,6 +48,6 @@ The zoom chords come in Shift-optional pairs because matching is exact on modifi
 
 ## Customizing
 
-One binding per action, set in the [settings drawer](settings.md#keybindings-tab)'s editor (two-press capture: arm, then press the chord - a chord another action holds is refused with the holder named) or hand-edited in the config file ([configuration](configuration.md#keybindings)). A custom binding replaces *all* of that action's default chords; removing the entry reverts to the defaults. A committed rebind applies to the very next key press, no restart.
+One binding per action, set in the [Settings window](settings.md#keybindings-page)'s editor (two-press capture: arm, then press the chord - a chord another action holds is refused with the holder named) or hand-edited in the config file ([configuration](configuration.md#keybindings)). A custom binding replaces *all* of that action's default chords; removing the entry reverts to the defaults. A committed rebind applies to the very next key press, no restart.
 
 A [script command](script-commands.md) a plugin registered binds through the same editor: its row appears under a **Script commands** section while the command is live, ships unbound, and stores its chord under the `script/<name>` key - a stored binding for a command whose script is gone stays in the file, inert, and the row returns when the command registers again.

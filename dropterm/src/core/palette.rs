@@ -16,7 +16,7 @@
 
 use crate::core::keybinds::{Binding, binding_rows, effective_binding};
 use crate::core::profile::Profile;
-use crate::core::settings::{SettingsTab, tab_header};
+use crate::core::settings::{SettingsPage, page_title};
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
@@ -78,8 +78,8 @@ pub enum Verb {
     /// funnel's own input, so a dead index (its tab died while the
     /// palette stood open) resolves to the funnel's `None` no-op.
     SelectTab(usize),
-    /// Open the settings drawer at this page.
-    OpenSettings(SettingsTab),
+    /// Open settings at this page.
+    OpenSettings(SettingsPage),
     /// Apply the named merged-registry scheme to the picker slot
     /// matching the resolved theme mode — the pickers' own rule
     /// (theming's per-mode pairing).
@@ -124,7 +124,7 @@ pub fn compose(
             + 2
             + profiles.len() * 2
             + tab_titles.len()
-            + SettingsTab::ALL.len()
+            + SettingsPage::ALL.len()
             + scheme_names.len()
             + extra.len(),
     );
@@ -197,15 +197,15 @@ pub fn compose(
             verb: Verb::SelectTab(one_based),
         });
     }
-    // 5. One row per settings page, in strip order, opening the
-    //    drawer at that page.
-    for tab in SettingsTab::ALL {
+    // 5. One row per settings page, in page order, opening
+    //    settings at that page.
+    for page in SettingsPage::ALL {
         commands.push(Command {
-            id: format!("settings:{}", tab_header(tab).to_lowercase()),
-            label: format!("Settings: {}", tab_header(tab)),
+            id: format!("settings:{}", page_title(page).to_lowercase()),
+            label: format!("Settings: {}", page_title(page)),
             section: Section::Settings,
             chord: None,
-            verb: Verb::OpenSettings(tab),
+            verb: Verb::OpenSettings(page),
         });
     }
     // 6. One row per merged-registry scheme, applying live to the
@@ -414,25 +414,25 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_rows_cover_every_page_in_strip_order() {
+    fn the_settings_rows_cover_every_page_in_page_order() {
         let catalog = catalog();
         let settings: Vec<&Command> = catalog
             .iter()
             .filter(|command| command.id.starts_with("settings:"))
             .collect();
-        let expected: Vec<(&str, &str)> = SettingsTab::ALL
+        let expected: Vec<&str> = SettingsPage::ALL
             .iter()
-            .map(|tab| (tab_header(*tab), tab_header(*tab)))
+            .map(|page| page_title(*page))
             .collect();
         assert_eq!(settings.len(), expected.len(), "one row per page");
-        for (row, (header, _)) in settings.iter().zip(&expected) {
-            assert_eq!(row.label, format!("Settings: {header}"));
+        for (row, title) in settings.iter().zip(&expected) {
+            assert_eq!(row.label, format!("Settings: {title}"));
         }
-        // The verb carries the core vocabulary the drawer's seam
+        // The verb carries the core vocabulary the window's seam
         // consumes.
         assert_eq!(
-            settings[3].verb,
-            Verb::OpenSettings(SettingsTab::Keybindings)
+            settings[8].verb,
+            Verb::OpenSettings(SettingsPage::Keybindings)
         );
     }
 

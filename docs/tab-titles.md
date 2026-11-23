@@ -10,7 +10,7 @@ dropterm.tab_title(function(p)
 end)
 ```
 
-switched on with the `script` title mode (the settings drawer's Tabs card, or the [`tab_title_mode` key](configuration.md#tab-titles)), gives every tab either its shell's own OSC title or `shell` - a plain shell that never titles reads as `shell`. The [plugins page](plugins.md) covers the runtime these scripts run on - the lazy host, hot reload, the timeout machinery - and the trust model stated plainly: a plugin is your own config executing as you, complete standard library, no sandbox.
+switched on with the `script` title mode (the Settings window's Tabs page, or the [`tab_title_mode` key](configuration.md#tab-titles)), gives every tab either its shell's own OSC title or `shell` - a plain shell that never titles reads as `shell`. The [plugins page](plugins.md) covers the runtime these scripts run on - the lazy host, hot reload, the timeout machinery - and the trust model stated plainly: a plugin is your own config executing as you, complete standard library, no sandbox.
 
 ## The provider contract
 
