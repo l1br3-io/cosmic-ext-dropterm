@@ -2511,15 +2511,77 @@ impl Terminal {
     }
 
     /// One menu-scoped press (suggest-menu spec): the pure
-    /// transition, with an accept's suffix written straight through
-    /// the one funnel — typed characters via `input_no_scroll`,
-    /// never a paste.
+    /// transition, with an accept's or a fill's suffix written
+    /// straight through the one funnel — typed characters via
+    /// `input_no_scroll`, never a paste. The typed segment the Tab
+    /// fill and the Enter equality read is scraped at key-press
+    /// frequency (never per frame), the same carve
+    /// [`Self::menu_candidates`] performs; an equal line's Execute
+    /// writes nothing — the caller forwards the Enter bytes through
+    /// the normal handler.
     pub fn menu_press(&mut self, key: suggest::MenuKey) {
-        if let Some(suffix) = self.menu.press(key)
-            && !suffix.is_empty()
-        {
-            self.input_no_scroll(suffix.into_bytes());
+        let typed = {
+            let (before_cursor, ..) = self.scrape_cursor_line();
+            self.suggest
+                .typed_segment(&before_cursor)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        match self.menu.press(key, &typed) {
+            suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
+                self.input_no_scroll(suffix.into_bytes());
+            }
+            _ => {}
         }
+    }
+
+    /// The cursor line's reduced facts (suggest-menu spec): the
+    /// before-cursor text (wide spacers skipped, tabs flattened,
+    /// zero-width runs carried), the after-cursor blank fact, the
+    /// display offset, and the geometry — one scrape under the term
+    /// lock, the shape [`Self::menu_candidates`] and the menu
+    /// presses both read at key-press frequency.
+    fn scrape_cursor_line(&self) -> (String, bool, usize, usize, usize) {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let cursor = grid.cursor.point;
+        let columns = grid.columns();
+        let row = &grid[cursor.line];
+        let mut before_cursor = String::new();
+        let mut after_cursor_blank = true;
+        for column in 0..columns {
+            let cell = &row[Column(column)];
+            if Column(column) < cursor.column {
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                before_cursor.push(match cell.c {
+                    '\t' => ' ',
+                    c => c,
+                });
+                if let Some(zerowidth) = cell.zerowidth() {
+                    for &c in zerowidth {
+                        before_cursor.push(c);
+                    }
+                }
+            } else {
+                let blank = cell.c == ' '
+                    && !cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                    && cell.zerowidth().is_none();
+                if !blank {
+                    after_cursor_blank = false;
+                }
+            }
+        }
+        (
+            before_cursor,
+            after_cursor_blank,
+            grid.display_offset(),
+            columns,
+            cursor.column.0,
+        )
     }
 
     /// The menu's candidate collection (suggest-menu spec): a fresh
@@ -2536,48 +2598,8 @@ impl Terminal {
         if self.foreground_child_running() {
             return Vec::new();
         }
-        let (before_cursor, after_cursor_blank, display_offset, columns, cursor_column) = {
-            let term = self.term.lock();
-            let grid = term.grid();
-            let cursor = grid.cursor.point;
-            let columns = grid.columns();
-            let row = &grid[cursor.line];
-            let mut before_cursor = String::new();
-            let mut after_cursor_blank = true;
-            for column in 0..columns {
-                let cell = &row[Column(column)];
-                if Column(column) < cursor.column {
-                    if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                        continue;
-                    }
-                    before_cursor.push(match cell.c {
-                        '\t' => ' ',
-                        c => c,
-                    });
-                    if let Some(zerowidth) = cell.zerowidth() {
-                        for &c in zerowidth {
-                            before_cursor.push(c);
-                        }
-                    }
-                } else {
-                    let blank = cell.c == ' '
-                        && !cell
-                            .flags
-                            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                        && cell.zerowidth().is_none();
-                    if !blank {
-                        after_cursor_blank = false;
-                    }
-                }
-            }
-            (
-                before_cursor,
-                after_cursor_blank,
-                grid.display_offset(),
-                columns,
-                cursor.column.0,
-            )
-        };
+        let (before_cursor, after_cursor_blank, display_offset, columns, cursor_column) =
+            self.scrape_cursor_line();
         if display_offset != 0 {
             return Vec::new();
         }

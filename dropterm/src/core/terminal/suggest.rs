@@ -587,6 +587,24 @@ fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
     &first[..end]
 }
 
+/// The longest prefix every label in the set shares, cut on a char
+/// boundary — case-sensitive by construction, empty for an empty
+/// set. Tab's fill (suggest-parity spec) computes it over the
+/// token-prefix rows.
+fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
+    let Some(first) = labels.first() else {
+        return "";
+    };
+    let mut lcp = *first;
+    for label in &labels[1..] {
+        lcp = shared_prefix(lcp, label);
+        if lcp.is_empty() {
+            break;
+        }
+    }
+    lcp
+}
+
 /// The command-name provider's candidate function (command-catalog
 /// spec): complete the command word at the command position from the
 /// spawn-time PATH snapshot — among names with the typed word as a
@@ -1705,15 +1723,43 @@ pub const MENU_VISIBLE_ROWS: usize = 8;
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —
-/// Up/Down navigate, Tab/Enter accept — and every press it does not
-/// claim arrives as [`MenuKey::Other`], whose transition closes the
-/// menu before the press flows on through the normal handler.
+/// Up/Down navigate, Tab fills-or-cycles (suggest-parity spec's
+/// `input_tab`), Enter accepts — and every press it does not claim
+/// arrives as [`MenuKey::Other`], whose transition closes the menu
+/// before the press flows on through the normal handler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKey {
     Up,
     Down,
+    /// Tab while the menu shows: the fill-else-cycle (Warp's
+    /// `input_tab`, suggest-parity spec) over the typed token.
+    Tab,
     Accept,
     Other,
+}
+
+/// One menu-scoped press's outcome (suggest-parity spec): the
+/// model's whole answer, replacing the bare `Option<String>` —
+/// nothing happened, the exact bytes an accept or fill writes, or
+/// the equal-line Execute: close, write nothing, the caller
+/// forwards the Enter bytes through the normal handler so the
+/// command runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MenuOutcome {
+    /// Navigation, a close, or a press on a closed menu: nothing to
+    /// write, nothing to forward.
+    Noop,
+    /// The exact escaped bytes `Terminal::input_no_scroll` writes —
+    /// the accept funnel's shape, unchanged.
+    Accepted {
+        /// The suffix the typed line gains.
+        suffix: String,
+    },
+    /// The typed line already equals the selection (Warp's
+    /// two-stage Enter): the menu closed, nothing was written, and
+    /// the Enter bytes must reach the shell through the normal
+    /// handler.
+    Execute,
 }
 
 /// The completion menu's state (suggest-menu spec): the open fact,
@@ -1807,53 +1853,118 @@ impl MenuState {
         self.scroll = 0;
     }
 
-    /// One menu-scoped press's transition: navigate, accept (the
-    /// exact suffix string an accept writes), or close on any other
-    /// key. A closed menu answers `None` to everything and stays
-    /// closed.
-    pub(crate) fn press(&mut self, key: MenuKey) -> Option<String> {
+    /// One menu-scoped press's transition: navigate, Tab's
+    /// fill-else-cycle, accept, or close on any other key. `typed`
+    /// is the line's typed segment — the anchor-stripped
+    /// before-cursor text — which Tab's fill and the Enter equality
+    /// read. A closed menu answers [`MenuOutcome::Noop`] to
+    /// everything and stays closed.
+    pub(crate) fn press(&mut self, key: MenuKey, typed: &str) -> MenuOutcome {
         if !self.open {
-            return None;
+            return MenuOutcome::Noop;
         }
         match key {
             MenuKey::Up => {
                 self.move_up();
-                None
+                MenuOutcome::Noop
             }
             MenuKey::Down => {
                 self.move_down();
-                None
+                MenuOutcome::Noop
             }
-            MenuKey::Accept => self.accept(),
+            MenuKey::Tab => self.fill_or_cycle(typed),
+            MenuKey::Accept => {
+                if self.selected_equals(typed) {
+                    self.close();
+                    MenuOutcome::Execute
+                } else {
+                    self.accept()
+                }
+            }
             MenuKey::Other => {
                 self.close();
-                None
+                MenuOutcome::Noop
             }
         }
+    }
+
+    /// Tab's fill-else-cycle (Warp's `input_tab`, suggest-parity
+    /// spec): over the rows whose labels carry the typed token as a
+    /// case-sensitive prefix, the longest common prefix fills when
+    /// it extends the token — the single remaining row closes the
+    /// menu after its fill — otherwise the selection cycles down.
+    fn fill_or_cycle(&mut self, typed: &str) -> MenuOutcome {
+        let token = trailing_token(typed);
+        let labels: Vec<&str> = self
+            .rows
+            .iter()
+            .filter(|row| row.label.starts_with(token))
+            .map(|row| row.label.as_str())
+            .collect();
+        let lcp = longest_common_prefix(&labels);
+        if lcp.len() > token.len() {
+            let suffix = lcp[token.len()..].to_string();
+            if labels.len() == 1 {
+                self.close();
+            }
+            MenuOutcome::Accepted { suffix }
+        } else {
+            self.move_down();
+            MenuOutcome::Noop
+        }
+    }
+
+    /// Whether the typed line already equals the selected row's
+    /// label — Warp's two-stage Enter's stage check, the
+    /// directory-slash rule tolerated (`dir` against a selected
+    /// `dir/` is equal too). `pub(crate)` so the engine can answer
+    /// the routing layer's pre-check without reaching into the rows.
+    pub(crate) fn selected_equals(&self, typed: &str) -> bool {
+        let Some(row) = self.rows.get(self.selected) else {
+            return false;
+        };
+        let label = row.label.as_str();
+        typed == label || label.strip_suffix('/') == Some(typed)
     }
 
     /// Takes the selected row's suffix and closes: the exact string
     /// `Terminal::input_no_scroll` writes — the label, the
     /// description, the provenance never reach the PTY.
-    fn accept(&mut self) -> Option<String> {
-        let suffix = self.rows.get(self.selected).map(|row| row.suffix.clone());
+    fn accept(&mut self) -> MenuOutcome {
+        let suffix = self
+            .rows
+            .get(self.selected)
+            .map(|row| row.suffix.clone())
+            .unwrap_or_default();
         self.close();
-        suffix
+        MenuOutcome::Accepted { suffix }
     }
 
-    /// Moves the selection up one row, clamping at the top, the
-    /// scroll window following so the selection stays visible.
+    /// Moves the selection up one row, wrapping from the first to
+    /// the last (Warp's `cycle = true`, suggest-parity spec), the
+    /// scroll window following so the selection stays visible. An
+    /// empty menu declines.
     fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 {
+            self.rows.len() - 1
+        } else {
+            self.selected - 1
+        };
         self.follow_scroll();
     }
 
-    /// Moves the selection down one row, clamping at the last, the
-    /// scroll window following so the selection stays visible.
+    /// Moves the selection down one row, wrapping from the last to
+    /// the first (Warp's `cycle = true`, suggest-parity spec), the
+    /// scroll window following so the selection stays visible. An
+    /// empty menu declines.
     fn move_down(&mut self) {
-        if self.selected + 1 < self.rows.len() {
-            self.selected += 1;
+        if self.rows.is_empty() {
+            return;
         }
+        self.selected = (self.selected + 1) % self.rows.len();
         self.follow_scroll();
     }
 

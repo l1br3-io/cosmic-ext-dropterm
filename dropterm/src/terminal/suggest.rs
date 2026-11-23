@@ -61,7 +61,8 @@ pub(crate) fn menu_routing(
         match key {
             "up" => return Some(MenuRouting::Consume(MenuKey::Up)),
             "down" => return Some(MenuRouting::Consume(MenuKey::Down)),
-            "tab" | "enter" => return Some(MenuRouting::Consume(MenuKey::Accept)),
+            "tab" => return Some(MenuRouting::Consume(MenuKey::Tab)),
+            "enter" => return Some(MenuRouting::Consume(MenuKey::Accept)),
             "escape" => return Some(MenuRouting::Consume(MenuKey::Other)),
             _ => {}
         }
@@ -243,7 +244,7 @@ mod tests {
         );
         assert_eq!(
             menu_routing("tab", bare(), true, false),
-            Some(MenuRouting::Consume(MenuKey::Accept))
+            Some(MenuRouting::Consume(MenuKey::Tab))
         );
         assert_eq!(
             menu_routing("enter", bare(), true, false),

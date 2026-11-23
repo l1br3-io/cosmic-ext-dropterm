@@ -2755,12 +2755,11 @@ fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
 }
 
 #[test]
-fn move_clamps_at_the_edges_and_the_scroll_window_follows() {
-    // Ten rows over the eight-row budget (OQ-2, locked): walking
-    // past the bottom clamps at the last row while the scroll
-    // window follows (the selection always visible), and walking
-    // past the top clamps at the first with the window back at the
-    // top.
+fn move_wraps_at_both_ends_and_the_scroll_window_follows() {
+    // Warp's completions menu cycles (suggest-parity spec, its
+    // `cycle = true`): up from the first row lands on the last, down
+    // from the last lands on the first — the clamp is gone — and
+    // the scroll window follows so the selection stays visible.
     let rows: Vec<MenuCandidate> = (0..10)
         .map(|i| MenuCandidate {
             label: format!("row-{i}"),
@@ -2771,32 +2770,60 @@ fn move_clamps_at_the_edges_and_the_scroll_window_follows() {
         .collect();
     let mut menu = MenuState::new();
     menu.open(rows);
-    for _ in 0..12 {
-        menu.press(MenuKey::Down);
-    }
-    assert_eq!(menu.selected(), 9, "clamped at the last row");
+    menu.press(MenuKey::Up, "");
+    assert_eq!(menu.selected(), 9, "up from the first wraps to the last");
     assert_eq!(menu.scroll(), 2, "the window follows: rows 2..10 visible");
+    menu.press(MenuKey::Down, "");
+    assert_eq!(menu.selected(), 0, "down from the last wraps to the first");
+    assert_eq!(menu.scroll(), 0);
     for _ in 0..12 {
-        menu.press(MenuKey::Up);
+        menu.press(MenuKey::Down, "");
+    }
+    assert_eq!(menu.selected(), 2, "a longer walk cycles: 12 mod 10");
+    assert_eq!(
+        menu.scroll(),
+        0,
+        "a mid-list selection keeps the window at the top"
+    );
+    for _ in 0..12 {
+        menu.press(MenuKey::Up, "");
     }
     assert_eq!(menu.selected(), 0);
     assert_eq!(menu.scroll(), 0);
 }
 
 #[test]
+fn an_empty_menu_declines_navigation() {
+    // The empty-menu decline (suggest-parity spec): a spent menu —
+    // open implies non-empty rows, so only a closed one carries an
+    // empty set — answers Noop to every navigation and stays closed.
+    let mut menu = MenuState::new();
+    menu.press(MenuKey::Up, "");
+    menu.press(MenuKey::Down, "");
+    assert!(!menu.is_open());
+    assert_eq!(menu.selected(), 0);
+    assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
 fn accept_returns_only_the_selected_suffix_then_closes() {
-    // The accept's whole payload is the suffix string — the exact
+    // The accept's whole payload is the outcome's suffix — the exact
     // bytes input_no_scroll writes; the label never reaches the
     // PTY. After the accept the menu is closed and spent.
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("git status", "atus"), ("stash", "ash")]));
-    menu.press(MenuKey::Down);
-    assert_eq!(menu.press(MenuKey::Accept).as_deref(), Some("ash"));
+    menu.press(MenuKey::Down, "");
+    assert_eq!(
+        menu.press(MenuKey::Accept, "git st"),
+        MenuOutcome::Accepted {
+            suffix: "ash".to_string()
+        }
+    );
     assert!(!menu.is_open());
     assert!(menu.rows().is_empty());
     assert_eq!(
-        menu.press(MenuKey::Accept),
-        None,
+        menu.press(MenuKey::Accept, "git st"),
+        MenuOutcome::Noop,
         "a closed menu accepts nothing"
     );
 }
@@ -2808,8 +2835,107 @@ fn any_other_key_closes_the_menu() {
     // through the normal handler (the widget's routing, Task 3).
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("stash", "ash")]));
-    assert_eq!(menu.press(MenuKey::Other), None);
+    assert_eq!(menu.press(MenuKey::Other, ""), MenuOutcome::Noop);
     assert!(!menu.is_open());
+}
+
+#[test]
+fn tab_fills_the_common_prefix_and_keeps_the_menu() {
+    // Warp's input_tab (suggest-parity spec): over the rows whose
+    // labels carry the typed token as a case-sensitive prefix, the
+    // longest common prefix fills when it extends the token — rows
+    // `git`/`gitk` over `gi` fill `t` — and the menu stays (two rows
+    // remain, the selection unchanged).
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git", "t"), ("gitk", "tk")]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "gi"),
+        MenuOutcome::Accepted {
+            suffix: "t".to_string()
+        }
+    );
+    assert!(menu.is_open(), "the fill keeps the menu");
+    assert_eq!(menu.selected(), 0, "the fill leaves the selection");
+}
+
+#[test]
+fn tab_over_a_single_row_fills_it_and_closes() {
+    // The single remaining row: the LCP is the label's whole
+    // remainder, so Tab fills it and closes the menu — Warp's
+    // single-insert resolve.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("gitk", "tk")]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "gi"),
+        MenuOutcome::Accepted {
+            suffix: "tk".to_string()
+        }
+    );
+    assert!(!menu.is_open(), "the single remaining row closes the menu");
+}
+
+#[test]
+fn tab_without_an_extending_prefix_cycles_down_instead() {
+    // Rows `git`/`gut` over `g`: the LCP is the token itself —
+    // nothing to fill — so Tab cycles the selection down one,
+    // wrapping, and the menu stays.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git", "it"), ("gut", "ut")]));
+    assert_eq!(menu.press(MenuKey::Tab, "g"), MenuOutcome::Noop);
+    assert_eq!(menu.selected(), 1, "the selection advanced one");
+    assert_eq!(menu.press(MenuKey::Tab, "g"), MenuOutcome::Noop);
+    assert_eq!(menu.selected(), 0, "the cycle wraps");
+    assert!(menu.is_open());
+}
+
+#[test]
+fn enter_on_an_equal_line_executes_instead_of_accepting() {
+    // Warp's two-stage Enter (suggest-parity spec): the typed line
+    // already equals the selection — nothing to write — so the press
+    // yields Execute: close, write nothing, the caller forwards the
+    // Enter bytes and the command runs. The directory-slash rule
+    // tolerates the trailing slash: `dir` against a selected `dir/`
+    // is equal too.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("git status", ""), ("other", "")]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "git status"),
+        MenuOutcome::Execute
+    );
+    assert!(!menu.is_open());
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("dir/", "/")]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "dir"),
+        MenuOutcome::Execute,
+        "the slash tolerance"
+    );
+    assert!(!menu.is_open());
+}
+
+#[test]
+fn selected_equals_is_the_slash_tolerant_line_check() {
+    // The routing layer's pre-check (suggest-parity spec): the
+    // engine answers "does the typed line already equal the
+    // selection" without reaching into the rows — the exact rule the
+    // two-stage Enter's Execute outcome rides, slash tolerance
+    // included, and only the selected row's label ever counts.
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[
+        ("git status", ""),
+        ("git status --short", " --short"),
+    ]));
+    assert!(menu.selected_equals("git status"));
+    assert!(
+        !menu.selected_equals("git status --short"),
+        "only the selected row's label counts"
+    );
+    menu.press(MenuKey::Down, "");
+    assert!(menu.selected_equals("git status --short"));
+    let mut menu = MenuState::new();
+    menu.open(menu_rows(&[("dir/", "/")]));
+    assert!(menu.selected_equals("dir"), "the slash tolerance");
+    assert!(!menu.selected_equals("dirt"), "a partial is not equal");
 }
 
 #[test]
