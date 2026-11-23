@@ -114,6 +114,39 @@ pub(crate) fn toggle_chord(
         .find_map(|(chord, action)| (action == TermAction::CommandPalette).then_some(chord))
 }
 
+/// The settings action's effective chord as gpui keystroke syntax
+/// (settings-window SW3): the window binds it at open, so the chord
+/// inside the window answers to exactly the press the pane's own
+/// effective map does, a `custom_key_binds` override included.
+/// `None` when the effective map lacks the action.
+pub(crate) fn settings_chord_keystroke(
+    custom_binds: &std::collections::BTreeMap<String, Binding>,
+) -> Option<String> {
+    effective_key_binds(custom_binds)
+        .into_iter()
+        .find_map(|(chord, action)| {
+            (action == TermAction::Settings).then(|| {
+                // gpui's keystroke syntax, built in the parser's own
+                // vocabulary (any modifier order parses).
+                let mut parts: Vec<&str> = Vec::new();
+                if chord.modifiers.control {
+                    parts.push("ctrl");
+                }
+                if chord.modifiers.alt {
+                    parts.push("alt");
+                }
+                if chord.modifiers.platform {
+                    parts.push("super");
+                }
+                if chord.modifiers.shift {
+                    parts.push("shift");
+                }
+                parts.push(chord.key.as_str());
+                parts.join("-")
+            })
+        })
+}
+
 /// The palette's pick callback: the row's command, with the window
 /// and app the List's confirm hands. The shell's own closure closes
 /// the palette, then routes — the context-menu `PickFn`'s shape.

@@ -115,13 +115,6 @@ pub(crate) enum PaneSignal {
     /// follows a summon quickly. No production sender yet: SW3's
     /// close path queues it; the bin tests exercise the tick arm
     /// meanwhile.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "SW3's close path sends it; the tests ride the arm meanwhile"
-        )
-    )]
     Show,
     /// The pane's terminal exited; the tab closes through the
     /// ungated tail, never the confirm gate.

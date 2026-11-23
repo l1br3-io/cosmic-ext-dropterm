@@ -1524,7 +1524,7 @@ fn the_dock_presence_mechanism_stays_out_of_the_source() {
         "src/app_shell.rs",
         "src/core/settings.rs",
         "src/core/config.rs",
-        "src/drawer.rs",
+        "src/settings.rs",
     ] {
         assert!(
             sources.iter().any(|(path, _)| path == carrier),

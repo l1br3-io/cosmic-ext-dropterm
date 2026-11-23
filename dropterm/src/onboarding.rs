@@ -33,7 +33,7 @@ use dropterm::core::global_shortcut as gs;
 use dropterm::core::settings::PlannedWrite;
 
 use crate::app_shell::{Shell, load_summon_snapshot};
-use crate::drawer::SummonSnapshot;
+use crate::settings::SummonSnapshot;
 
 /// Where the flow was opened from — the footer contract switches on
 /// it: first run shows the "Don't ask again" checkbox and Skip;

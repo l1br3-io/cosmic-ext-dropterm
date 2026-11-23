@@ -64,13 +64,6 @@ gpui::actions!(
 /// halves the strip's callbacks get.
 type ModalFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// The settings drawer's resize-handle drag closures' shapes
-/// (drawer-resize): the press, move, and release handlers the
-/// overlay threads through to the shell.
-type DrawerDownFn = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App)>;
-type DrawerMoveFn = Box<dyn Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App)>;
-type DrawerUpFn = Box<dyn Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App)>;
-
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
 /// and every non-positive or unparsable value — means a real app's
@@ -262,7 +255,7 @@ pub(crate) fn apply_kit_theme(
 /// degrade, never an error surface. Env-and-filesystem glue around
 /// core's pure model (its tests pin every decision). The onboarding's
 /// "Check again" and the confirmation refresh call it again.
-pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
+pub(crate) fn load_summon_snapshot() -> crate::settings::SummonSnapshot {
     use dropterm::core::global_shortcut as gs;
     let environment = gs::detect_environment(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
     let mut display = Vec::new();
@@ -285,7 +278,7 @@ pub(crate) fn load_summon_snapshot() -> crate::drawer::SummonSnapshot {
                 .any(|(binding, value)| gs::is_marker(binding, value, &stem));
         }
     }
-    crate::drawer::SummonSnapshot {
+    crate::settings::SummonSnapshot {
         environment,
         display,
         marker,
@@ -429,13 +422,26 @@ pub(crate) struct Shell {
     /// The open inline rename, if any (double-click or the menu's
     /// Rename row).
     rename: Option<RenameEdit>,
-    /// The settings drawer's shell-owned state (gpui-chrome Task 2):
-    /// open flag, page, drafts buffer, and the echo-refresh guard in
-    /// one cohesive state; the Kit's stateful controls live on the
-    /// drawer entity built at open and held here (the capture's focus
-    /// hand-off needs the handle).
-    pub(crate) settings: crate::drawer::SettingsState,
-    pub(crate) settings_drawer: Option<gpui::Entity<crate::drawer::SettingsDrawer>>,
+    /// The settings window's shell-owned state (settings-window
+    /// SW3): open flag, page, drafts buffer, and the echo-refresh
+    /// guard in one cohesive state; the Kit's stateful controls live
+    /// on the window's view, whose entity the window itself owns.
+    pub(crate) settings: crate::settings::SettingsState,
+    /// The open Settings window's handle (settings-window SW3): one
+    /// window per process, so a trigger while open switches the page
+    /// and activates; every close route meets in
+    /// [`Shell::settings_window_closed`] through the App's
+    /// single-subscriber `on_window_closed`.
+    pub(crate) settings_window: Option<gpui::AnyWindowHandle>,
+    /// The close cause set before a removal (settings-window SW2's
+    /// [`dropterm::core::settings::CloseCause`]): a user close
+    /// returns the terminal, a supersede queues nothing. The
+    /// observer consumes it; unset means the compositor's ✕ — a
+    /// user close.
+    pub(crate) settings_close_cause: Option<dropterm::core::settings::CloseCause>,
+    /// The close watcher's subscription (settings-window SW3), held
+    /// so the registration never unsubscribes.
+    pub(crate) settings_close_watcher_subscription: Option<gpui::Subscription>,
     /// The drawer's capture-focus handle, owned here so an armed
     /// capture's focus hand-off never reads the drawer entity from
     /// inside a shell update (the gc2 walk's reentrancy class).
@@ -851,11 +857,13 @@ impl Shell {
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
-            settings: crate::drawer::SettingsState {
+            settings: crate::settings::SettingsState {
                 summon: load_summon_snapshot(),
-                ..crate::drawer::SettingsState::default()
+                ..crate::settings::SettingsState::default()
             },
-            settings_drawer: None,
+            settings_window: None,
+            settings_close_cause: None,
+            settings_close_watcher_subscription: None,
             settings_capture_focus: settings_focus,
             rename_focus_repair: None,
             respawn_focus_repair: None,
@@ -1903,6 +1911,28 @@ struct Pumped {
     quit: bool,
 }
 
+/// The Settings window's close watcher (settings-window SW3): the
+/// App's single-subscriber `on_window_closed` slot, so any later
+/// window-close need must go through this dispatcher. The reset runs
+/// here — App level, no shell update on the stack — because
+/// `remove_window` fired it. Registered once at boot; the test
+/// scaffold registers the same watcher.
+pub(crate) fn registersettings_close_watcher_subscription(cx: &mut App, shell: &Entity<Shell>) {
+    let owned = shell.clone();
+    let watcher = cx.on_window_closed(move |cx, id| {
+        let is_settings =
+            matches!(owned.read(cx).settings_window, Some(handle) if handle.window_id() == id);
+        if is_settings {
+            owned.update(cx, Shell::settings_window_closed);
+        }
+    });
+    // The subscription unsubscribes on drop, so it lives on the shell
+    // for the app's lifetime.
+    shell.update(cx, |shell, _| {
+        shell.settings_close_watcher_subscription = Some(watcher);
+    });
+}
+
 /// The tray drain's one mapping (tray Task T3): the tray port's
 /// neutral vocabulary onto the verb queue's own actions — Help maps
 /// to nothing yet, because the shipped menu carries no Help item
@@ -2483,8 +2513,12 @@ impl Shell {
                 // menu's and gear's own callers already stand — the
                 // same class of split pump's window actions take.
                 let shell = cx.entity();
-                window.defer(cx, move |window, cx| {
-                    Shell::toggle_settings(&shell, window, cx);
+                window.defer(cx, move |_window, cx| {
+                    Shell::open_settings_window(
+                        &shell,
+                        dropterm::core::settings::SettingsPage::Appearance,
+                        cx,
+                    );
                 });
             }
             crate::terminal::input::TermAction::ImagesPanel => self.open_images_panel(cx),
@@ -2700,8 +2734,8 @@ impl Shell {
                 // App level by the gc2 structural finding — the
                 // drawer's build reads the shell.
                 let shell = cx.entity();
-                window.defer(cx, move |window, cx| {
-                    Shell::open_settings_at(&shell, page, window, cx);
+                window.defer(cx, move |_window, cx| {
+                    Shell::open_settings_window(&shell, page, cx);
                 });
             }
             Route::ApplyScheme(name) => {
@@ -3811,90 +3845,153 @@ impl Shell {
         cx.notify();
     }
 
-    /// The gear affordance's press, the menu's Settings… row, and the
-    /// keyboard's deferred verb: the one settings trigger — a repeat
-    /// press closes. A free function, not a shell method, by
-    /// necessity (the gc2 walk's structural finding): the drawer's
-    /// construction reads the shell, and a read while the shell is
-    /// being updated panics — so the build happens outside the update
-    /// borrow, the state flip inside it. The contract is therefore
-    /// "call me at App level": the menu and the gear arrive there
-    /// naturally, and a caller living inside a shell update (the
-    /// keyboard's verb) defers first (`Window::defer`).
-    pub(crate) fn toggle_settings(shell: &Entity<Shell>, window: &mut Window, cx: &mut App) {
-        let open = shell.read(cx).settings.open;
-        if open {
-            shell.update(cx, |shell, cx| shell.close_settings(window, cx));
-            return;
-        }
-        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
-        shell.update(cx, |shell, cx| {
-            // The press commits an open rename first, exactly like
-            // the reference bar's corner affordances.
-            shell.commit_open_rename(cx);
-            shell.settings_drawer = Some(drawer);
-            shell.settings.open = true;
-            println!(
-                "dropterm: settings drawer opened at +{}ms (the surface stays live beneath)",
-                shell.boot.elapsed().as_millis()
-            );
-            cx.notify();
-        });
-    }
-
-    /// Close the drawer: the explicit close clears the buffer (the
-    /// reopen-fresh rule; a focus-loss hide preserves — the shell
-    /// hides with the surface and this path never runs for a hide).
-    /// The palette's Settings rows' seam (command-palette spec, the
-    /// open-question default): the drawer opens at the page; an
-    /// already-open drawer swaps its page in place. The gc2 shape
-    /// applies — call at App level (the pick defers), the build
-    /// outside the update borrow, exactly [`Shell::toggle_settings`]'s
-    /// contract.
-    pub(crate) fn open_settings_at(
+    /// The one settings trigger (settings-window SW3): the verb, the
+    /// gear, the context menu's row, the palette's route — every
+    /// open lands here. Opens exactly one window at the requested
+    /// page (Appearance when none names one), queues the drop-down's
+    /// explicit hide in both `hide_on_focus_loss` modes (plan
+    /// amendment 2 — the handoff nobody has walked never gates the
+    /// hide), and stores the handle. A trigger while open switches
+    /// the page and activates the window instead — the one-window
+    /// branch for correctness, never a documented gesture. Call at
+    /// App level (the gc2 walk's rule: the window's build reads the
+    /// shell); a caller living inside a shell update defers first
+    /// (`Window::defer`), the same contract the old toggle routine
+    /// set.
+    pub(crate) fn open_settings_window(
         shell: &Entity<Shell>,
         page: dropterm::core::settings::SettingsPage,
-        window: &mut Window,
         cx: &mut App,
     ) {
-        let open = shell.read(cx).settings.open;
-        if open {
+        if let Some(handle) = shell.read(cx).settings_window {
+            // One window per process: the page swaps in place and
+            // the window asks for focus.
             shell.update(cx, |shell, cx| {
                 shell.settings.page = page;
                 println!(
-                    "dropterm: settings drawer page -> {page:?} at +{}ms",
+                    "dropterm: settings window page -> {page:?} at +{}ms",
                     shell.boot.elapsed().as_millis()
                 );
                 cx.notify();
             });
+            if let Err(err) = handle.update(cx, |_, window, _| window.activate_window()) {
+                eprintln!("dropterm: settings window activate failed: {err:?}");
+            }
             return;
         }
-        let drawer = crate::drawer::SettingsDrawer::new(shell.clone(), window, cx);
         shell.update(cx, |shell, cx| {
             // The press commits an open rename first, exactly like
             // the reference bar's corner affordances.
             shell.commit_open_rename(cx);
-            shell.settings_drawer = Some(drawer);
             shell.settings.open = true;
             shell.settings.page = page;
+            // The explicit hide rides the pane-signal funnel in both
+            // `hide_on_focus_loss` modes (plan amendment 2): idempotent
+            // where the focus handoff also fires, decisive where it
+            // never does.
+            if let Err(err) = shell.signals_tx.send(view::PaneSignal::Hide) {
+                println!("dropterm: settings hide signal failed: {err}");
+            }
             println!(
-                "dropterm: settings drawer opened at {page:?} at +{}ms (the surface stays live beneath)",
+                "dropterm: settings window opening at {page:?} at +{}ms (the surface hides)",
                 shell.boot.elapsed().as_millis()
             );
             cx.notify();
         });
+        // The settings chord inside the window binds at open (SW3):
+        // the action's effective chord — a custom override included —
+        // answers to the same press the pane's own map does. A rebind
+        // during one open applies at the next (the newest binding
+        // wins in gpui; the plan owns the trade).
+        let binds = shell.read(cx).config.custom_key_binds.clone();
+        if let Some(keystroke) = crate::palette::settings_chord_keystroke(&binds) {
+            let predicate = gpui::KeyBindingContextPredicate::parse("settings-window")
+                .unwrap()
+                .into();
+            match gpui::KeyBinding::load(
+                &keystroke,
+                Box::new(DismissSettings),
+                Some(predicate),
+                false,
+                None,
+                cx,
+            ) {
+                Ok(binding) => cx.bind_keys([binding]),
+                Err(err) => eprintln!("dropterm: settings chord binding failed: {err:?}"),
+            }
+        }
+        let options = gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+                size: gpui::size(gpui::px(960.), gpui::px(720.)),
+            })),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Settings - DropTerm".into()),
+                ..Default::default()
+            }),
+            window_min_size: Some(gpui::size(gpui::px(640.), gpui::px(420.))),
+            is_resizable: true,
+            app_id: Some(dropterm::core::APP_ID.to_string()),
+            kind: gpui::WindowKind::Normal,
+            ..Default::default()
+        };
+        match cx.open_window(options, |window, cx| {
+            let view = crate::settings::SettingsWindow::new(shell.clone(), window, cx);
+            cx.new(|cx| gpui_component::Root::new(view, window, cx))
+        }) {
+            Ok(window) => {
+                let any: gpui::AnyWindowHandle = window.into();
+                shell.update(cx, |shell, _| {
+                    shell.settings_window = Some(any);
+                });
+                println!(
+                    "dropterm: settings window opened at {page:?} at +{}ms",
+                    shell.read(cx).boot.elapsed().as_millis()
+                );
+            }
+            Err(err) => {
+                eprintln!("dropterm: settings window open failed: {err:?}");
+                shell.update(cx, |shell, cx| {
+                    shell.settings.open = false;
+                    cx.notify();
+                });
+            }
+        }
     }
 
-    /// Close the drawer: every close clears the buffer (the
-    /// reopen-fresh rule; a hide preserves — the shell hides with
-    /// the surface and this path never runs for a hide).
-    pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = window;
+    /// Every close route's landing (settings-window SW3): the
+    /// observer fired for the Settings window's removal — the ✕, the
+    /// Escape, the chord, `remove_window`, the compositor all meet
+    /// here. The handle clears, the open flag drops, the buffer and
+    /// the per-open page state reset (the reopen-fresh rule), and a
+    /// user close queues the drop-down's return through the
+    /// pane-signal funnel (a supersede queues nothing — SW2's
+    /// [`dropterm::core::settings::terminal_effect`], the cause the
+    /// remover set, unset meaning the compositor's ✕: a user close).
+    pub(crate) fn settings_window_closed(&mut self, cx: &mut Context<Self>) {
+        let cause = self
+            .settings_close_cause
+            .take()
+            .unwrap_or(dropterm::core::settings::CloseCause::User);
+        self.settings_window = None;
         self.settings.open = false;
-        self.settings_drawer = None;
         self.settings.buffer.clear();
+        self.settings.accordion = dropterm::core::settings::AccordionState::default();
+        self.settings.keybind_search.clear();
+        self.settings.keybind_capture = None;
+        self.settings.keybind_conflict = None;
+        self.settings.pending_reverts.clear();
+        self.settings.profile_selection = None;
+        self.settings.profile_draft = None;
+        self.settings.profile_delete_armed = None;
+        if dropterm::core::settings::terminal_effect(cause)
+            == dropterm::core::settings::TerminalEffect::Return
+            && let Err(err) = self.signals_tx.send(view::PaneSignal::Show)
+        {
+            println!("dropterm: settings return signal failed: {err}");
+        }
         println!(
-            "dropterm: settings drawer closed at +{}ms",
+            "dropterm: settings window closed ({cause:?}) at +{}ms",
             self.boot.elapsed().as_millis()
         );
         cx.notify();
@@ -4143,8 +4240,8 @@ impl Shell {
 
     /// The band's event funnel (gn-4): every press and hover the
     /// band's root reports, dispatched into the machine — the
-    /// associated-fn shape `toggle_settings` set (the menu's
-    /// open needs the window outside the shell's update).
+    /// associated-fn shape `open_settings_window` set (the menu's
+    /// open needs the App level outside the shell's update).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the funnel's one event, matched once — the reference band's own message shape"
@@ -4339,7 +4436,7 @@ impl Shell {
     fn status_menu_pick(
         shell: &Entity<Self>,
         pick: status::MenuPick,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         match pick {
@@ -4381,9 +4478,13 @@ impl Shell {
                 shell.update(cx, Shell::toggle_status_bar_setting);
             }
             status::MenuPick::Settings => {
-                // Outside the update borrow — the drawer's build
+                // Outside the update borrow — the window's build
                 // reads the shell (gc-2's finding).
-                Shell::toggle_settings(shell, window, cx);
+                Shell::open_settings_window(
+                    shell,
+                    dropterm::core::settings::SettingsPage::Appearance,
+                    cx,
+                );
             }
         }
     }
@@ -5310,8 +5411,12 @@ impl Shell {
             )
             .on_settings({
                 let shell = shell.clone();
-                move |window: &mut gpui::Window, cx: &mut App| {
-                    Self::toggle_settings(&shell, window, cx);
+                move |_window: &mut gpui::Window, cx: &mut App| {
+                    Self::open_settings_window(
+                        &shell,
+                        dropterm::core::settings::SettingsPage::Appearance,
+                        cx,
+                    );
                 }
             })
             .when_some(
@@ -5478,7 +5583,11 @@ impl Shell {
                 // it rides the same App-level toggle the gear uses,
                 // before the update borrow begins.
                 if pick == crate::context_menu::Pick::Item(crate::context_menu::Item::Settings) {
-                    Self::toggle_settings(&shell, window, cx);
+                    Self::open_settings_window(
+                        &shell,
+                        dropterm::core::settings::SettingsPage::Appearance,
+                        cx,
+                    );
                     return;
                 }
                 shell.update(cx, |shell, cx| shell.context_menu_pick(pick, window, cx));
@@ -5768,8 +5877,6 @@ impl gpui::Render for Shell {
         let mut band = self.sliding_band(cx).into_any_element();
         if self.palette.is_some() {
             band = self.palette_overlay(band);
-        } else if self.settings.open {
-            band = self.settings_overlay(band, cx);
         } else if self.images_open {
             band = self.images_overlay(band, cx);
         } else if self.status_menu.is_some() {
@@ -6088,165 +6195,6 @@ impl Shell {
                     ),
             )
             .into_any_element(),
-        )
-    }
-
-    fn settings_overlay(
-        &mut self,
-        band: gpui::AnyElement,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let drawer = self
-            .settings_drawer
-            .clone()
-            .expect("an open drawer holds its entity");
-        let surface = self
-            .last_bounds
-            .map_or(1280.0, |bounds| bounds.size.width.as_f32());
-        let live = self.settings.drawer_drag;
-        let width = dropterm::core::settings::drawer_width(
-            live.or(self.config.settings_drawer_width),
-            surface,
-        );
-        let (on_handle_down, on_move, on_release) = Self::drawer_drag_handlers(cx, surface);
-
-        // The panel is opaque and clips its contents: a solid
-        // backdrop so the settings never read through onto the live
-        // terminal, a left border as the seam against it, and
-        // `overflow_hidden` so no row, tab, or popover can paint
-        // past the pane's edge whatever its content does. The
-        // occlusion is the click-close dispatch rule (this gpui's
-        // rule, the images panel's own pin): without it every press
-        // on the drawer's controls would also land in the catcher
-        // beneath and close the drawer under the user's hand.
-        let panel = gpui::div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_0()
-            .w(px(width))
-            .occlude()
-            .flex()
-            .flex_row()
-            .bg(cx.theme().background)
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .overflow_hidden()
-            // The handle leads the panel: a thin grab strip on the
-            // pane's leading edge.
-            .child(
-                gpui::div()
-                    .w(px(10.))
-                    .h_full()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .bg(cx.theme().border)
-                    .on_mouse_down(gpui::MouseButton::Left, on_handle_down),
-            )
-            .child(gpui::div().flex_1().min_w_0().child(drawer));
-
-        // The click-close catcher (the un-parked drawer-click-close
-        // module): with the key on, a transparent — never dimming —
-        // catcher over the exposed surface dismisses the drawer on a
-        // left press, consumed (the press closes, it does not also
-        // type into the terminal). With the key off there is no
-        // catcher at all: the terminal beneath stays fully live
-        // while the drawer is open. The old veil — a dimmed
-        // full-surface block — is gone; the terminal always reads
-        // undimmed.
-        let shell_close = cx.entity();
-        let catcher = self.config.settings_drawer_click_close.then(|| {
-            gpui::div()
-                .absolute()
-                .inset_0()
-                .id("settings-click-close")
-                .occlude()
-                .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                    shell_close.update(cx, |shell, cx| shell.close_settings(window, cx));
-                })
-        });
-
-        gpui::div()
-            .absolute()
-            .inset_0()
-            .on_mouse_move(on_move)
-            .on_mouse_up(gpui::MouseButton::Left, on_release)
-            .child(band)
-            .children(catcher)
-            .child(panel)
-            .into_any_element()
-    }
-
-    /// The resize handle's three drag closures (drawer-resize): the
-    /// handle's press arms the drag (or resets on a double-click),
-    /// the overlay's moves track it, its release commits — all
-    /// through core's `drawer_drag_px` math against the live surface
-    /// width.
-    fn drawer_drag_handlers(
-        cx: &mut Context<Self>,
-        surface: f32,
-    ) -> (DrawerDownFn, DrawerMoveFn, DrawerUpFn) {
-        let shell_down = cx.entity();
-        let on_handle_down = move |event: &gpui::MouseDownEvent,
-                                   _window: &mut Window,
-                                   cx: &mut gpui::App| {
-            shell_down.update(cx, |shell, cx| {
-                if event.button == gpui::MouseButton::Left && event.click_count >= 2 {
-                    // The reset: the built-in default, the stored
-                    // value cleared.
-                    shell.write_settings(
-                        &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(None),
-                    );
-                    println!(
-                        "dropterm: drawer width reset at +{}ms",
-                        shell.boot.elapsed().as_millis()
-                    );
-                    cx.notify();
-                } else if event.button == gpui::MouseButton::Left {
-                    shell.settings.drawer_drag = Some(dropterm::core::settings::drawer_drag_px(
-                        event.position.x.as_f32(),
-                        surface,
-                    ));
-                    cx.notify();
-                }
-            });
-        };
-        let shell_move = cx.entity();
-        let on_move = move |event: &gpui::MouseMoveEvent,
-                            _window: &mut Window,
-                            cx: &mut gpui::App| {
-            shell_move.update(cx, |shell, cx| {
-                if shell.settings.drawer_drag.is_some() {
-                    shell.settings.drawer_drag = Some(dropterm::core::settings::drawer_drag_px(
-                        event.position.x.as_f32(),
-                        surface,
-                    ));
-                    cx.notify();
-                }
-            });
-        };
-        let shell_release = cx.entity();
-        let on_release =
-            move |_event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
-                shell_release.update(cx, |shell, cx| {
-                    if let Some(px) = shell.settings.drawer_drag.take() {
-                        shell.write_settings(
-                            &dropterm::core::settings::PlannedWrite::SettingsDrawerWidth(Some(px)),
-                        );
-                        println!(
-                            "dropterm: drawer width released at {px}px (+{}ms)",
-                            shell.boot.elapsed().as_millis()
-                        );
-                        cx.notify();
-                    }
-                });
-            };
-        (
-            Box::new(on_handle_down),
-            Box::new(on_move),
-            Box::new(on_release),
         )
     }
 
@@ -6599,7 +6547,7 @@ pub(crate) fn boot(
     cx.bind_keys([
         gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
         gpui::KeyBinding::new("escape", DismissPalette, Some("palette")),
-        gpui::KeyBinding::new("escape", DismissSettings, Some("settings-drawer")),
+        gpui::KeyBinding::new("escape", DismissSettings, Some("settings-window")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);
     // The terminal pane's Tab claim (key-delivery B3): the pane's own
@@ -6773,6 +6721,9 @@ pub(crate) fn boot(
             pane.update(cx, |pane, _| pane.set_lua_bus(bus));
         }
     }
+    // Every Settings window close route meets in one observer
+    // (settings-window SW3).
+    registersettings_close_watcher_subscription(cx, &shell);
     // The onboarding (summon-onboarding spec): the Yakuake-style
     // ask-once, consulted here at cold boot only — a warm forward
     // exits at the single-instance seam before GPUI boots, and
@@ -8339,37 +8290,60 @@ mod tests {
         assert_ne!(worn, deleted, "a deleted scheme's fallback must re-theme");
     }
 
-    // The gc-2 re-entrancy's guard (the Ctrl+Shift+I walk's panic:
-    // "cannot read Shell while it is already being updated"): the
-    // keyboard's Settings verb enters the toggle from inside a
-    // shell.update — the pane's key dispatch wraps every verb — and
-    // the toggle's read under that borrow used to panic before the
-    // arm learned to defer. This walks the exact shape: the verb
-    // dispatched inside an update, the drawer open after the flush,
-    // and a repeat verb closing it again through the same deferral.
+    /// One pump whose returned window actions apply at the tick's
+    /// App-level point — the test-side twin of the production tick's
+    /// apply loop, so intent execution sees the live-surface
+    /// registry it guards.
+    fn pump_and_apply(shell: &Entity<Shell>, cx: &mut gpui::VisualTestContext) {
+        let pumped = cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        let actions = pumped.actions;
+        cx.update(|_, cx| {
+            for action in actions {
+                apply_action(cx, shell, action);
+            }
+        });
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the open's whole contract — both hide_on_focus_loss modes, the window, the hide, the return — in one narrative"
+    )]
     #[gpui::test]
-    fn the_settings_verb_toggles_outside_the_update_borrow(cx: &mut gpui::TestAppContext) {
+    fn the_settings_verb_opens_the_window_and_queues_the_hide(cx: &mut gpui::TestAppContext) {
+        // The open's contract (settings-window SW3), in both
+        // `hide_on_focus_loss` modes (plan amendment 2): exactly one
+        // window at the requested page, the handle stored, and the
+        // drop-down's explicit hide riding the pane-signal funnel —
+        // observed through a live measuring surface, whose destroy
+        // intent only executes when the hide truly drained.
         cx.update(gpui_component::init);
         let cx = cx.add_empty_window();
-        let config = DropTermConfig::default();
         let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
         let (signals_tx, signals_rx) = std::sync::mpsc::channel();
         let (_config_tx, config_rx) = std::sync::mpsc::channel();
         let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let phase = Arc::new(std::sync::Mutex::new(SurfacePhase::Hidden));
         let shell = cx.update(|_window, cx| {
             let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            let shell_phase = Arc::clone(&phase);
+            let config = DropTermConfig::default();
+            let mut tabs = tab_bar::TabList::default();
+            tabs.spawn(false);
             cx.new(|_| {
                 Shell::new(
                     Instant::now(),
                     Verdict::LayerShell,
                     SurfaceInputs::from_config(&config),
-                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
-                    Arc::new(Mutex::new(0u32)),
+                    shell_phase,
+                    Arc::new(std::sync::Mutex::new(0u32)),
                     verbs_rx,
-                    cli::Action::default(),
-                    tab_bar::TabList::default(),
+                    // The scaffold's startup Toggle: the surface
+                    // reaches Measuring so the queued hide has a
+                    // live surface to land on.
+                    cli::Action::Toggle,
+                    tabs,
                     HashMap::new(),
-                    config.clone(),
+                    config,
                     signals_tx,
                     signals_rx,
                     (
@@ -8389,56 +8363,260 @@ mod tests {
                         tx: specs_tx,
                         rx: specs_rx,
                     },
-                    // The tray drain rides empty in these scaffolds
-                    // (the quit-decision helper wires a live one).
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
-                    // The Lua host rides dormant here: no command is
-                    // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
                 )
             })
         });
-
-        // The bug's own frame: the verb inside a shell.update.
-        cx.update(|window, cx| {
-            let shell = shell.clone();
-            shell.update(cx, |shell, cx| {
-                shell.shell_verb(
-                    &crate::terminal::input::TermAction::Settings,
-                    TabId(0),
-                    window,
-                    cx,
+        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        // The startup show: a real measuring window, adopted into the
+        // executor's registry.
+        pump_and_apply(&shell, cx);
+        assert_eq!(
+            *phase.lock().expect("the phase lock"),
+            SurfacePhase::Measuring,
+            "the scaffold's surface stands measuring before the verb"
+        );
+        for hide_on_focus_loss in [true, false] {
+            cx.update(|_, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.config.hide_on_focus_loss = hide_on_focus_loss;
+                    cx.notify();
+                });
+            });
+            // The verb rides the deferral, exactly the production
+            // chord's path.
+            cx.update(|window, cx| {
+                let shell = shell.clone();
+                shell.update(cx, |shell, cx| {
+                    shell.shell_verb(
+                        &crate::terminal::input::TermAction::Settings,
+                        TabId(0),
+                        window,
+                        cx,
+                    );
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                let read = shell.read(cx);
+                assert!(read.settings.open, "the verb opened settings");
+                assert!(
+                    read.settings_window.is_some(),
+                    "the window's handle is stored"
+                );
+                assert_eq!(
+                    read.settings.page,
+                    dropterm::core::settings::SettingsPage::Appearance,
+                    "the verb opens at the default page"
                 );
             });
+            // The queued hide drains at the tick and lands its
+            // destroy: the measuring surface is gone (the executor's
+            // live-surface guard would panic on a destroy without the
+            // hide having truly run).
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                assert!(
+                    matches!(shell.read(cx).machine.state, SurfaceState::Hidden),
+                    "the hide on open landed in both hide_on_focus_loss modes"
+                );
+            });
+            // The close: the compositor's ✕ route (no cause set).
+            cx.update(|_, cx| {
+                let handle = shell.read(cx).settings_window.expect("the window stands");
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                let read = shell.read(cx);
+                assert!(!read.settings.open, "the close reset the open flag");
+                assert!(
+                    read.settings_window.is_none(),
+                    "the close cleared the handle"
+                );
+            });
+            // The close queued the return (a user close): absorb it,
+            // so the next iteration's hide lands on a live surface —
+            // exactly the production rhythm, the drop-down shown
+            // again before settings opens once more.
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                assert!(
+                    matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                    "the close's return brought the surface back"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_window_close_returns_the_terminal_and_resets_the_page_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // The close routes' shared landing (settings-window SW3):
+        // every route reaches `settings_window_closed` through the
+        // observer — the handle clears, the open flag drops, the
+        // buffer and the per-open page state reset, and a user close
+        // (the explicit route's set cause, or the compositor's ✕
+        // where none was set) queues the drop-down's return, observed
+        // through the funnel's show.
+        let ((shell, _verbs, _signals, phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        // Absorb the scaffold's startup action, so the surface stands
+        // hidden for the return's observation.
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+
+        // Route 1: the explicit close through the stored handle —
+        // the cause the in-window handlers set, the removal at App
+        // level.
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Keybindings,
+                cx,
+            );
         });
-        // The deferral flushes at the end of the effect cycle — the
-        // toggle runs there, the drawer opens, nothing panics.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                // The per-open state a user leaves behind.
+                shell.settings.buffer.set_text(
+                    dropterm::core::settings::TextField::Shell,
+                    "/bin/tcsh".to_string(),
+                );
+                shell.settings.keybind_capture = Some("zoom_in".to_string());
+                shell.settings.keybind_conflict = Some(("a".to_string(), "b".to_string()));
+                cx.notify();
+            });
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.settings_close_cause = Some(dropterm::core::settings::CloseCause::User);
+            });
+            let handle = shell.read(cx).settings_window.expect("the window stands");
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
         cx.run_until_parked();
         cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(!read.settings.open, "the open flag dropped");
+            assert!(read.settings_window.is_none(), "the handle cleared");
             assert!(
-                shell.read(cx).settings.open,
-                "the deferred Settings verb must open the drawer"
+                read.settings.keybind_capture.is_none() && read.settings.keybind_conflict.is_none(),
+                "the per-open page state reset"
+            );
+            let config = read.config.clone();
+            assert_eq!(
+                read.settings
+                    .buffer
+                    .text(dropterm::core::settings::TextField::Shell, &config),
+                String::new(),
+                "the buffer cleared for a fresh reopen"
+            );
+        });
+        // The return: the close queued the Show; the tick answers it
+        // and the hidden surface starts its show (the action applies
+        // at the tick's App-level point, so the new surface is
+        // adopted).
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                "the user close queued the drop-down's return"
+            );
+            assert_eq!(
+                *phase.lock().expect("the phase lock"),
+                SurfacePhase::Measuring,
+                "the return's phase is published"
             );
         });
 
-        // The repeat press closes through the same deferral (the
-        // toggle's repeat rule, both halves of the read).
-        cx.update(|window, cx| {
-            let shell = shell.clone();
+        // Route 2: the compositor's ✕, simulated by removing the
+        // window with no cause set — the observer's unset-cause
+        // default is a user close.
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Profiles,
+                cx,
+            );
+        });
+        cx.update(|_, cx| {
             shell.update(cx, |shell, cx| {
-                shell.shell_verb(
-                    &crate::terminal::input::TermAction::Settings,
-                    TabId(0),
-                    window,
-                    cx,
+                shell.settings.buffer.set_text(
+                    dropterm::core::settings::TextField::Shell,
+                    "/bin/tcsh".to_string(),
                 );
+                cx.notify();
             });
+        });
+        cx.update(|_, cx| {
+            let handle = shell.read(cx).settings_window.expect("the window stands");
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
         });
         cx.run_until_parked();
         cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(!read.settings.open, "the ✕ close reset the open flag");
+            let config = read.config.clone();
+            assert_eq!(
+                read.settings
+                    .buffer
+                    .text(dropterm::core::settings::TextField::Shell, &config),
+                String::new(),
+                "the ✕ close cleared the buffer too"
+            );
+        });
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
             assert!(
-                !shell.read(cx).settings.open,
-                "the repeat Settings verb must close the drawer"
+                matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                "the ✕ close queued the return as well"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_trigger_while_open_switches_the_page_without_a_second_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // The one-window branch (settings-window SW3, assumption 7):
+        // a trigger naming a page while the window stands switches
+        // the page and activates instead of opening a second window.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Appearance,
+                cx,
+            );
+        });
+        let windows_before = cx.update(|_, cx| cx.windows().len());
+        let first = cx.update(|_, cx| shell.read(cx).settings_window);
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Keybindings,
+                cx,
+            );
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).settings_window,
+                first,
+                "the same window stands"
+            );
+            assert_eq!(
+                shell.read(cx).settings.page,
+                dropterm::core::settings::SettingsPage::Keybindings,
+                "the trigger switched the page"
+            );
+            assert_eq!(
+                cx.windows().len(),
+                windows_before,
+                "no second window opened"
             );
         });
     }
@@ -8740,153 +8918,6 @@ mod tests {
                 "an idle tick must not retune"
             );
         });
-    }
-
-    // The un-parked click-close module's report: with the key on (the
-    // default), a left press anywhere on the exposed surface closes the
-    // open drawer — the transparent catcher's whole job, the veil's
-    // dimming gone — and with the key off there is no catcher at all,
-    // so the same press leaves the drawer standing (the terminal
-    // beneath stays live). The press on the drawer's own pane must
-    // never close it (the panel's occlusion, the images panel's own
-    // dispatch rule).
-    #[gpui::test]
-    fn a_surface_press_closes_the_drawer_only_when_the_key_is_on(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
-        let config = DropTermConfig::default();
-        let (shell, handle) = shell_probe_window(&config, cx);
-        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
-
-        // The drawer opens through the one trigger, then the window
-        // takes a real frame — the Kit's redraw shape (refresh first;
-        // a bare draw may skip render/paint, the rename-slot pin's
-        // precedent).
-        cx.update(|window, cx| Shell::toggle_settings(&shell, window, cx));
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-        });
-        let width = dropterm::core::settings::drawer_width(config.settings_drawer_width, 1280.);
-
-        // Key on: a press on the pane's own strip does not close (the
-        // occlusion), and a press on the exposed left half does.
-        cx.simulate_click(
-            gpui::point(px(1280. - width / 2.), px(400.)),
-            gpui::Modifiers::default(),
-        );
-        cx.run_until_parked();
-        cx.update(|_, cx| {
-            assert!(
-                shell.read(cx).settings.open,
-                "a press on the drawer's own pane must leave it open"
-            );
-        });
-        cx.simulate_click(
-            gpui::point(px(1280. - width - 100.), px(400.)),
-            gpui::Modifiers::default(),
-        );
-        cx.run_until_parked();
-        cx.update(|_, cx| {
-            assert!(
-                !shell.read(cx).settings.open,
-                "the exposed-surface press must close the open drawer"
-            );
-        });
-
-        // Key off: the reopened drawer carries no catcher, so the
-        // same press leaves it standing.
-        cx.update(|window, cx| Shell::toggle_settings(&shell, window, cx));
-        cx.run_until_parked();
-        cx.update(|_, cx| {
-            shell.update(cx, |shell, _| {
-                shell.config.settings_drawer_click_close = false;
-            });
-        });
-        cx.update(|window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-        });
-        cx.simulate_click(
-            gpui::point(px(1280. - width - 100.), px(400.)),
-            gpui::Modifiers::default(),
-        );
-        cx.run_until_parked();
-        cx.update(|_, cx| {
-            assert!(
-                shell.read(cx).settings.open,
-                "with the key off there is no catcher — the press must leave the drawer open"
-            );
-        });
-    }
-
-    /// The render-walking tests' fixture: a tabless Shell in a fixed
-    /// 1280×800 window — the click-close walk's own probe (the
-    /// model-only neighbors never take a frame, so they keep their
-    /// inline construction).
-    fn shell_probe_window(
-        config: &DropTermConfig,
-        cx: &mut gpui::TestAppContext,
-    ) -> (Entity<Shell>, gpui::WindowHandle<Shell>) {
-        let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
-        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
-        let (_config_tx, config_rx) = std::sync::mpsc::channel();
-        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
-        cx.update(|cx| {
-            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
-            let shell = cx.new(|_| {
-                Shell::new(
-                    Instant::now(),
-                    Verdict::LayerShell,
-                    SurfaceInputs::from_config(config),
-                    Arc::new(Mutex::new(SurfacePhase::Hidden)),
-                    Arc::new(Mutex::new(0u32)),
-                    verbs_rx,
-                    cli::Action::default(),
-                    tab_bar::TabList::default(),
-                    HashMap::new(),
-                    config.clone(),
-                    signals_tx,
-                    signals_rx,
-                    (
-                        "cosmic-dark".to_string(),
-                        true,
-                        [None; alacritty_terminal::term::color::COUNT],
-                    ),
-                    Vec::new(),
-                    None,
-                    config_rx,
-                    modal_focus,
-                    None,
-                    gpui::Font::default(),
-                    settings_focus,
-                    SpecsWatch {
-                        table: None,
-                        tx: specs_tx,
-                        rx: specs_rx,
-                    },
-                    // The tray drain rides empty in these scaffolds
-                    // (the quit-decision helper wires a live one).
-                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
-                    // The Lua host rides dormant here: no command is
-                    // ever sent, so no thread, no scan, no log.
-                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
-                )
-            });
-            let handle = cx
-                .open_window(
-                    gpui::WindowOptions {
-                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
-                            origin: gpui::Point::default(),
-                            size: gpui::size(px(1280.), px(800.)),
-                        })),
-                        ..Default::default()
-                    },
-                    |_, _| shell.clone(),
-                )
-                .expect("open the shell probe window");
-            (shell, handle)
-        })
     }
 
     // --- the script-segment shell wiring (status-segments, SG2) ---

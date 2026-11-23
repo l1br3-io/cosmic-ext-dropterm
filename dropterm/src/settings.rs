@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The settings drawer on GPUI (gpui-chrome Task 2): the Kit's
-//! Sheet over the live terminal — the surface never hides or resizes
-//! while it is open, the libcosmic drawer's overlay rule. The pages,
-//! controls, and write contract are the libcosmic drawer's (the
-//! chunk's ruling: ported, not redesigned): every control maps to its
-//! config key through core's moved model, every commit is one
-//! write-through at its commit point — toggles and dropdowns on
-//! change, texts on submit, sliders on release, pickers on pick;
-//! never an Apply button, never a batch — and the config watcher's
-//! echo drives every apply, so drawer writes and hand edits remain
-//! one event stream.
+//! The settings window on GPUI (settings-window SW3): a plain
+//! toplevel hosted by the Kit's Root — the drop-down hides while it
+//! is open and returns when it closes, the exclusive pair. The pages,
+//! controls, and write contract are the drawer's (ported, not
+//! redesigned): every control maps to its config key through core's
+//! model, every commit is one write-through at its commit point —
+//! toggles and dropdowns on change, texts on submit, sliders on
+//! release, pickers on pick; never an Apply button, never a batch —
+//! and the config watcher's echo drives every apply, so window
+//! writes and hand edits remain one event stream. The view keeps its
+//! header and strip until SW5's nav column.
 //!
-//! The drawer's own state (the open page, the drafts buffer, the
+//! The window's own state (the open page, the drafts buffer, the
 //! profile draft, the keybind capture) lives on the shell, the
 //! libcosmic app's own shape; this entity holds the Kit's stateful
-//! halves — the text inputs, sliders, and pickers, built once at open
-//! — and renders the open page from the shell's live state each
-//! frame. The Profiles and Keybindings pages arrive with this task's
-//! later increments; their pages ride [`SettingsPage::ALL`] in the
-//! strip with an honest placeholder page until then.
+//! halves — the text inputs, sliders, and pickers, built once at
+//! open — and renders the open page from the shell's live state each
+//! frame. Their pages ride [`SettingsPage::ALL`] in the strip.
 
 use std::iter::once;
 use std::rc::Rc;
@@ -245,10 +243,6 @@ pub(crate) struct SettingsState {
     /// loaded at cold startup, read-only here — the writer module's
     /// commits are the one future refresher.
     pub(crate) summon: SummonSnapshot,
-    /// The resize handle's live drag width, display-only until
-    /// release (core's `drawer_drag_px` math); `None` while the
-    /// handle is at rest.
-    pub(crate) drawer_drag: Option<u16>,
 }
 
 impl Default for SettingsState {
@@ -268,7 +262,6 @@ impl Default for SettingsState {
             keybind_capture: None,
             keybind_conflict: None,
             summon: SummonSnapshot::default(),
-            drawer_drag: None,
         }
     }
 }
@@ -296,7 +289,7 @@ type FormIdentity = Option<(String, usize)>;
 /// The drawer's Kit halves: the stateful controls, built once per
 /// open from the live config, seeded on the file's values (drafts
 /// are empty at open — the buffer's reopen-fresh rule).
-pub(crate) struct SettingsDrawer {
+pub(crate) struct SettingsWindow {
     shell: Entity<Shell>,
     inputs: InputMap,
     sliders: Vec<(ConfigKey, Entity<SliderState>)>,
@@ -319,7 +312,7 @@ pub(crate) struct SettingsDrawer {
     _observe: gpui::Subscription,
 }
 
-impl SettingsDrawer {
+impl SettingsWindow {
     /// Build every Kit state against the shell's live config. The
     /// event subscriptions route to the shell's funnels (the buffer,
     /// the write path) — the drawer never applies anything itself,
@@ -695,7 +688,7 @@ impl SettingsDrawer {
     }
 }
 
-impl SettingsDrawer {
+impl SettingsWindow {
     /// One row of a section card: the key's label, its description,
     /// and its control.
     fn control_row(
@@ -1125,7 +1118,7 @@ fn placeholder_row(key: ConfigKey) -> impl IntoElement {
 
 /// One profile row's action cluster, right of the name: Clone, the
 /// delete pair (Arm → Confirm/Keep, the confirm in the danger
-/// style), and the reorder pair — one Vec so [`SettingsDrawer::
+/// style), and the reorder pair — one Vec so [`SettingsWindow::
 /// profile_row`] stays a layout function.
 fn profile_action_buttons(
     target: &Entity<Shell>,
@@ -1191,7 +1184,7 @@ fn profile_action_buttons(
     buttons
 }
 
-impl SettingsDrawer {
+impl SettingsWindow {
     /// The Profiles page: the default-profile picker and Add button
     /// (disabled while the draft lock holds), one row per profile
     /// (name, prompt line, the edit-select/clone/delete/reorder
@@ -1361,7 +1354,7 @@ impl SettingsDrawer {
         let scheme_target = shell.clone();
         let scheme_subscription = cx.subscribe(
             &scheme,
-            move |_this: &mut SettingsDrawer,
+            move |_this: &mut SettingsWindow,
                   _emitter: Entity<SelectState<Vec<SharedString>>>,
                   event: &SelectEvent<Vec<SharedString>>,
                   cx: &mut Context<Self>| {
@@ -1977,16 +1970,21 @@ impl SettingsDrawer {
     }
 }
 
-impl Render for SettingsDrawer {
+impl Render for SettingsWindow {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the window's whole face — header, strip, and page — in one render pass"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_from_echo(window, cx);
         let shell = self.shell.clone();
         let page = self.shell.read(cx).settings.page;
-        // The drawer's header (the context_drawer's own close
-        // affordance, ported): the title at the left, the explicit
-        // close's ✕ at the right — the reference drawer's escape
-        // route made visible, the same `close_settings` the Escape
-        // bind and the gear toggle ride.
+        // The window's header: the title at the left, the explicit
+        // close's ✕ at the right — a user close made visible. The
+        // route is the window's one close routine: the cause set in
+        // one short shell update, `remove_window` at App level (the
+        // observer then updates the shell with no borrow on the
+        // stack).
         let header = {
             let target = shell.clone();
             h_flex()
@@ -2013,7 +2011,11 @@ impl Render for SettingsDrawer {
                         .text_size(gpui::px(CLOSE_GLYPH_FONT_SIZE))
                         .child("✕")
                         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                            target.update(cx, |shell, cx| shell.close_settings(window, cx));
+                            target.update(cx, |shell, _| {
+                                shell.settings_close_cause =
+                                    Some(dropterm::core::settings::CloseCause::User);
+                            });
+                            window.remove_window();
                         }),
                 )
         };
@@ -2065,15 +2067,23 @@ impl Render for SettingsDrawer {
         let armed = self.shell.read(cx).settings.keybind_capture.is_some();
         let target = self.shell.clone();
         v_flex()
-            .id("settings-drawer")
-            .key_context("settings-drawer")
+            .id("settings-window")
+            .key_context("settings-window")
             .track_focus(&self.shell.read(cx).settings_capture_focus)
             .on_action({
                 let target = self.shell.clone();
                 move |_: &crate::app_shell::DismissSettings,
                       window: &mut gpui::Window,
                       cx: &mut gpui::App| {
-                    target.update(cx, |shell, cx| shell.close_settings(window, cx));
+                    // A user close: the cause set in one short shell
+                    // update, the removal at App level — the
+                    // observer then updates the shell with no borrow
+                    // on the stack (SW3's rule).
+                    target.update(cx, |shell, _| {
+                        shell.settings_close_cause =
+                            Some(dropterm::core::settings::CloseCause::User);
+                    });
+                    window.remove_window();
                 }
             })
             .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
