@@ -121,6 +121,24 @@ pub enum SlotContent {
     Styled { spans: Vec<Span> },
 }
 
+impl SlotContent {
+    /// The answer's text under this module's contract: a text answer
+    /// is its own text; a styled answer renders the span texts
+    /// concatenated in order, icons and colors ignored — the painter
+    /// upgrade (`styled-status-slot`) is theirs. The band's
+    /// byte-identical pin rides this: every existing script's text
+    /// answer flattens to exactly the string it returned.
+    pub fn plain_text(&self) -> String {
+        match self {
+            SlotContent::Text(text) => text.clone(),
+            SlotContent::Styled { spans } => spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+        }
+    }
+}
+
 /// One slot answer's failure, typed. Every variant is a script bug
 /// costing exactly one log line and the answer — never a raise into
 /// the terminal (the house one-log-line culture).
@@ -578,6 +596,36 @@ mod tests {
                     icon: Some("arrow-down".to_owned()),
                 }]
             }
+        );
+    }
+
+    // --- the render's flatten (the band's byte-compat pin) ---
+
+    #[test]
+    fn plain_text_concatenates_the_span_texts_and_keeps_a_text_whole() {
+        assert_eq!(
+            SlotContent::Text("cwd is /home/u/src".to_owned()).plain_text(),
+            "cwd is /home/u/src",
+            "a text answer is its own text"
+        );
+        assert_eq!(
+            SlotContent::Styled {
+                spans: vec![
+                    Span {
+                        text: "▼".to_owned(),
+                        color: Some(SlotColor::Token("accent".to_owned())),
+                        icon: Some("arrow-down".to_owned()),
+                    },
+                    Span {
+                        text: " 1.2 MB/s".to_owned(),
+                        color: None,
+                        icon: None,
+                    },
+                ],
+            }
+            .plain_text(),
+            "▼ 1.2 MB/s",
+            "the span texts concatenate in order; icons and colors wait for the painter"
         );
     }
 

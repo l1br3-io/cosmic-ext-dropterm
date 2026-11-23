@@ -17,6 +17,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::core::config::{Edge, StatusToggles, TabPosition};
+use crate::core::slots::SlotContent;
 
 /// The band's height in logical pixels — one notch below the tab
 /// strip's 32 px, for callers that reserve room for it outside the
@@ -236,17 +237,18 @@ pub struct ScriptSegmentValue {
 }
 
 /// One script segment's answer on a query trip (status-segments
-/// spec): the shown value (the chosen side and text) or a deliberate
-/// hide (nil). A raising or timing-out handler answers not at all —
-/// its id is omitted from the reply so the asking surface keeps the
-/// prior value.
+/// spec): the shown value (the chosen side and the typed answer — a
+/// bare string for the v1 shape, styled spans the additive upgrade,
+/// slot-contract spec) or a deliberate hide (nil). A raising or
+/// timing-out handler answers not at all — its id is omitted from the
+/// reply so the asking surface keeps the prior value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentAnswer {
-    /// The handler answered: render this text on this side.
+    /// The handler answered: render this content on this side.
     Shown {
         id: String,
         side: ScriptSide,
-        text: String,
+        content: SlotContent,
     },
     /// The handler answered nil: render nothing (a fresh decision —
     /// distinct from an omission, which keeps the prior value).
@@ -274,8 +276,9 @@ pub struct ScriptSegmentsState {
     /// the requery gate (empty = no ctx build, no dispatch, today's
     /// band).
     ids: Vec<String>,
-    /// Each registered id's last resolved slot.
-    slots: std::collections::HashMap<String, (ScriptSide, Option<String>)>,
+    /// Each registered id's last resolved slot — the typed answer
+    /// whole (slot-contract spec); the render surface flattens.
+    slots: std::collections::HashMap<String, (ScriptSide, Option<SlotContent>)>,
     /// The ctx the last dispatch carried — the diff trigger's
     /// comparison. `None` before the first dispatch and after an
     /// emptied registry: the next query fires on the diff alone.
@@ -369,8 +372,8 @@ impl ScriptSegmentsState {
         }
         for answer in answers {
             match answer {
-                SegmentAnswer::Shown { id, side, text } => {
-                    self.slots.insert(id, (side, Some(text)));
+                SegmentAnswer::Shown { id, side, content } => {
+                    self.slots.insert(id, (side, Some(content)));
                 }
                 SegmentAnswer::Hidden { id } => {
                     self.slots
@@ -414,7 +417,13 @@ impl ScriptSegmentsState {
                 ScriptSegmentValue {
                     id: id.to_owned(),
                     side: slot.map_or(ScriptSide::Left, |(side, _)| *side),
-                    text: slot.and_then(|(_, text)| text.clone()),
+                    // The render surface flattens (slot-contract
+                    // spec): the typed answer renders as its
+                    // concatenated text — icons and colors wait for
+                    // the painter module, so every existing script's
+                    // band bytes stand.
+                    text: slot
+                        .and_then(|(_, content)| content.as_ref().map(SlotContent::plain_text)),
                 }
             })
             .collect()

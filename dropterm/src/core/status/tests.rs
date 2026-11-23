@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::core::config::{Edge, TabPosition};
+use crate::core::slots::SlotContent;
 use crate::core::terminal::{
     ProgramState, ProgramStatus, ProgressState, ReportedCwd, ReportedProgress,
 };
@@ -1045,6 +1046,110 @@ fn ctx_for(word: &str) -> serde_json::Value {
     serde_json::json!({ "cwd": word })
 }
 
+/// The typed-slots widening's drain side (slot-contract spec): a
+/// styled reply rides the state typed and flattens at the render
+/// surface — the spans' texts concatenate, icons and colors waiting
+/// for the painter module.
+#[test]
+fn a_styled_reply_flattens_to_its_concatenated_text_at_the_render() {
+    use crate::core::slots::{SlotColor, SlotContent, Span};
+    let mut state = ScriptSegmentsState::default();
+    state.note_sync(vec!["net".to_owned()]);
+    let token = state
+        .requery_due(&ctx_for("a"), Instant::now())
+        .expect("the first query fires");
+    state.apply_reply(
+        token,
+        false,
+        vec![SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: ScriptSide::Right,
+            content: SlotContent::Styled {
+                spans: vec![
+                    Span {
+                        text: "▼".to_owned(),
+                        color: Some(SlotColor::Token("accent".to_owned())),
+                        icon: Some("arrow-down".to_owned()),
+                    },
+                    Span {
+                        text: " 1.2 MB/s".to_owned(),
+                        color: None,
+                        icon: None,
+                    },
+                ],
+            },
+        }],
+    );
+    let rendered = state.render();
+    assert_eq!(rendered.len(), 1, "the styled slot lays");
+    assert_eq!(rendered[0].id, "net");
+    assert_eq!(rendered[0].side, ScriptSide::Right);
+    assert_eq!(
+        rendered[0].text.as_deref(),
+        Some("▼ 1.2 MB/s"),
+        "the texts concatenate; icons and colors are ignored until the painter"
+    );
+}
+
+/// The stale-degrade story over typed content: an omission keeps the
+/// prior styled answer whole, and the shapes swap freely (styled
+/// replaces text, text replaces styled) — a slot's history is its
+/// content, whatever shape each trip brought.
+#[test]
+fn the_prior_content_survives_an_omission_and_the_shapes_swap() {
+    use crate::core::slots::{SlotColor, SlotContent, Span};
+    let mut state = ScriptSegmentsState::default();
+    state.note_sync(vec!["net".to_owned()]);
+    let token = state
+        .requery_due(&ctx_for("a"), Instant::now())
+        .expect("the first query fires");
+    state.apply_reply(
+        token,
+        false,
+        vec![SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: ScriptSide::Left,
+            content: SlotContent::Styled {
+                spans: vec![Span {
+                    text: "styled".to_owned(),
+                    color: Some(SlotColor::Token("accent".to_owned())),
+                    icon: None,
+                }],
+            },
+        }],
+    );
+    // The next trip says nothing of net: the prior styled answer
+    // stands (the flatten keeps its text at the render).
+    let next = state
+        .requery_due(&ctx_for("b"), Instant::now() + SCRIPT_QUERY_INTERVAL)
+        .expect("the next query fires");
+    state.apply_reply(next, false, vec![]);
+    assert_eq!(
+        state.render()[0].text.as_deref(),
+        Some("styled"),
+        "an omitted id keeps its prior styled content"
+    );
+    // A plain-text reply replaces the styled prior, and the render
+    // follows the new shape byte-for-byte.
+    let after = state
+        .requery_due(&ctx_for("c"), Instant::now() + SCRIPT_QUERY_INTERVAL)
+        .expect("the third query fires");
+    state.apply_reply(
+        after,
+        false,
+        vec![SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: ScriptSide::Left,
+            content: SlotContent::Text("plain".to_owned()),
+        }],
+    );
+    assert_eq!(
+        state.render()[0].text.as_deref(),
+        Some("plain"),
+        "a text answer replaces a styled prior"
+    );
+}
+
 #[test]
 fn an_empty_registry_gates_the_whole_requery_path() {
     let mut state = ScriptSegmentsState::default();
@@ -1128,7 +1233,7 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
         vec![SegmentAnswer::Shown {
             id: "net".to_owned(),
             side: ScriptSide::Right,
-            text: "stale".to_owned(),
+            content: SlotContent::Text("stale".to_owned()),
         }],
     );
     assert!(state.render().iter().all(|slot| slot.text.is_none()));
@@ -1139,7 +1244,7 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
         vec![SegmentAnswer::Shown {
             id: "net".to_owned(),
             side: ScriptSide::Right,
-            text: "superseded".to_owned(),
+            content: SlotContent::Text("superseded".to_owned()),
         }],
     );
     assert!(state.render().iter().all(|slot| slot.text.is_none()));
@@ -1152,12 +1257,12 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
             SegmentAnswer::Shown {
                 id: "net".to_owned(),
                 side: ScriptSide::Right,
-                text: "▼ 1.2 MB/s".to_owned(),
+                content: SlotContent::Text("▼ 1.2 MB/s".to_owned()),
             },
             SegmentAnswer::Shown {
                 id: "git".to_owned(),
                 side: ScriptSide::Left,
-                text: "main".to_owned(),
+                content: SlotContent::Text("main".to_owned()),
             },
         ],
     );
@@ -1208,12 +1313,12 @@ fn registry_syncs_sweep_slots_reorder_and_reset() {
             SegmentAnswer::Shown {
                 id: "net".to_owned(),
                 side: ScriptSide::Right,
-                text: "v1".to_owned(),
+                content: SlotContent::Text("v1".to_owned()),
             },
             SegmentAnswer::Shown {
                 id: "git".to_owned(),
                 side: ScriptSide::Left,
-                text: "main".to_owned(),
+                content: SlotContent::Text("main".to_owned()),
             },
         ],
     );
@@ -1260,17 +1365,17 @@ fn the_ordered_key_filters_and_reorders_the_render() {
             SegmentAnswer::Shown {
                 id: "net".to_owned(),
                 side: ScriptSide::Right,
-                text: "n".to_owned(),
+                content: SlotContent::Text("n".to_owned()),
             },
             SegmentAnswer::Shown {
                 id: "git".to_owned(),
                 side: ScriptSide::Left,
-                text: "g".to_owned(),
+                content: SlotContent::Text("g".to_owned()),
             },
             SegmentAnswer::Shown {
                 id: "mem".to_owned(),
                 side: ScriptSide::Right,
-                text: "m".to_owned(),
+                content: SlotContent::Text("m".to_owned()),
             },
         ],
     );

@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 use notify::Watcher as _;
 
 use crate::core::keybinds::{CommandRow, MAX_COMMAND_NAME_LEN, valid_command_name};
+use crate::core::slots::{self, SlotContent};
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use crate::core::tabs::{TabTitleAsk, TabTitleValue};
 use mlua::{
@@ -1422,7 +1423,7 @@ fn query_segments(
             values.push(SegmentAnswer::Hidden { id: name });
             continue;
         };
-        match read_answer(&answer, &name) {
+        match read_answer(&generation.lua, &answer, &name) {
             Ok(value) => values.push(value),
             Err(err) => {
                 log(
@@ -1440,26 +1441,58 @@ fn query_segments(
     });
 }
 
-/// Read one handler's answer table: `{ text = …, side = "left" |
-/// "right" }` — both fields required, the side's words the only two
-/// accepted. Anything else is an error the caller logs once.
-fn read_answer(answer: &Table, name: &str) -> mlua::Result<SegmentAnswer> {
+/// Read one handler's answer table. Two shapes (slot-contract spec):
+/// a `spans`-keyed table is the styled answer — the content parses
+/// through the contract's closed keyset (`parse_content`), validated
+/// before it crosses, and the port's own `side` word lifts off first;
+/// a styled answer may omit it, taking the unanswered slot's own
+/// `Left` fallback (the spec's example carries no side). A plain
+/// `{ text = …, side = "left" | "right" }` parses exactly as today —
+/// both fields required, the side's words the only two accepted,
+/// extra keys ignored. Anything else is an error the caller logs
+/// once: one line, the answer dropped, the prior text standing.
+fn read_answer(lua: &Lua, answer: &Table, name: &str) -> mlua::Result<SegmentAnswer> {
+    if answer.contains_key("spans")? {
+        let side = match answer.get::<Option<String>>("side")? {
+            Some(side) => script_side(&side)?,
+            None => ScriptSide::Left,
+        };
+        // The whole table crosses via mlua's serde path; the port's
+        // own `side` word lifts before the content parse so the
+        // contract's keyset sees only its own words.
+        let mut payload: serde_json::Value =
+            lua.from_value(mlua::Value::Table(answer.to_owned()))?;
+        if let Some(map) = payload.as_object_mut() {
+            map.remove("side");
+        }
+        let content = slots::parse_content(&payload)
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        return Ok(SegmentAnswer::Shown {
+            id: name.to_owned(),
+            side,
+            content,
+        });
+    }
     let text: String = answer.get("text")?;
     let side: String = answer.get("side")?;
-    let side = match side.as_str() {
-        "left" => ScriptSide::Left,
-        "right" => ScriptSide::Right,
-        other => {
-            return Err(mlua::Error::RuntimeError(format!(
-                "the side '{other}' is neither left nor right"
-            )));
-        }
-    };
+    let side = script_side(&side)?;
     Ok(SegmentAnswer::Shown {
         id: name.to_owned(),
         side,
-        text,
+        content: SlotContent::Text(text),
     })
+}
+
+/// The answer's side word, the only two accepted — one rule for both
+/// answer shapes, today's exact message.
+fn script_side(word: &str) -> mlua::Result<ScriptSide> {
+    match word {
+        "left" => Ok(ScriptSide::Left),
+        "right" => Ok(ScriptSide::Right),
+        other => Err(mlua::Error::RuntimeError(format!(
+            "the side '{other}' is neither left nor right"
+        ))),
+    }
 }
 
 /// Build the segment query's ctx payload: the [`StatusInputs`]
@@ -2292,12 +2325,12 @@ mod tests {
                 SegmentAnswer::Shown {
                     id: "net".to_owned(),
                     side: ScriptSide::Right,
-                    text: "cwd is /home/u/src".to_owned(),
+                    content: SlotContent::Text("cwd is /home/u/src".to_owned()),
                 },
                 SegmentAnswer::Shown {
                     id: "git".to_owned(),
                     side: ScriptSide::Left,
-                    text: "branch ok".to_owned(),
+                    content: SlotContent::Text("branch ok".to_owned()),
                 },
             ],
             "the answers land in registration order: {events:?}"
@@ -2346,7 +2379,7 @@ mod tests {
                 SegmentAnswer::Shown {
                     id: "good".to_owned(),
                     side: ScriptSide::Right,
-                    text: "fine".to_owned(),
+                    content: SlotContent::Text("fine".to_owned()),
                 },
                 SegmentAnswer::Hidden {
                     id: "mute".to_owned()
@@ -2384,8 +2417,8 @@ mod tests {
                 HostEvent::SegmentValues { values, .. }
                     if values.iter().any(|answer| matches!(
                         answer,
-                        SegmentAnswer::Shown { id, text, .. }
-                            if id == "good" && text == "fine"
+                        SegmentAnswer::Shown { id, content, .. }
+                            if id == "good" && content == &SlotContent::Text("fine".to_owned())
                     ))
             )),
             "the host still answers after the failures: {second:?}"
@@ -2471,7 +2504,7 @@ mod tests {
             &[SegmentAnswer::Shown {
                 id: "git".to_owned(),
                 side: ScriptSide::Left,
-                text: "v2".to_owned(),
+                content: SlotContent::Text("v2".to_owned()),
             }],
             "only the new registration answers, exactly once: {second:?}"
         );
@@ -2554,7 +2587,8 @@ mod tests {
         assert!(
             reply.1.iter().any(|answer| matches!(
                 answer,
-                SegmentAnswer::Shown { id, text, .. } if id == "slow" && text == "late"
+                SegmentAnswer::Shown { id, content, .. }
+                    if id == "slow" && content == &SlotContent::Text("late".to_owned())
             )),
             "the stale reply carries its values; the drain side decides to drop them: {events:?}"
         );
@@ -2592,6 +2626,12 @@ mod tests {
                  end)\n\
                  d.status_segment('git', function()\n\
                    return {{ text = 'git:1', side = 'left' }}\n\
+                 end)\n\
+                 d.status_segment('mem', function()\n\
+                   return {{ kind = 'styled', side = 'left', spans = {{\n\
+                     {{ icon = 'cpu', text = 'mem', color = 'accent' }},\n\
+                     {{ text = ':512M' }},\n\
+                   }} }}\n\
                  end)"
             ),
         );
@@ -2613,17 +2653,19 @@ mod tests {
             .expect("the reply lands");
         // The drain side's apply: every Shown answer becomes a slot —
         // the shape SG2's shell state keeps, proven here against the
-        // real reply.
+        // real reply. A styled answer rides typed to the state and
+        // flattens at the render surface (slot-contract spec): the
+        // band lays the spans' concatenated text.
         let mut segments = StatusSegments {
             clock: Some("14:32".to_owned()),
             ..StatusSegments::default()
         };
         for answer in values {
-            if let SegmentAnswer::Shown { id, side, text } = answer {
+            if let SegmentAnswer::Shown { id, side, content } = answer {
                 segments.script.push(ScriptSegmentValue {
                     id,
                     side,
-                    text: Some(text),
+                    text: Some(content.plain_text()),
                 });
             }
         }
@@ -2635,9 +2677,156 @@ mod tests {
             .collect();
         assert_eq!(
             laid,
-            vec![("git", "git:1"), ("net", "net:1.2M")],
-            "the reply's values render: the left group before the right, per side in slot order"
+            vec![("git", "git:1"), ("mem", "mem:512M"), ("net", "net:1.2M")],
+            "the reply's values render: the left group before the right, per side in slot order; the styled answer renders its concatenated text"
         );
+    }
+
+    #[test]
+    fn a_styled_answer_round_trips_host_side_as_typed_content() {
+        use crate::core::slots::{SlotColor, SlotContent, Span};
+        let dir = TempDir::new("styled");
+        script(
+            &dir,
+            "styled.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function()\n\
+                   return {{ kind = 'styled', side = 'right', spans = {{\n\
+                     {{ icon = 'arrow-down', text = '▼', color = 'accent' }},\n\
+                     {{ text = ' 1.2 MB/s' }},\n\
+                   }} }}\n\
+                 end)\n\
+                 d.status_segment('bare', function()\n\
+                   return {{ kind = 'styled', spans = {{ {{ text = 'x' }} }} }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 5);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 5, .. }),
+            LONG_WAIT,
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 5, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert_eq!(
+            values,
+            vec![
+                SegmentAnswer::Shown {
+                    id: "net".to_owned(),
+                    side: ScriptSide::Right,
+                    content: SlotContent::Styled {
+                        spans: vec![
+                            Span {
+                                text: "▼".to_owned(),
+                                color: Some(SlotColor::Token("accent".to_owned())),
+                                icon: Some("arrow-down".to_owned()),
+                            },
+                            Span {
+                                text: " 1.2 MB/s".to_owned(),
+                                color: None,
+                                icon: None,
+                            },
+                        ],
+                    },
+                },
+                SegmentAnswer::Shown {
+                    id: "bare".to_owned(),
+                    side: ScriptSide::Left,
+                    content: SlotContent::Styled {
+                        spans: vec![Span {
+                            text: "x".to_owned(),
+                            color: None,
+                            icon: None,
+                        }],
+                    },
+                },
+            ],
+            "the styled answer crosses typed; a side-less styled answer defaults left (the spec's own example shape)"
+        );
+    }
+
+    #[test]
+    fn each_invalid_styled_shape_costs_one_line_and_omits_the_id() {
+        let dir = TempDir::new("styled-bad");
+        script(
+            &dir,
+            "styled-bad.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('badkey', function()\n\
+                   return {{ kind = 'styled', spans = {{ {{ text = 'x', bogus = 1 }} }} }}\n\
+                 end)\n\
+                 d.status_segment('badtext', function()\n\
+                   return {{ kind = 'styled', spans = {{ {{ text = 3 }} }} }}\n\
+                 end)\n\
+                 d.status_segment('badkind', function()\n\
+                   return {{ kind = 'fancy', spans = {{ {{ text = 'x' }} }} }}\n\
+                 end)\n\
+                 d.status_segment('empty', function()\n\
+                   return {{ kind = 'styled', spans = {{}} }}\n\
+                 end)\n\
+                 d.status_segment('badside', function()\n\
+                   return {{ kind = 'styled', side = 'up', spans = {{ {{ text = 'x' }} }} }}\n\
+                 end)\n\
+                 d.status_segment('notarray', function()\n\
+                   return {{ kind = 'styled', spans = 'x' }}\n\
+                 end)\n\
+                 d.status_segment('good', function()\n\
+                   return {{ text = 'fine', side = 'left' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        query(&host, 6);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 6, .. }),
+            LONG_WAIT,
+        );
+        let values = events
+            .iter()
+            .find_map(|event| match event {
+                HostEvent::SegmentValues {
+                    token: 6, values, ..
+                } => Some(values.clone()),
+                _ => None,
+            })
+            .expect("the reply lands");
+        assert_eq!(
+            values,
+            vec![SegmentAnswer::Shown {
+                id: "good".to_owned(),
+                side: ScriptSide::Left,
+                content: crate::core::slots::SlotContent::Text("fine".to_owned()),
+            }],
+            "every broken styled shape omits its id — the prior text stands"
+        );
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        for name in [
+            "badkey", "badtext", "badkind", "empty", "badside", "notarray",
+        ] {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(name)).count(),
+                1,
+                "'{name}' costs exactly one line: {lines:?}"
+            );
+        }
     }
 
     #[test]
