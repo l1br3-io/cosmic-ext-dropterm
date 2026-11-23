@@ -529,16 +529,15 @@ pub struct DropTermConfig {
     /// switch lands.
     pub autosuggestions_menu_enabled: bool,
     /// Whether the completion menu also opens on its own as you type
-    /// (suggest-menu spec, the auto-popup opt-in): with the key on,
-    /// an idle prompt whose typed segment collects two or more
-    /// candidates pops the menu without the chord, closing again
-    /// when narrowing leaves one or nothing and on every ineligibility
-    /// (a foreground child, scroll-away, focus loss). Defaults to
-    /// `false` — no surveyed peer ships auto-popup on, and a
-    /// persistent popup over a grid the terminal does not own is the
-    /// hostility the warp-parity record priced exactly so; `false`
-    /// is today byte-for-bit (the chord is the only opener). Flips
-    /// apply live on the config echo.
+    /// (suggest-parity spec, the auto-popup gate): with the key on,
+    /// an idle prompt whose typed segment changes — at the line end,
+    /// past the two-character floor — collects the providers' full
+    /// sets and pops the menu without the chord (a single qualifying
+    /// row included), re-collecting fresh rows in place while typing
+    /// and closing when the set empties. Defaults to `true` — the
+    /// record's exact-Warp directive (OQ-4); the key survives so
+    /// chord-only behavior stays one `false` away. Flips apply live
+    /// on the config echo.
     pub autosuggestions_menu_auto: bool,
     /// The idle-delay display gate for autosuggestions (suggest-delay
     /// spec): a qualifying suggestion is withheld until the typed
@@ -661,7 +660,7 @@ impl Default for DropTermConfig {
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
             autosuggestions_menu_enabled: true,
-            autosuggestions_menu_auto: false,
+            autosuggestions_menu_auto: true,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
             autosuggestions_completions_extended: true,

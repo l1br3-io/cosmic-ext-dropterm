@@ -917,6 +917,44 @@ fn a_disabled_autosuggestions_round_trips_through_the_config_store() {
 }
 
 #[test]
+fn the_menu_auto_popup_defaults_on() {
+    // The suggest-parity default (spec assumption 4, OQ-4): the
+    // completion menu's as-you-type path ships on — the record's
+    // exact-Warp directive — with the key surviving so chord-only
+    // behavior stays one flip away. The settings section's
+    // `#[serde(default)]` backfills from the struct Default, so a
+    // pre-existing config sees the menu pop without the chord.
+    assert!(
+        DropTermConfig::default().autosuggestions_menu_auto,
+        "the default resolves on"
+    );
+    let dir = TempDir::new("menu-auto-default");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
+
+    let loaded = load_config(&dir);
+    assert!(loaded.autosuggestions_menu_auto);
+    // The file is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+}
+
+#[test]
+fn an_explicit_menu_auto_false_stays_chord_only() {
+    // The opt-out survives the default flip: a present `false` key
+    // is honored — chord-only behavior, one flip from the default
+    // (the control for the default-on pin).
+    let dir = TempDir::new("menu-auto-off");
+    let stored = DropTermConfig {
+        autosuggestions_menu_auto: false,
+        ..DropTermConfig::default()
+    };
+    save_sections(&dir, &stored);
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded, stored);
+    assert!(!loaded.autosuggestions_menu_auto);
+}
+
+#[test]
 fn missing_show_keys_load_as_shown() {
     // A settings section from before the per-segment toggles
     // (status-segments spec): no `status_bar_show_*` keys. The
