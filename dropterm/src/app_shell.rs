@@ -6241,6 +6241,23 @@ fn boot_tab_fleet(
     })
 }
 
+/// The onboarding (summon-onboarding spec): the Yakuake-style
+/// ask-once, consulted at cold boot only — a warm forward exits at
+/// the single-instance seam before GPUI boots, and `Shell::new` must
+/// stay window-free for the test host. Shows while no summon binding
+/// exists and the flow is not retired; a binding through any path
+/// retires it.
+fn open_first_run_onboarding(cx: &mut App, shell: &Entity<Shell>) {
+    shell.update(cx, |shell, cx| {
+        let bound = !shell.settings.summon.display.is_empty();
+        let dismissed = shell.config.onboarding_dismissed;
+        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
+            let entity = cx.entity();
+            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
+        }
+    });
+}
+
 /// Boot the shell: load the config, create the shell entity, and run
 /// the tick that drains verbs and keeps frames flowing. The surface
 /// itself starts hidden — the machine's resting state — exactly like
@@ -6466,20 +6483,7 @@ pub(crate) fn boot(
             pane.update(cx, |pane, _| pane.set_lua_bus(bus));
         }
     }
-    // The onboarding (summon-onboarding spec): the Yakuake-style
-    // ask-once, consulted here at cold boot only — a warm forward
-    // exits at the single-instance seam before GPUI boots, and
-    // Shell::new must stay window-free for the test host. Shows while
-    // no summon binding exists and the flow is not retired; a binding
-    // through any path retires it.
-    shell.update(cx, |shell, cx| {
-        let bound = !shell.settings.summon.display.is_empty();
-        let dismissed = shell.config.onboarding_dismissed;
-        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
-            let entity = cx.entity();
-            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
-        }
-    });
+    open_first_run_onboarding(cx, &shell);
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
     // come and go; the shell owns the machine and must not).
