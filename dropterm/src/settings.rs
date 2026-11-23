@@ -1969,11 +1969,15 @@ impl Render for SettingsWindow {
             .text_color(cx.theme().foreground)
             .child(nav)
             // The content pane: the open page's rows, the terminal's
-            // window full width beside the nav.
+            // window full width beside the nav. `h_full` is load-
+            // bearing: the Kit's `h_flex` installs `items_center`, so
+            // a pane without a height hugs its content and centers
+            // vertically instead of filling the window.
             .child(
                 v_flex()
                     .id("settings-content")
                     .flex_1()
+                    .h_full()
                     .min_w_0()
                     .min_h_0()
                     .overflow_y_scroll()

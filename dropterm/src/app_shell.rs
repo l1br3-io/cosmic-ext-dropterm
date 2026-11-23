@@ -1928,6 +1928,24 @@ struct Pumped {
     quit: bool,
 }
 
+/// The cold-boot onboarding consultation (summon-onboarding spec,
+/// walked into at 2026-11-23's settings-window handoff): the check
+/// reads the shell and the open runs at App level — never inside a
+/// shell update, because `open_onboarding` reads the shell's snapshot
+/// itself, and a read while the shell is being updated panics. The
+/// fresh-dev-config boot hit exactly that: nothing bound, the flow
+/// owed, and the old inline `shell.update` call site panicked the
+/// launch before the first frame. Shows while no summon binding
+/// exists and the flow is not retired; a binding through any path
+/// retires it.
+pub(crate) fn maybe_open_onboarding_at_boot(cx: &mut App, shell: &Entity<Shell>) {
+    let bound = !shell.read(cx).settings.summon.display.is_empty();
+    let dismissed = shell.read(cx).config.onboarding_dismissed;
+    if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
+        crate::onboarding::open_onboarding(cx, shell.clone(), crate::onboarding::Origin::FirstRun);
+    }
+}
+
 /// The Settings window's close watcher (settings-window SW3): the
 /// App's single-subscriber `on_window_closed` slot, so any later
 /// window-close need must go through this dispatcher. The reset runs
@@ -6774,14 +6792,7 @@ pub(crate) fn boot(
     // Shell::new must stay window-free for the test host. Shows while
     // no summon binding exists and the flow is not retired; a binding
     // through any path retires it.
-    shell.update(cx, |shell, cx| {
-        let bound = !shell.settings.summon.display.is_empty();
-        let dismissed = shell.config.onboarding_dismissed;
-        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
-            let entity = cx.entity();
-            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
-        }
-    });
+    crate::app_shell::maybe_open_onboarding_at_boot(cx, &shell);
     // The tick: 100 ms of verb drain + frame pump, holding the shell
     // entity strongly for the app's lifetime (the surface's windows
     // come and go; the shell owns the machine and must not).
@@ -9056,6 +9067,63 @@ mod tests {
                 capture.is_focused(window),
                 "the capture handle holds the keyboard in the settings window"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn the_boot_onboarding_check_opens_fresh_and_stays_shut_bound_or_retired(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // The boot consultation's three arms (summon-onboarding spec,
+        // pinned at the settings-window handoff after the fresh
+        // dev-config boot panicked on the old inline shape): nothing
+        // bound and not retired opens the flow's window; a bound key
+        // or a retired flag opens nothing. The check itself must run
+        // at App level — the old shape ran `open_onboarding` inside a
+        // shell update and panicked on its own snapshot read.
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+
+        // Fresh: the flow owes, one window opens.
+        let ((shell, ..), cx) = {
+            let ((shell, verbs, signals, phase), cx) = shell_with_signal_wire(cx);
+            ((shell, verbs, signals, phase), cx)
+        };
+        cx.update(|_, cx| {
+            let before = cx.windows().len();
+            crate::app_shell::maybe_open_onboarding_at_boot(cx, &shell);
+            assert_eq!(
+                cx.windows().len(),
+                before + 1,
+                "a fresh config opens the onboarding window"
+            );
+        });
+
+        // Bound: the key retires the flow, nothing opens.
+        let ((shell2, ..), cx) = {
+            let ((shell, verbs, signals, phase), cx) = shell_with_signal_wire(cx);
+            ((shell, verbs, signals, phase), cx)
+        };
+        cx.update(|_, cx| {
+            shell2.update(cx, |shell, cx| {
+                shell.settings.summon.display = vec!["Ctrl+Shift+Q".to_string()];
+                cx.notify();
+            });
+            let before = cx.windows().len();
+            crate::app_shell::maybe_open_onboarding_at_boot(cx, &shell2);
+            assert_eq!(cx.windows().len(), before, "a bound key opens nothing");
+        });
+
+        // Retired: the flag retires the flow too.
+        cx.update(|_, cx| {
+            shell2.update(cx, |shell, cx| {
+                shell.settings.summon.display = Vec::new();
+                shell.config.onboarding_dismissed = true;
+                cx.notify();
+            });
+            let before = cx.windows().len();
+            crate::app_shell::maybe_open_onboarding_at_boot(cx, &shell2);
+            assert_eq!(cx.windows().len(), before, "a retired flow opens nothing");
         });
     }
 
