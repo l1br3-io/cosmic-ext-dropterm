@@ -693,21 +693,51 @@ impl TerminalPane {
         let consumed;
         {
             let mut engine = self.terminal.lock().expect("engine lock");
+            // The two-stage Enter's pre-check (suggest-parity spec),
+            // scraped only for a bare Enter: the typed line already
+            // equals the selection — the routing closes-and-processes
+            // so the Enter bytes run the command.
+            let unmodified = !(keystroke.modifiers.control
+                || keystroke.modifiers.alt
+                || keystroke.modifiers.shift
+                || keystroke.modifiers.platform);
+            let equal_line = engine.menu_is_open()
+                && keystroke.key == "enter"
+                && unmodified
+                && engine.menu_selected_equals();
+            // The produced character is the printable test's honest
+            // input — the keystroke's first char, whatever produced it.
+            let key_char = keystroke
+                .key_char
+                .as_deref()
+                .and_then(|chars| chars.chars().next());
             match suggest::menu_routing(
                 &keystroke.key,
                 keystroke.modifiers,
                 engine.menu_is_open(),
                 trigger_chord,
+                key_char,
+                equal_line,
             ) {
                 Some(suggest::MenuRouting::Consume(key)) => {
                     engine.menu_press(key);
                     engine.needs_update = true;
                     consumed = true;
                 }
+                Some(suggest::MenuRouting::KeepOpen) => {
+                    // The press is the shell's and the menu stays
+                    // (suggest-parity spec): the bytes flow through
+                    // the normal handling below, and the echo's
+                    // update recomputes the rows through the
+                    // auto-popup gate. No repaint here — the flowing
+                    // press brings its own.
+                    consumed = false;
+                }
                 Some(suggest::MenuRouting::CloseThenProcess) => {
                     // The press closes the menu, then still processes
                     // below (a claimed key's bytes, an action chord,
-                    // an accept) — the repaint now, the press next.
+                    // an accept, the equal line's Enter) — the
+                    // repaint now, the press next.
                     engine.menu_close();
                     engine.needs_update = true;
                     consumed = false;
@@ -719,6 +749,33 @@ impl TerminalPane {
                     let opened = engine.menu_open();
                     engine.needs_update = opened;
                     consumed = opened;
+                }
+                // The conditioned opener (suggest-parity spec, OQ-1):
+                // no menu, bare Tab — the gates decide. A decline
+                // forwards the Tab bytes to the shell verbatim.
+                None if keystroke.key == "tab" && unmodified => {
+                    let action = engine
+                        .menu_tab_open()
+                        .and_then(|(rows, token)| suggest::tab_while_closed(&rows, &token));
+                    match action {
+                        Some(suggest::TabAction::Insert { suffix }) => {
+                            engine.menu_tab_insert(&suffix);
+                            engine.needs_update = true;
+                            consumed = true;
+                        }
+                        Some(suggest::TabAction::InsertOpen { suffix }) => {
+                            engine.menu_tab_insert(&suffix);
+                            let opened = engine.menu_open();
+                            engine.needs_update = opened;
+                            consumed = opened;
+                        }
+                        Some(suggest::TabAction::Open) => {
+                            let opened = engine.menu_open();
+                            engine.needs_update = opened;
+                            consumed = opened;
+                        }
+                        None => consumed = false,
+                    }
                 }
                 None => return false,
             }

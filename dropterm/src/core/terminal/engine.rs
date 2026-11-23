@@ -2535,6 +2535,53 @@ impl Terminal {
         }
     }
 
+    /// Whether the typed line already equals the menu's selected
+    /// row's label (suggest-parity spec): the two-stage Enter's
+    /// pre-check, the same carve [`Self::menu_press`] presses with —
+    /// the routing layer consults it before a bare Enter so the
+    /// equal line's bytes flow through the normal handler and run
+    /// the command.
+    pub fn menu_selected_equals(&self) -> bool {
+        let (before_cursor, ..) = self.scrape_cursor_line();
+        let Some(typed) = self.suggest.typed_segment(&before_cursor) else {
+            return false;
+        };
+        self.menu.selected_equals(typed)
+    }
+
+    /// The Tab-while-closed opener's inputs (suggest-parity spec,
+    /// OQ-1): the gates — line-end (`after_cursor_blank`), not
+    /// scrolled, a non-empty typed segment; the menu-enabled, idle,
+    /// and focused gates ride [`Self::menu_candidates`]' own — hold,
+    /// and the freshly collected rows plus the typed token answer
+    /// through the pure decision the view pins. `None` is a failed
+    /// gate or an empty collection: the Tab bytes flow verbatim.
+    pub fn menu_tab_open(&mut self) -> Option<(Vec<suggest::MenuCandidate>, String)> {
+        let (before_cursor, after_cursor_blank, display_offset, ..) = self.scrape_cursor_line();
+        if display_offset != 0 || !after_cursor_blank {
+            return None;
+        }
+        let typed = self.suggest.typed_segment(&before_cursor)?;
+        if typed.is_empty() {
+            return None;
+        }
+        let rows = self.menu_candidates();
+        if rows.is_empty() {
+            return None;
+        }
+        Some((rows, suggest::trailing_token(typed).to_string()))
+    }
+
+    /// The Tab-while-closed insert (suggest-parity spec, Warp's
+    /// single-insert resolve): the resolved suffix rides the one
+    /// funnel — typed characters via `input_no_scroll`, never a
+    /// paste — with no menu change (the menu stays closed).
+    pub fn menu_tab_insert(&mut self, suffix: &str) {
+        if !suffix.is_empty() {
+            self.input_no_scroll(suffix.as_bytes().to_vec());
+        }
+    }
+
     /// The cursor line's reduced facts (suggest-menu spec): the
     /// before-cursor text (wide spacers skipped, tabs flattened,
     /// zero-width runs carried), the after-cursor blank fact, the

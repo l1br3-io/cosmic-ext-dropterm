@@ -46,7 +46,7 @@ const RING_CAP: usize = 256;
 /// cache population stays engine-side, outside the model, so the
 /// model itself still spawns nothing and never clocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SuggestionSource {
+pub enum SuggestionSource {
     /// The tab's own scraped command ring.
     History,
     /// The filesystem listing of the typed token's parent directory
@@ -590,8 +590,10 @@ fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
 /// The longest prefix every label in the set shares, cut on a char
 /// boundary — case-sensitive by construction, empty for an empty
 /// set. Tab's fill (suggest-parity spec) computes it over the
-/// token-prefix rows.
-fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
+/// token-prefix rows; `pub` so the view-side Tab-while-closed
+/// decision (the bin's crate) reads the one shared implementation
+/// rather than restating it.
+pub fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
     let Some(first) = labels.first() else {
         return "";
     };
@@ -1486,9 +1488,13 @@ fn merged_candidate(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuCandidate {
     pub label: String,
-    pub(crate) suffix: String,
+    /// The exact bytes an accept or fill writes through the one
+    /// funnel — `pub` for the bin's view-side fixtures and the
+    /// Tab-while-closed decision's insert payloads (suggest-parity
+    /// spec); the funnel contract is the engine's alone.
+    pub suffix: String,
     pub description: Option<String>,
-    pub(crate) source: SuggestionSource,
+    pub source: SuggestionSource,
 }
 
 /// The completion menu's loading row (async-completions): the engine
@@ -2086,8 +2092,10 @@ fn is_command_position(typed: &str) -> bool {
 /// whitespace, the word being entered: `git che` carves `che`;
 /// `git\ myp` carves itself (the escaped space keeps the word open);
 /// leading whitespace never survives the carve. The path provider
-/// completes this token.
-fn trailing_token(typed: &str) -> &str {
+/// completes this token; `pub` so the view-side Tab-while-closed
+/// decision (the bin's crate) carves the same word (suggest-parity
+/// spec) — the seam's visibility rule, `MenuKey`'s precedent.
+pub fn trailing_token(typed: &str) -> &str {
     let mut token_start = 0;
     let mut escaped = false;
     for (idx, c) in typed.char_indices() {

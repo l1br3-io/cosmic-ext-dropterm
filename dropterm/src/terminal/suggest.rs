@@ -35,21 +35,33 @@ use gpui::{Bounds, Modifiers, Pixels, Point};
 /// on the decline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuRouting {
-    /// The press is the menu's: navigate, accept, or close (Escape,
-    /// the trigger chord's toggle).
+    /// The press is the menu's: navigate, fill, accept, or close.
     Consume(MenuKey),
+    /// The press is the shell's and the menu stays: an unmodified
+    /// printable while the menu shows — the as-you-type edit keeps
+    /// it alive, the rows recompute engine-side (suggest-parity
+    /// spec, record finding 4).
+    KeepOpen,
     /// The press closes the menu, then processes normally.
     CloseThenProcess,
 }
 
 /// The scoped routing itself — pure, pinned headless against the
 /// libcosmic rules (the same table in GPUI's key names: `"up"`,
-/// `"down"`, `"tab"`, `"enter"`, `"escape"`).
+/// `"down"`, `"tab"`, `"enter"`, `"escape"`). `key_char` is the
+/// keystroke's produced character — the printable test's honest
+/// input, shift-bearing capitals included (an edit is an edit; only
+/// the command modifiers ctrl/alt/super exempt a key). `equal_line`
+/// is the engine's two-stage Enter pre-check — the typed line
+/// already equals the selection — consulted only for a bare Enter,
+/// which then closes-and-processes so the bytes run the command.
 pub(crate) fn menu_routing(
     key: &str,
     modifiers: Modifiers,
     open: bool,
     trigger_chord: bool,
+    key_char: Option<char>,
+    equal_line: bool,
 ) -> Option<MenuRouting> {
     if !open {
         return None;
@@ -57,17 +69,103 @@ pub(crate) fn menu_routing(
     if trigger_chord {
         return Some(MenuRouting::Consume(MenuKey::Other));
     }
-    if !(modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform) {
+    // The command modifiers exempt a key from the menu's claims —
+    // chords are the shell's. Shift on a printable is not a command
+    // modifier: an edit is an edit.
+    let no_command_mods = !(modifiers.control || modifiers.alt || modifiers.platform);
+    let unmodified = no_command_mods && !modifiers.shift;
+    if unmodified {
         match key {
             "up" => return Some(MenuRouting::Consume(MenuKey::Up)),
             "down" => return Some(MenuRouting::Consume(MenuKey::Down)),
             "tab" => return Some(MenuRouting::Consume(MenuKey::Tab)),
-            "enter" => return Some(MenuRouting::Consume(MenuKey::Accept)),
+            "enter" => {
+                // The two-stage Enter (suggest-parity spec, record
+                // finding 4): an equal line closes-and-processes so
+                // the Enter bytes run the command; a differing line
+                // accepts the suffix and closes.
+                return Some(if equal_line {
+                    MenuRouting::CloseThenProcess
+                } else {
+                    MenuRouting::Consume(MenuKey::Accept)
+                });
+            }
             "escape" => return Some(MenuRouting::Consume(MenuKey::Other)),
             _ => {}
         }
     }
+    // Warp's select-prev (record finding 4): Shift+Tab cycles up
+    // while the menu shows.
+    if no_command_mods && modifiers.shift && key == "tab" {
+        return Some(MenuRouting::Consume(MenuKey::Up));
+    }
+    // The as-you-type edit (record finding 4): a printable keeps the
+    // menu alive — the key's bytes flow to the PTY and the rows
+    // recompute on the echo's update (SP3's gate).
+    if no_command_mods && key_char.is_some() {
+        return Some(MenuRouting::KeepOpen);
+    }
     Some(MenuRouting::CloseThenProcess)
+}
+
+/// The Tab-while-closed resolution's action (suggest-parity spec,
+/// Warp's `explicit_tab_completion` over OQ-1's conditioned open):
+/// what the collected rows resolve a bare Tab into. `None` — the
+/// caller's gate failure or nothing qualifying — is not an action:
+/// the Tab bytes flow to the shell verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TabAction {
+    /// The single prefix row's remainder inserts directly and the
+    /// menu stays closed.
+    Insert {
+        /// The row's suffix — the exact bytes the typed line gains.
+        suffix: String,
+    },
+    /// A case-sensitive common prefix longer than the typed token
+    /// inserts, and the menu opens over the fresh collection.
+    InsertOpen {
+        /// The LCP's remainder — the exact bytes the typed line
+        /// gains.
+        suffix: String,
+    },
+    /// Rows exist with nothing to insert: the menu opens.
+    Open,
+}
+
+/// The Tab-while-closed decision itself — pure, pinned headless
+/// beside [`menu_routing`]: the gates (menu enabled, idle, focused,
+/// line-end, a non-empty typed segment) are the caller's; this reads
+/// only the collected rows and the typed token. `None` is nothing
+/// qualifying — no rows, or no row extending the token — and the Tab
+/// bytes flow. Warp's `explicit_tab_completion` shape (suggest-parity
+/// spec, record finding 5): exactly one prefix row inserts its
+/// remainder directly (the menu stays closed); a case-sensitive
+/// common prefix longer than the token inserts and opens; rows with
+/// nothing to insert open.
+pub(crate) fn tab_while_closed(
+    rows: &[suggest::MenuCandidate],
+    typed_token: &str,
+) -> Option<TabAction> {
+    let matching: Vec<&suggest::MenuCandidate> = rows
+        .iter()
+        .filter(|row| row.label.starts_with(typed_token))
+        .collect();
+    if matching.len() == 1 {
+        return Some(TabAction::Insert {
+            suffix: matching[0].suffix.clone(),
+        });
+    }
+    let labels: Vec<&str> = matching.iter().map(|row| row.label.as_str()).collect();
+    let lcp = suggest::longest_common_prefix(&labels);
+    if lcp.len() > typed_token.len() {
+        return Some(TabAction::InsertOpen {
+            suffix: lcp[typed_token.len()..].to_string(),
+        });
+    }
+    if rows.is_empty() || matching.is_empty() {
+        return None;
+    }
+    Some(TabAction::Open)
 }
 
 /// The autosuggest soft keys (the libcosmic `accept_kind`): bare
@@ -224,7 +322,7 @@ mod tests {
             ("a", bare()),
         ] {
             assert_eq!(
-                menu_routing(key, modifiers, false, true),
+                menu_routing(key, modifiers, false, true, None, false),
                 None,
                 "closed menu routes nothing: {key}"
             );
@@ -235,28 +333,28 @@ mod tests {
     fn an_open_menu_claims_its_bare_keys() {
         // The menu's own keys: navigate, accept, close — bare only.
         assert_eq!(
-            menu_routing("up", bare(), true, false),
+            menu_routing("up", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Up))
         );
         assert_eq!(
-            menu_routing("down", bare(), true, false),
+            menu_routing("down", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Down))
         );
         assert_eq!(
-            menu_routing("tab", bare(), true, false),
+            menu_routing("tab", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Tab))
         );
         assert_eq!(
-            menu_routing("enter", bare(), true, false),
+            menu_routing("enter", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Accept))
         );
         assert_eq!(
-            menu_routing("escape", bare(), true, false),
+            menu_routing("escape", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Other))
         );
         // The trigger chord's toggle-close outranks them all.
         assert_eq!(
-            menu_routing("space", ctrl(), true, true),
+            menu_routing("space", ctrl(), true, true, None, false),
             Some(MenuRouting::Consume(MenuKey::Other))
         );
     }
@@ -264,21 +362,139 @@ mod tests {
     #[test]
     fn every_press_an_open_menu_does_not_claim_closes_it_first() {
         // VS Code's HasFocusedSuggestion shape: a modified claimed
-        // key, a bare unclaimed key, and a bound action chord all
-        // read CloseThenProcess — the press still processes normally
-        // below (the ghost's accepts included).
-        for (key, modifiers) in [
-            ("up", ctrl()),
-            ("up", shift()),
-            ("a", bare()),
-            ("c", ctrl()),
+        // key, a bare unclaimed non-printable, and a bound action
+        // chord all read CloseThenProcess — the press still processes
+        // normally below (the ghost's accepts included).
+        for (key, modifiers, key_char) in [
+            ("up", ctrl(), None),
+            ("up", shift(), None),
+            ("home", bare(), None),
+            ("c", ctrl(), None),
         ] {
             assert_eq!(
-                menu_routing(key, modifiers, true, false),
+                menu_routing(key, modifiers, true, false, key_char, false),
                 Some(MenuRouting::CloseThenProcess),
                 "unclaimed press closes: {key}"
             );
         }
+    }
+
+    /// Menu rows from (label, suffix) pairs — the routing-side
+    /// fixtures for the Tab-while-closed decision.
+    fn menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
+        entries
+            .iter()
+            .map(|(label, suffix)| suggest::MenuCandidate {
+                label: (*label).to_string(),
+                suffix: (*suffix).to_string(),
+                description: None,
+                source: suggest::SuggestionSource::Specs,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_printable_keeps_the_menu_open() {
+        // The as-you-type rule (suggest-parity spec, record finding
+        // 4): an unmodified printable is an edit, not a close — the
+        // menu stays and the key's bytes flow to the PTY; the rows
+        // recompute on the echo's update.
+        assert_eq!(
+            menu_routing("a", bare(), true, false, Some('a'), false),
+            Some(MenuRouting::KeepOpen)
+        );
+        assert_eq!(
+            menu_routing("space", bare(), true, false, Some(' '), false),
+            Some(MenuRouting::KeepOpen)
+        );
+    }
+
+    #[test]
+    fn a_capital_is_still_a_printable_edit() {
+        // Shift is not a command modifier on a printable: typing a
+        // capital keeps the menu (an edit is an edit); only
+        // ctrl/alt/super exempt a key.
+        assert_eq!(
+            menu_routing("a", shift(), true, false, Some('A'), false),
+            Some(MenuRouting::KeepOpen)
+        );
+    }
+
+    #[test]
+    fn shift_tab_selects_previous_while_open() {
+        // Warp's completions menu claims Shift+Tab as the
+        // select-prev (suggest-parity spec, record finding 4) — no
+        // longer the close-then-process fall-through.
+        assert_eq!(
+            menu_routing("tab", shift(), true, false, None, false),
+            Some(MenuRouting::Consume(MenuKey::Up))
+        );
+    }
+
+    #[test]
+    fn enter_on_an_equal_line_runs_instead() {
+        // The two-stage Enter (suggest-parity spec, record finding
+        // 4): the typed line already equals the selection — the
+        // routing closes-and-processes so the Enter bytes reach the
+        // shell and the command runs.
+        assert_eq!(
+            menu_routing("enter", bare(), true, false, Some('\r'), true),
+            Some(MenuRouting::CloseThenProcess)
+        );
+    }
+
+    #[test]
+    fn enter_on_a_differing_line_accepts() {
+        // The accept stage: a differing line's Enter is the menu's —
+        // the suffix lands and the menu closes.
+        assert_eq!(
+            menu_routing("enter", bare(), true, false, Some('\r'), false),
+            Some(MenuRouting::Consume(MenuKey::Accept))
+        );
+    }
+
+    #[test]
+    fn a_single_prefix_row_inserts_directly_and_stays_closed() {
+        // Warp's explicit_tab_completion over OQ-1 (suggest-parity
+        // spec): exactly one prefix row — its remainder inserts
+        // through the funnel and no menu opens.
+        let rows = menu_rows(&[("gitk", "tk")]);
+        assert_eq!(
+            tab_while_closed(&rows, "gi"),
+            Some(TabAction::Insert {
+                suffix: "tk".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn a_shared_prefix_longer_than_typed_inserts_and_opens() {
+        // Rows `git`/`gitk` over `gi`: the case-sensitive LCP `git`
+        // extends the token — `t` inserts and the menu opens.
+        let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
+        assert_eq!(
+            tab_while_closed(&rows, "gi"),
+            Some(TabAction::InsertOpen {
+                suffix: "t".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn rows_without_an_extending_prefix_open() {
+        // Rows `git`/`gut` over `g`: the LCP is the token itself —
+        // nothing to insert — so the menu opens.
+        let rows = menu_rows(&[("git", "it"), ("gut", "ut")]);
+        assert_eq!(tab_while_closed(&rows, "g"), Some(TabAction::Open));
+    }
+
+    #[test]
+    fn nothing_qualifying_forwards_the_tab() {
+        // No rows, or no row extending the token: nothing qualifies,
+        // the Tab bytes flow to the shell verbatim.
+        assert_eq!(tab_while_closed(&[], "gi"), None);
+        let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
+        assert_eq!(tab_while_closed(&rows, "zz"), None, "no prefix row");
     }
 
     #[test]
