@@ -3905,7 +3905,7 @@ impl Shell {
             // One window per process: the page swaps in place and
             // the window asks for focus.
             shell.update(cx, |shell, cx| {
-                shell.settings.page = page;
+                shell.set_settings_page(page, cx);
                 println!(
                     "dropterm: settings window page -> {page:?} at +{}ms",
                     shell.boot.elapsed().as_millis()
@@ -3982,6 +3982,15 @@ impl Shell {
                 shell.update(cx, |shell, _| {
                     shell.settings_window = Some(any);
                 });
+                // The key context needs a focused element within the
+                // window (the palette's own open shape): the capture
+                // handle takes the keyboard at open, so Escape and the
+                // chord resolve in here and the capture's hand-off has
+                // a seat to leave from.
+                let _ = any.update(cx, |_, window, cx| {
+                    let capture = shell.read(cx).settings_capture_focus.clone();
+                    capture.focus(window, cx);
+                });
                 println!(
                     "dropterm: settings window opened at {page:?} at +{}ms",
                     shell.read(cx).boot.elapsed().as_millis()
@@ -3995,6 +4004,30 @@ impl Shell {
                 });
             }
         }
+    }
+
+    /// The page swap's one door (settings-window SW7): leaving the
+    /// Profiles page clears its draft and any armed delete — core's
+    /// `apply_profile_draft_transition(Clear)` finally gains its
+    /// caller — so the page never carries a stale half-form.
+    pub(crate) fn set_settings_page(
+        &mut self,
+        page: dropterm::core::settings::SettingsPage,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.page == dropterm::core::settings::SettingsPage::Profiles
+            && page != dropterm::core::settings::SettingsPage::Profiles
+            && (self.settings.profile_draft.is_some()
+                || self.settings.profile_delete_armed.is_some())
+        {
+            dropterm::core::settings::apply_profile_draft_transition(
+                &mut self.settings.profile_draft,
+                dropterm::core::settings::ProfileDraftTransition::Clear,
+            );
+            self.settings.profile_delete_armed = None;
+        }
+        self.settings.page = page;
+        cx.notify();
     }
 
     /// Every close route's landing (settings-window SW3): the
@@ -4702,23 +4735,6 @@ impl Shell {
             && let Err(err) = self.signals_tx.send(view::PaneSignal::Hide)
         {
             println!("dropterm: launch hide signal failed: {err}");
-        }
-    }
-
-    /// The summon-key setup's dismissal (the onboarding-over-drawer
-    /// shape): this surface rides the Overlay layer, which the
-    /// compositor stacks above every toplevel, so the flow's window
-    /// can only stand alone once the dropdown is down. With
-    /// hide-on-focus-loss on, the window's own focus handoff hides
-    /// it; off, the explicit Hide rides the same pane-signal funnel,
-    /// decided at the tick's window point, never inside the verb's
-    /// event handler. `Origin::FirstRun` never calls this — nothing
-    /// is mapped at a cold boot.
-    pub(crate) fn dismiss_for_summon_setup(&mut self) {
-        if !dropterm::core::surface_lifecycle::focus_loss_hides(self.inputs.hide_on_focus_loss)
-            && let Err(err) = self.signals_tx.send(view::PaneSignal::Hide)
-        {
-            println!("dropterm: setup hide signal failed: {err}");
         }
     }
 
@@ -8867,6 +8883,180 @@ mod tests {
             !body.contains("write_settings"),
             "the nav click must never write config:\n{body}"
         );
+    }
+
+    #[gpui::test]
+    fn escape_cancels_a_profile_draft_before_closing(cx: &mut gpui::TestAppContext) {
+        // Escape's layering in the window (settings-window SW7): an
+        // open profile draft cancels first — the window stands, the
+        // draft is gone — and only the next Escape closes, queuing
+        // the return.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Profiles,
+                cx,
+            );
+        });
+        // An open draft.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.settings.profile_draft = Some(dropterm::core::settings::ProfileDraft {
+                    mode: dropterm::core::settings::ProfileDraftMode::Add,
+                    name: "half-typed".to_string(),
+                    command: String::new(),
+                    cwd: String::new(),
+                    scheme: None,
+                    font_size: String::new(),
+                    scrollback: String::new(),
+                    env_rows: Vec::new(),
+                    errors: Vec::new(),
+                });
+                cx.notify();
+            });
+        });
+        // The first Escape: the draft cancels, the window stands.
+        let handle = cx.update(|_, cx| shell.read(cx).settings_window);
+        let _ = handle
+            .expect("the window stands")
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(
+                    Box::new(crate::app_shell::DismissSettings) as Box<dyn gpui::Action>,
+                    cx,
+                );
+            });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(
+                read.settings.profile_draft.is_none(),
+                "the first Escape canceled the draft"
+            );
+            assert!(read.settings_window.is_some(), "the window stood");
+            assert!(read.settings.open, "the window stands");
+        });
+        // The second Escape: the window closes and the return rides.
+        let handle = cx.update(|_, cx| shell.read(cx).settings_window);
+        let _ = handle
+            .expect("the window stands")
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(
+                    Box::new(crate::app_shell::DismissSettings) as Box<dyn gpui::Action>,
+                    cx,
+                );
+            });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(read.settings_window.is_none(), "the second Escape closed");
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Hidden),
+                "the surface stands hidden before the tick"
+            );
+        });
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                "the close's return brought the surface back"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn leaving_the_profiles_page_clears_the_draft(cx: &mut gpui::TestAppContext) {
+        // Leaving Profiles (settings-window SW7): the draft and any
+        // armed delete clear — core's apply_profile_draft_transition
+        // finally gains its caller — whatever route swaps the page.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Profiles,
+                cx,
+            );
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.settings.profile_draft = Some(dropterm::core::settings::ProfileDraft {
+                    mode: dropterm::core::settings::ProfileDraftMode::Add,
+                    name: "unsaved".to_string(),
+                    command: String::new(),
+                    cwd: String::new(),
+                    scheme: None,
+                    font_size: String::new(),
+                    scrollback: String::new(),
+                    env_rows: Vec::new(),
+                    errors: Vec::new(),
+                });
+                shell.settings.profile_delete_armed = Some(0);
+                cx.notify();
+            });
+        });
+        // The nav route out of Profiles.
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Appearance,
+                cx,
+            );
+        });
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert_eq!(
+                read.settings.page,
+                dropterm::core::settings::SettingsPage::Appearance
+            );
+            assert!(
+                read.settings.profile_draft.is_none(),
+                "the draft cleared on leaving Profiles"
+            );
+            assert!(
+                read.settings.profile_delete_armed.is_none(),
+                "the armed delete cleared too"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn the_capture_holds_the_keyboard_in_the_window(cx: &mut gpui::TestAppContext) {
+        // A capture armed from the window (settings-window SW7): the
+        // capture handle focuses in that window — the pane's claim
+        // never reaches across, the window's key context holds the
+        // keyboard while the capture stands.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Keybindings,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let handle = cx.update(|_, cx| shell.read(cx).settings_window);
+        let mut settings = gpui::VisualTestContext::from_window(handle.expect("the window"), cx);
+        // Arm a capture through the handler the row drives: the
+        // capture handle takes the keyboard inside the window that
+        // tracks it.
+        settings.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.keybind_capture_start("zoom_in".to_string(), window, cx);
+            });
+        });
+        settings.update(|window, cx| {
+            let capture = shell.read(cx).settings_capture_focus.clone();
+            assert!(
+                capture.is_focused(window),
+                "the capture handle holds the keyboard in the settings window"
+            );
+        });
     }
 
     #[gpui::test]

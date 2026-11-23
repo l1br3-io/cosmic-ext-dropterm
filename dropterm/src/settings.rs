@@ -1712,15 +1712,16 @@ impl SettingsWindow {
         // The re-trigger (summon-onboarding spec): the same step the
         // cold boot opens, from the settings panel. Closing from this
         // origin persists nothing. The dropdown leaves first (the
-        // onboarding-over-drawer shape): this surface's Overlay layer
-        // always stacks above a toplevel, so the flow's window only
-        // stands above everything once the drawer is down.
+        // spec assumption 8): the flow's window opens over the
+        // standing Settings window — nothing is left to dismiss, and
+        // a commit or a "Check again" there refreshes the Global
+        // group's chord through the snapshot this window already
+        // reads.
         let shell = self.shell.clone();
         group = group.child(small_button(
             "summon-open-onboarding",
             "Set up the summon key…",
             move |_, cx| {
-                shell.update(cx, |shell, _| shell.dismiss_for_summon_setup());
                 crate::onboarding::open_onboarding(
                     cx,
                     shell.clone(),
@@ -1932,15 +1933,29 @@ impl Render for SettingsWindow {
                 move |_: &crate::app_shell::DismissSettings,
                       window: &mut gpui::Window,
                       cx: &mut gpui::App| {
-                    // A user close: the cause set in one short shell
-                    // update, the removal at App level — the
-                    // observer then updates the shell with no borrow
-                    // on the stack (SW3's rule).
-                    target.update(cx, |shell, _| {
-                        shell.settings_close_cause =
-                            Some(dropterm::core::settings::CloseCause::User);
+                    // Escape peels one layer at a time (settings-window
+                    // SW7): an open profile draft cancels first — the
+                    // window stands — and only with neither draft nor
+                    // armed delete does Escape close, the cause set in
+                    // one short shell update, `remove_window` at App
+                    // level (SW3's rule).
+                    let mut closes = false;
+                    target.update(cx, |shell, cx| {
+                        if shell.settings.profile_draft.is_some()
+                            || shell.settings.profile_delete_armed.is_some()
+                        {
+                            shell.settings.profile_draft = None;
+                            shell.settings.profile_delete_armed = None;
+                            cx.notify();
+                        } else {
+                            shell.settings_close_cause =
+                                Some(dropterm::core::settings::CloseCause::User);
+                            closes = true;
+                        }
                     });
-                    window.remove_window();
+                    if closes {
+                        window.remove_window();
+                    }
                 }
             })
             .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
@@ -2057,8 +2072,7 @@ impl SettingsWindow {
                             let target = target.clone();
                             move |_, _window, cx| {
                                 target.update(cx, |shell, cx| {
-                                    shell.settings.page = *listed;
-                                    cx.notify();
+                                    shell.set_settings_page(*listed, cx);
                                 });
                             }
                         }),
