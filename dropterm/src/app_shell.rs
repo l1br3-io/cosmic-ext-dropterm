@@ -1163,6 +1163,21 @@ impl Shell {
                 let intents = self.machine.decide_hide(self.inputs);
                 self.execute_into(intents, actions);
             }
+            view::PaneSignal::Show => {
+                // The settings return's funnel rule (settings-window
+                // SW2): `show_intent` at the tick, never through
+                // `dispatch` — the sr-1 lesson: terminal effects are
+                // decided at the tick's window point, and the toggle
+                // debounce must not drop a return that follows a
+                // summon quickly. A hidden surface starts its show, a
+                // shown or measuring one is left alone (the guards
+                // decide), the phase is published either way.
+                println!(
+                    "dropterm: pane show signal -> the show funnel at +{}ms",
+                    self.boot.elapsed().as_millis()
+                );
+                self.show_intent(actions);
+            }
             view::PaneSignal::Exited(id) => {
                 // A shell exit closes its tab ungated (never the
                 // confirm gate); the close touches panes and may
@@ -3870,16 +3885,14 @@ impl Shell {
         });
     }
 
-    /// Close the drawer: the explicit close clears the buffer (the
-    /// reopen-fresh rule; a focus-loss hide preserves — the shell
-    /// hides with the surface and this path never runs for a hide).
+    /// Close the drawer: every close clears the buffer (the
+    /// reopen-fresh rule; a hide preserves — the shell hides with
+    /// the surface and this path never runs for a hide).
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let _ = window;
         self.settings.open = false;
         self.settings_drawer = None;
-        self.settings
-            .buffer
-            .apply_drawer_transition(dropterm::core::settings::DrawerTransition::ExplicitClose);
+        self.settings.buffer.clear();
         println!(
             "dropterm: settings drawer closed at +{}ms",
             self.boot.elapsed().as_millis()
@@ -7803,6 +7816,79 @@ mod tests {
         (shell, verbs_tx, tray_tx, cx)
     }
 
+    /// The pane-signal tests' scaffold handles: the shell, both wires
+    /// (the verb channel a dispatch-shaped probe rides, the signal
+    /// channel the panes hold), and the published phase's handle.
+    type SignalWire = (
+        Entity<Shell>,
+        std::sync::mpsc::Sender<cli::Action>,
+        std::sync::mpsc::Sender<view::PaneSignal>,
+        std::sync::Arc<std::sync::Mutex<SurfacePhase>>,
+    );
+
+    /// The scaffold the pane-signal tests share: the shell plus both
+    /// wires and the published phase's handle, so a test can read
+    /// what the tick published.
+    fn shell_with_signal_wire(
+        cx: &mut gpui::TestAppContext,
+    ) -> (SignalWire, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let (verbs_tx, verbs_rx) = std::sync::mpsc::channel();
+        let (signals_tx, signals_rx) = std::sync::mpsc::channel();
+        let (_config_tx, config_rx) = std::sync::mpsc::channel();
+        let (specs_tx, specs_rx) = std::sync::mpsc::channel::<SpecsTable>();
+        let phase = Arc::new(std::sync::Mutex::new(SurfacePhase::Hidden));
+        let mut tabs = tab_bar::TabList::default();
+        tabs.spawn(false);
+        let signals_wire = signals_tx.clone();
+        let shell = cx.update(|_window, cx| {
+            let (modal_focus, settings_focus) = (cx.focus_handle(), cx.focus_handle());
+            let shell_phase = Arc::clone(&phase);
+            cx.new(|_| {
+                Shell::new(
+                    Instant::now(),
+                    Verdict::LayerShell,
+                    SurfaceInputs::from_config(&DropTermConfig::default()),
+                    shell_phase,
+                    Arc::new(std::sync::Mutex::new(0u32)),
+                    verbs_rx,
+                    // The scaffold's startup action: Hide, not the
+                    // default Toggle — the surface stands hidden
+                    // while the first pump still arms the toggle
+                    // debounce exactly as any accepted verb does,
+                    // which is the pane-signal tests' precondition.
+                    cli::Action::Hide,
+                    tabs,
+                    HashMap::new(),
+                    DropTermConfig::default(),
+                    signals_wire,
+                    signals_rx,
+                    (
+                        "cosmic-dark".to_string(),
+                        true,
+                        [None; alacritty_terminal::term::color::COUNT],
+                    ),
+                    Vec::new(),
+                    None,
+                    config_rx,
+                    modal_focus,
+                    None,
+                    gpui::Font::default(),
+                    settings_focus,
+                    SpecsWatch {
+                        table: None,
+                        tx: specs_tx,
+                        rx: specs_rx,
+                    },
+                    std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
+                    dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                )
+            })
+        });
+        ((shell, verbs_tx, signals_tx, phase), cx)
+    }
+
     #[gpui::test]
     fn a_quit_verb_bypasses_the_debounce_persists_then_quits(cx: &mut gpui::TestAppContext) {
         // The quit decision layer (tray Task T2): a quit must not be
@@ -8353,6 +8439,102 @@ mod tests {
             assert!(
                 !shell.read(cx).settings.open,
                 "the repeat Settings verb must close the drawer"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_show_signal_runs_the_show_funnel(cx: &mut gpui::TestAppContext) {
+        // The settings return's wire (settings-window SW2): the tick
+        // answers a `PaneSignal::Show` with `show_intent` — a hidden
+        // surface starts its show (no measurement retained in the
+        // scaffold, so the measuring pass opens), a shown or
+        // measuring one is left alone (the same handle stands), and
+        // the phase is published for the served-state mirror.
+        let ((shell, _verbs, signals, phase), cx) = shell_with_signal_wire(cx);
+        // Absorb the scaffold's startup action first, so the signal
+        // pump below is purely the funnel's answer.
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(matches!(shell.read(cx).machine.state, SurfaceState::Hidden));
+        });
+        signals
+            .send(view::PaneSignal::Show)
+            .expect("the return queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                "the hidden surface started its show on the signal"
+            );
+        });
+        assert_eq!(
+            *phase.lock().expect("the phase lock"),
+            SurfacePhase::Measuring,
+            "the show's phase is published"
+        );
+        // A redundant return while the surface is on its way: the
+        // funnel's own guard leaves it alone — the same handle, no
+        // second start.
+        let handle_before = cx.update(|_, cx| match shell.read(cx).machine.state {
+            SurfaceState::Measuring(handle) => handle,
+            other => panic!("the surface left Measuring: {other:?}"),
+        });
+        signals
+            .send(view::PaneSignal::Show)
+            .expect("the second return queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(
+                matches!(
+                    shell.read(cx).machine.state,
+                    SurfaceState::Measuring(h) if h == handle_before
+                ),
+                "a redundant Show leaves the on-its-way surface alone"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_return_is_not_dropped_by_the_toggle_debounce(cx: &mut gpui::TestAppContext) {
+        // The funnel rule the return rides (settings-window SW2): the
+        // tick answers `PaneSignal::Show` with `show_intent`, never
+        // through `dispatch` — so a return that follows a summon
+        // quickly (the window opened, hid the surface, and closed
+        // again inside the debounce window) cannot be dropped the way
+        // a dispatch-shaped verb would be. The scaffold's first pump
+        // absorbs the startup action (Hide here — the surface stays
+        // hidden) and arms the debounce exactly as any accepted verb
+        // does; the control dispatch inside the window proves the
+        // guard is genuinely standing before the return bypasses it.
+        let ((shell, verbs, signals, _phase), cx) = shell_with_signal_wire(cx);
+        // Absorb the startup action: the debounce is armed now, the
+        // surface hidden.
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(matches!(shell.read(cx).machine.state, SurfaceState::Hidden));
+        });
+        // The control: a dispatch-shaped show inside the debounce
+        // window is dropped — the guard is genuinely armed.
+        verbs.send(cli::Action::Show).expect("the show verb queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Hidden),
+                "a dispatch-shaped show inside the window is dropped by the debounce"
+            );
+        });
+        // The return, still inside the same debounce window: the tick
+        // answers it with `show_intent` and the hidden surface starts
+        // its show anyway.
+        signals
+            .send(view::PaneSignal::Show)
+            .expect("the return queues");
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            assert!(
+                matches!(shell.read(cx).machine.state, SurfaceState::Measuring(_)),
+                "the return started the show despite the armed debounce"
             );
         });
     }

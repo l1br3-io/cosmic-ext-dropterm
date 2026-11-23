@@ -109,6 +109,20 @@ pub(crate) struct WalkLog {
 /// shell and only logs.
 pub(crate) enum PaneSignal {
     Hide,
+    /// The Settings window's return request (settings-window SW2):
+    /// the drop-down's show funnel runs at the tick — never through
+    /// `dispatch`, so the toggle debounce cannot drop a return that
+    /// follows a summon quickly. No production sender yet: SW3's
+    /// close path queues it; the bin tests exercise the tick arm
+    /// meanwhile.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "SW3's close path sends it; the tests ride the arm meanwhile"
+        )
+    )]
+    Show,
     /// The pane's terminal exited; the tab closes through the
     /// ungated tail, never the confirm gate.
     Exited(TabId),

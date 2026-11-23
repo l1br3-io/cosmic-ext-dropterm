@@ -1312,20 +1312,35 @@ pub fn slider_release_write(key: ConfigKey, value: f32) -> Option<PlannedWrite> 
     }
 }
 
-/// A drawer lifecycle transition (spec criterion 8): which of the two
-/// paths that ends a drawer-over-terminal moment fired. The rule they
-/// encode — [`SettingsBuffer::apply_drawer_transition`] — is the
-/// close-clears vs hide-preserves decision, headless-testable.
+/// Why the Settings window closed — the one fact the terminal's
+/// response depends on (settings-window SW2, the exclusive pair).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawerTransition {
-    /// An explicit close: Escape, the toggle's repeat press, or the
-    /// drawer's Close button. The next open starts fresh from
-    /// config.
-    ExplicitClose,
-    /// The surface hid — focus loss per `hide_on_focus_loss`, or an
-    /// explicit hide — with the drawer open. The drawer and its
-    /// in-flight drafts survive untouched for the next show.
-    FocusLossHide,
+pub enum CloseCause {
+    /// The user closed it: the title bar's ✕, Escape at the top
+    /// layer, the settings chord inside the window. The terminal
+    /// returns.
+    User,
+    /// The terminal's own re-show closed it: nothing to return.
+    Superseded,
+}
+
+/// What the terminal does after the Settings window closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalEffect {
+    /// The drop-down's return request rides the pane-signal funnel.
+    Return,
+    /// Nothing: the terminal's own re-show closed the window.
+    None,
+}
+
+/// The close's one decision, headless-testable: a user close brings
+/// the drop-down back, a supersede does not (the show that closed
+/// the window is the show).
+pub const fn terminal_effect(cause: CloseCause) -> TerminalEffect {
+    match cause {
+        CloseCause::User => TerminalEffect::Return,
+        CloseCause::Superseded => TerminalEffect::None,
+    }
 }
 
 /// The settings window's in-flight state: text drafts buffered only
@@ -1395,22 +1410,12 @@ impl SettingsBuffer {
     }
 
     /// Drop everything (window close): the next window renders purely
-    /// from config — reopen freshness by construction.
+    /// from config — reopen freshness by construction. The close's
+    /// whole story now: every close clears, a hide preserves by
+    /// default (nothing runs).
     pub fn clear(&mut self) {
         self.texts.clear();
         self.sliders.clear();
-    }
-
-    /// Apply a drawer lifecycle transition (spec criterion 8): an
-    /// explicit close clears — the reopen-fresh rule the settings
-    /// window carried — while a focus-loss hide preserves everything
-    /// for the next show. Hides never call this with `FocusLossHide`
-    /// and touch nothing (preservation is the default); the method
-    /// exists so the rule has one named, headless-tested home.
-    pub fn apply_drawer_transition(&mut self, transition: DrawerTransition) {
-        if matches!(transition, DrawerTransition::ExplicitClose) {
-            self.clear();
-        }
     }
 }
 
