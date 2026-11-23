@@ -410,6 +410,18 @@ mod tests {
             .collect()
     }
 
+    fn path_menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
+        entries
+            .iter()
+            .map(|(label, suffix)| suggest::MenuCandidate {
+                label: (*label).to_string(),
+                suffix: (*suffix).to_string(),
+                description: None,
+                source: suggest::SuggestionSource::Path,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_printable_keeps_the_menu_open() {
         // The as-you-type rule (suggest-parity spec, record finding
@@ -523,6 +535,24 @@ mod tests {
         // return InsertOpen ` cd` again, growing the line every press.
         let rows = history_menu_rows(&[("cd cd", " cd"), ("cd cd cd", " cd cd")]);
         assert_eq!(tab_while_closed(&rows, "cd cd"), Some(TabAction::Open));
+    }
+
+    #[test]
+    fn a_path_rows_shared_component_inserts_and_opens() {
+        // The owner's 2026-11-24 second report: path rows carry the
+        // bare listing entry as their label (`Documents/`), so the
+        // fill's anchor is the token's final component, the tier's own
+        // carve — rows `Documents/`/`Documentary` over the typed
+        // `~/Doc` share `ument`, it inserts and the menu opens. The
+        // token-anchored test matched nothing here and the Tab bytes
+        // flowed to the shell instead.
+        let rows = path_menu_rows(&[("Documents/", "uments/"), ("Documentary", "umentary")]);
+        assert_eq!(
+            tab_while_closed(&rows, "~/Doc"),
+            Some(TabAction::InsertOpen {
+                suffix: "ument".to_string()
+            })
+        );
     }
 
     #[test]

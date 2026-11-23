@@ -608,26 +608,36 @@ pub fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
 }
 
 /// One row's fill continuation against the current line (suggest-parity
-/// fix, the owner's 2026-11-24 report): the bytes the row can still
+/// fix, the owner's 2026-11-24 reports): the bytes the row can still
 /// append at the cursor, re-derived per press — the menu's rows may
-/// predate the line's edits. A label that carries the whole typed
-/// segment reads past it (history's line-prefix walk, the collection's
-/// own anchor); otherwise a non-history label anchored at the word
-/// being completed (path labels begin with the path token, catalog
-/// names with the command word) reads past the token. A row anchored
-/// to neither contributes nothing: its bytes do not extend the line.
-/// A history row never rides the token tier — the token is the line's
-/// prefix only while the segment is one word long, and slicing past it
-/// on a multi-word line re-inserts bytes already typed (the grow-the-
-/// line bug: `cd` Tab → `cd cd` → Tab → `cd cd cd`, forever).
+/// predate the line's edits. The anchor is the tier's own: a history
+/// label carries the whole typed segment (the line-prefix walk's
+/// anchor); a path label is the bare listing entry, anchored at the
+/// token's final component (empty for the bare `~` root) — the token
+/// itself is never the path label's prefix, so a token-anchored test
+/// silently dropped the whole tier and Tab completed nothing; the
+/// remaining tiers' labels begin with the word being completed (the
+/// catalog's command word, the walker's partial, the generator's
+/// token). A row anchored to neither contributes nothing: its bytes
+/// do not extend the line. A history row never rides the token tier —
+/// the token is the line's prefix only while the segment is one word
+/// long, and slicing past it on a multi-word line re-inserts bytes
+/// already typed (the grow-the-line bug: `cd` Tab → `cd cd` → Tab →
+/// `cd cd cd`, forever).
 pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -> Option<&'a str> {
-    if row.label.starts_with(typed) {
-        return Some(&row.label[typed.len()..]);
+    let anchor = match row.source {
+        SuggestionSource::History => typed,
+        SuggestionSource::Path if is_path_shaped(token) => match token.rfind('/') {
+            Some(idx) => &token[idx + 1..],
+            None => "",
+        },
+        _ => token,
+    };
+    if row.label.starts_with(anchor) {
+        Some(&row.label[anchor.len()..])
+    } else {
+        None
     }
-    if row.source != SuggestionSource::History && row.label.starts_with(token) {
-        return Some(&row.label[token.len()..]);
-    }
-    None
 }
 
 /// The command-name provider's candidate function (command-catalog

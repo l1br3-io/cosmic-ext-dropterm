@@ -2745,6 +2745,18 @@ fn history_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
         .collect()
 }
 
+fn path_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
+    entries
+        .iter()
+        .map(|(label, suffix)| MenuCandidate {
+            label: (*label).to_string(),
+            suffix: (*suffix).to_string(),
+            description: None,
+            source: SuggestionSource::Path,
+        })
+        .collect()
+}
+
 #[test]
 fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
     // The record's ruled contents: the merged collection's own
@@ -2948,6 +2960,47 @@ fn a_multi_word_line_fills_the_word_it_extends() {
         }
     );
     assert!(menu.is_open());
+}
+
+#[test]
+fn tab_fills_a_path_rows_shared_component() {
+    // The path tier's anchor (the owner's 2026-11-24 second report):
+    // a path row's label is the bare listing entry — `Documents/`,
+    // never the typed `~/Doc` — so the fill's anchor is the token's
+    // final component, the tier's own carve. Rows `Documents/` and
+    // `Documentary` over the typed `~/Doc` share `ument`: it fills
+    // and the menu stays; the re-press on the filled `~/Document`
+    // finds nothing shared left and cycles, never growing.
+    let mut menu = MenuState::new();
+    menu.open(path_rows(&[
+        ("Documents/", "uments/"),
+        ("Documentary", "umentary"),
+    ]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "~/Doc"),
+        MenuOutcome::Accepted {
+            suffix: "ument".to_string()
+        }
+    );
+    assert!(menu.is_open());
+    assert_eq!(menu.press(MenuKey::Tab, "~/Document"), MenuOutcome::Noop);
+    assert_eq!(menu.selected(), 1, "the re-press cycles instead");
+}
+
+#[test]
+fn tab_over_a_single_path_row_fills_it_and_closes() {
+    // The single remaining path row: its whole component remainder
+    // fills and the menu closes — Warp's single-insert resolve, on
+    // the tier whose label never carried the typed token.
+    let mut menu = MenuState::new();
+    menu.open(path_rows(&[("Documents/", "uments/")]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "~/Doc"),
+        MenuOutcome::Accepted {
+            suffix: "uments/".to_string()
+        }
+    );
+    assert!(!menu.is_open(), "the single remaining row closes the menu");
 }
 
 #[test]
