@@ -303,6 +303,7 @@ mod tests {
     use super::*;
     use crate::core::lua_host::{HostEvent, LuaHost};
     use serde_json::json;
+    use std::fmt::Write as _;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -769,5 +770,97 @@ end)";
         assert_eq!(keys, ["surface", "slot", "element_id", "kind"]);
         let back: SlotEvent = serde_json::from_value(value).expect("round-trips");
         assert_eq!(back, event);
+    }
+
+    // --- the vocabulary pin (the every_config_key_is_documented
+    // pattern, slot-contract SL4) ---
+
+    /// The contract's documented vocabulary: every key the Rust
+    /// types declare, both `SlotColor` forms, and the `slot-event`
+    /// name — a key added without its docs row fails the pin until
+    /// the row follows. The backticked form is required, so a bare
+    /// word elsewhere in the prose cannot satisfy the check.
+    const DOCUMENTED_KEYS: [&str; 12] = [
+        // the answer table's words
+        "kind",
+        "spans",
+        "side",
+        // the span's words
+        "text",
+        "color",
+        "icon",
+        // the color's two forms: a theme token's example and the hex escape
+        "accent",
+        "#rrggbb",
+        // the slot-event's name and payload words
+        "slot-event",
+        "surface",
+        "slot",
+        "element_id",
+    ];
+
+    /// The typed-answers section of docs/plugins.md, split to its own
+    /// H2 — a key named like prose elsewhere in the file cannot
+    /// satisfy the check from outside the contract's own section.
+    fn typed_answers_section() -> &'static str {
+        let docs = include_str!("../../../docs/plugins.md");
+        let (_, rest) = docs
+            .split_once("## Typed answers")
+            .expect("docs/plugins.md carries the typed-answers section");
+        rest.split_once("\n## ")
+            .map_or(rest, |(section, _)| section)
+    }
+
+    /// The first documented key the section lacks, if any.
+    fn undocumented_key(section: &str) -> Option<&'static str> {
+        DOCUMENTED_KEYS
+            .iter()
+            .find(|key| !section.contains(&format!("`{key}`")))
+            .copied()
+    }
+
+    #[test]
+    fn every_slot_vocabulary_key_is_documented() {
+        let section = typed_answers_section();
+        assert_eq!(
+            undocumented_key(section),
+            None,
+            "a vocabulary key ships undocumented in docs/plugins.md's typed-answers section"
+        );
+    }
+
+    /// The spec's own Lua example, verbatim — the docs teach the
+    /// shape the contract parses, and the pin holds the two together.
+    const SPEC_EXAMPLE: &str = "\
+dropterm.status_segment('net', function(ctx)
+  return { kind = 'styled', spans = {
+    { icon = 'arrow-down', text = ' 1.2 MB/s', color = 'accent' },
+  } }
+end)";
+
+    #[test]
+    fn the_docs_carry_the_spec_example_verbatim() {
+        assert!(
+            typed_answers_section().contains(SPEC_EXAMPLE),
+            "the spec's Lua example must appear verbatim in the typed-answers section"
+        );
+    }
+
+    #[test]
+    fn the_pin_catches_an_undocumented_key() {
+        // The pin's own teeth, demonstrated once on a fixture: a
+        // section carrying every key but `icon` fails the same
+        // checker the real docs pass.
+        let mut fixture = String::new();
+        for key in DOCUMENTED_KEYS {
+            if key != "icon" {
+                let _ = writeln!(fixture, "`{key}` row");
+            }
+        }
+        assert_eq!(
+            undocumented_key(&fixture),
+            Some("icon"),
+            "the checker must find a key the fixture omits"
+        );
     }
 }

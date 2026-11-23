@@ -78,6 +78,62 @@ store/load, color requests, PTY writes) - they are internals, not
 script events. Agent notifications join as event names with their own
 module later.
 
+## Typed answers
+
+Every slot's answer is one plain string, and a plain string stays valid
+forever. The typed-answers contract adds one more shape: a styled
+answer - an ordered list of flat spans, no nesting - which the band
+renders as the spans' concatenated text. Any segment handler may
+return one:
+
+```lua
+dropterm.status_segment('net', function(ctx)
+  return { kind = 'styled', spans = {
+    { icon = 'arrow-down', text = ' 1.2 MB/s', color = 'accent' },
+  } }
+end)
+```
+
+The vocabulary is closed - every key it declares:
+
+| Key | Where | Meaning |
+|---|---|---|
+| `kind` | the answer table | optional; when present it must be `'styled'` - anything else costs the answer its one log line |
+| `spans` | the answer table | the ordered span list; required for a styled answer, 16 spans at most |
+| `side` | the answer table | the side word - required for a text answer exactly as before; a styled answer may omit it and takes `left` |
+| `text` | inside each span | the span's text - the part the band renders |
+| `color` | inside each span | optional; a theme token name (`accent`) or a `#rrggbb` literal |
+| `icon` | inside each span | optional; a Lucide name from the band's existing vocabulary (`segment_icon`'s set) |
+
+A `color` is either a theme token name - the theme's own vocabulary,
+`accent` as the example - or a `#rrggbb` literal; resolution is the
+painter's job, so an unknown token renders unstyled, never an error.
+Icons and colors render nothing until the painter module ships: today
+the spans' texts concatenate, byte-identical to what a plain string
+would have laid.
+
+The evolution rule, stated plainly: the keyset grows additive-only -
+a new key arrives as a release, an existing key never changes meaning.
+A key outside the vocabulary, a value of the wrong type, or a
+malformed `#rrggbb` costs the answer exactly one `dropterm:` log line
+and the segment keeps its prior text - never a raise into the
+terminal.
+
+Interactive slots report back over the bus under one event name,
+`slot-event`, with one payload shape - four keys, no others:
+
+| Key | Meaning |
+|---|---|
+| `surface` | the slot surface that produced the event (`status`, `dialog`, ...) - the set grows as surfaces land |
+| `slot` | the slot's registration id |
+| `element_id` | the element inside the slot's content the interaction hit |
+| `kind` | the interaction kind - each surface grows its own closed set |
+
+No surface produces one yet; the dialog module arrives with its own
+page. The shape is pinned by test on both sides: the Rust payload
+serializes exactly these four keys, and a registered handler receives
+exactly these four - nothing more.
+
 ## Timeouts and reloads
 
 Every unit of Lua work runs under a soft bound (100 ms) and a hard cap
