@@ -20,7 +20,7 @@ The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.
 )
 ```
 
-Most keys are editable in the [settings drawer](settings.md); the exception writes itself (`settings_drawer_width`), and one more is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
+Most keys are editable in the [settings drawer](settings.md); one is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
 This layout starts fresh: versions before it kept settings under `~/.config/cosmic/<app id>/v1/` (one file per key, through cosmic-config), and nothing here reads or imports those files - the first start of this version begins from the defaults. Copy over any setting you want to keep by writing it into the section file that owns it.
 
@@ -31,7 +31,7 @@ This layout starts fresh: versions before it kept settings under `~/.config/cosm
 - **A file that parses replaces its section whole.** Keys the file omits reset to their defaults on the live surface - the file is the section, not an overlay on the running values, and trimming a file down is a reset of everything removed. (Keys a file leaves out when no file parsed before are simply defaults; see the next rule for the ones that do not parse at all.)
 - **At startup, a file that does not parse is moved aside** to `<name>.bak` (`config.ron.bak`) and its keys start from their defaults; the other files are unaffected. Correct the `.bak` and move it back.
 - **The drawer rewrites the whole file it saves.** It re-reads the file first, so keys you edited by hand are kept - but every key is written out, and comments are not preserved. If the file does not parse at that moment, it is moved aside to `.bak` and the save starts from the settings DropTerm is running with, so a typo never turns one toggle into a reset.
-- **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, `output`, and `settings_drawer_width` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.
+- **Optional values are written `Some(...)`.** `shell`, `default_cwd`, `default_profile`, and `output` are unset by leaving the key out (or writing `None`) and set as `Some("/usr/bin/fish")` - a bare `"/usr/bin/fish"` does not parse.
 
 ## The default config directory
 
@@ -63,7 +63,6 @@ A fresh install has no files here at all - each appears the first time something
 | `command_finish_notification_after_secs` | `5` |
 | `new_tab_after_current` | `true` |
 | `close_confirmation_enabled` | `true` |
-| `settings_drawer_click_close` | `true` |
 | `theme_preference` | `System` |
 | `new_tab_cwd` | `Inherit` |
 | `status_bar_enabled` | `true` |
@@ -93,7 +92,7 @@ A fresh install has no files here at all - each appears the first time something
 | `images_enabled` | `true` |
 | `onboarding_dismissed` | `false` |
 
-The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), `settings_drawer_width` (unset until the drawer's drag handle first writes it), and `status_script_segments` (unset - every registered script segment renders, in registration order). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
+The remaining keys default to unset or empty. In `config.ron`: `shell` (unset falls back to `$SHELL`, then `/bin/sh`), `args`, `default_cwd`, `autosuggestions_aliases` (empty - no alias re-targets anything), `output` (reserved - nothing reads it yet), and `status_script_segments` (unset - every registered script segment renders, in registration order). In `profiles.ron`: `profiles` and `default_profile`. In `keybinds.ron`: `custom_key_binds`.
 
 ## Geometry
 
@@ -263,14 +262,6 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
     respect_panel: false,
 )
 ```
-
-## Settings drawer width
-
-`settings_drawer_width` (default unset) is the settings pane's width in pixels, as last dragged. The drawer's drag handle writes it on release; double-clicking the handle resets it to unset. Stored values are clamped at render into 344 px to half the surface, so a stale or hand-edited value can never outgrow the surface. A never-dragged drawer renders the built-in default, 616 px, wherever the surface is wide enough that half of it reaches that.
-
-## Settings drawer click-close
-
-`settings_drawer_click_close` (default `true`) dismisses an open settings drawer on a left click anywhere on the exposed surface - the terminal, the tab strip, the status band. The press closes the drawer and is consumed: it does not also type into or focus the terminal. The drawer no longer dims or blocks the surface beneath it while open. `false` drops the click catcher entirely, leaving the terminal fully interactive (typing, selection, scrolling) beneath the open drawer; the drawer then closes only through its close button, the gear, the keyboard verb, or a surface hide. The key is read at render, so a flip applies to the very next press; the Behavior tab's Dropdown card carries its toggle.
 
 ## Profiles
 

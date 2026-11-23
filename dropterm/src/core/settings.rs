@@ -116,11 +116,7 @@ impl Section {
                 ConfigKey::StatusBarShowProgramStatus,
                 ConfigKey::StatusBarShowScrollback,
             ],
-            Section::Dropdown => &[
-                ConfigKey::HideOnFocusLoss,
-                ConfigKey::SlideAnimationEnabled,
-                ConfigKey::SettingsDrawerClickClose,
-            ],
+            Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
             Section::Terminal => &[
                 ConfigKey::Shell,
                 ConfigKey::Args,
@@ -149,15 +145,11 @@ impl Section {
 
 /// Every config key the settings window exposes: all of
 /// `DropTermConfig` except `output`, which is dead at runtime and
-/// unreachable from the UI — plus `SettingsDrawerWidth`, which is
-/// written by the drawer's drag handle (drawer-resize spec), not by
-/// any settings control: no `Section` lists it, so the exposed-key
-/// exactly-once pin above stays at the section-hosted count
-/// (55 — default-spawn's two rows and the un-parked click-close row
-/// included). `SettingsDrawerClickClose` ships in the Dropdown
-/// section since the veil-less drawer revisit un-parked it: the
-/// custom overlay's catcher observes the dismiss press the old
-/// `context_drawer` composition never could.
+/// unreachable from the UI. The two drawer keys retired with the
+/// window (settings-window SW6): `settings_drawer_width` had no
+/// pane left to drag and `settings_drawer_click_close` no terminal
+/// beneath to click — a file still carrying either line keeps
+/// loading and ignores it (pinned by test).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -235,7 +227,6 @@ pub enum ConfigKey {
     NewTabAfterCurrent,
     NewTabCwd,
     CloseConfirmationEnabled,
-    SettingsDrawerClickClose,
     Shell,
     Args,
     DefaultCwd,
@@ -246,7 +237,6 @@ pub enum ConfigKey {
     ColorSchemeDark,
     ColorSchemeLight,
     ThemePreference,
-    SettingsDrawerWidth,
     StatusBarEnabled,
     /// Show the state disc + process name — one per band segment, in
     /// band order (status-segments spec); the resolver drops a
@@ -452,7 +442,6 @@ impl ConfigKey {
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
             ConfigKey::NewTabCwd => "new_tab_cwd",
             ConfigKey::CloseConfirmationEnabled => "close_confirmation_enabled",
-            ConfigKey::SettingsDrawerClickClose => "settings_drawer_click_close",
             ConfigKey::Shell => "shell",
             ConfigKey::Args => "args",
             ConfigKey::DefaultCwd => "default_cwd",
@@ -463,7 +452,6 @@ impl ConfigKey {
             ConfigKey::ColorSchemeDark => "color_scheme_dark",
             ConfigKey::ColorSchemeLight => "color_scheme_light",
             ConfigKey::ThemePreference => "theme_preference",
-            ConfigKey::SettingsDrawerWidth => "settings_drawer_width",
             ConfigKey::StatusBarEnabled => "status_bar_enabled",
             ConfigKey::StatusBarShowProcess => "status_bar_show_process",
             ConfigKey::StatusBarShowPath => "status_bar_show_path",
@@ -521,7 +509,6 @@ pub enum PlannedWrite {
     NewTabAfterCurrent(bool),
     NewTabCwd(NewTabCwd),
     CloseConfirmationEnabled(bool),
-    SettingsDrawerClickClose(bool),
     Shell(String),
     Args(Vec<String>),
     /// The default directory `new_tab_cwd: Default` opens plain new
@@ -536,12 +523,6 @@ pub enum PlannedWrite {
     ColorSchemeDark(String),
     ColorSchemeLight(String),
     ThemePreference(ThemePreference),
-    /// The drawer pane's dragged width (drawer-resize spec): the
-    /// px the drag released at, or `None` for the double-click
-    /// reset back to the built-in default. Floors at
-    /// [`DRAWER_MIN_WIDTH`] in `clamped`; the surface-relative cap
-    /// is render-time (`drawer_width`).
-    SettingsDrawerWidth(Option<u16>),
     /// Whether the status band renders (status-bar spec): the band
     /// leaves the column and the terminal's pinned height reclaims
     /// its strip on the config echo.
@@ -637,7 +618,6 @@ impl PlannedWrite {
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
             PlannedWrite::NewTabCwd(_) => ConfigKey::NewTabCwd,
             PlannedWrite::CloseConfirmationEnabled(_) => ConfigKey::CloseConfirmationEnabled,
-            PlannedWrite::SettingsDrawerClickClose(_) => ConfigKey::SettingsDrawerClickClose,
             PlannedWrite::Shell(_) => ConfigKey::Shell,
             PlannedWrite::Args(_) => ConfigKey::Args,
             PlannedWrite::DefaultCwd(_) => ConfigKey::DefaultCwd,
@@ -648,7 +628,6 @@ impl PlannedWrite {
             PlannedWrite::ColorSchemeDark(_) => ConfigKey::ColorSchemeDark,
             PlannedWrite::ColorSchemeLight(_) => ConfigKey::ColorSchemeLight,
             PlannedWrite::ThemePreference(_) => ConfigKey::ThemePreference,
-            PlannedWrite::SettingsDrawerWidth(_) => ConfigKey::SettingsDrawerWidth,
             PlannedWrite::StatusBarEnabled(_) => ConfigKey::StatusBarEnabled,
             PlannedWrite::StatusBarShowProcess(_) => ConfigKey::StatusBarShowProcess,
             PlannedWrite::StatusBarShowPath(_) => ConfigKey::StatusBarShowPath,
@@ -686,9 +665,6 @@ impl PlannedWrite {
             PlannedWrite::Opacity(raw) => PlannedWrite::Opacity(clamp_opacity(*raw)),
             // Floor only — the cap needs the surface width the
             // render clamp owns; `None` (reset) passes through.
-            PlannedWrite::SettingsDrawerWidth(raw) => {
-                PlannedWrite::SettingsDrawerWidth(raw.map(|px| px.max(DRAWER_MIN_WIDTH)))
-            }
             other => other.clone(),
         }
     }
@@ -765,9 +741,6 @@ impl PlannedWrite {
             PlannedWrite::CloseConfirmationEnabled(value) => {
                 section.close_confirmation_enabled = *value;
             }
-            PlannedWrite::SettingsDrawerClickClose(value) => {
-                section.settings_drawer_click_close = *value;
-            }
             // `Some` matches the field's type — the section's shape.
             // (The pre-store backend serialized this write as a bare
             // String into an Option-typed field, which its own
@@ -786,10 +759,6 @@ impl PlannedWrite {
             PlannedWrite::ColorSchemeDark(value) => section.color_scheme_dark.clone_from(value),
             PlannedWrite::ColorSchemeLight(value) => section.color_scheme_light.clone_from(value),
             PlannedWrite::ThemePreference(value) => section.theme_preference = *value,
-            // `Option<u16>` serializes like `default_profile`'s
-            // `Option<String>` — absent/None merges cleanly with a
-            // hand-edited file.
-            PlannedWrite::SettingsDrawerWidth(value) => section.settings_drawer_width = *value,
             PlannedWrite::StatusBarEnabled(value) => section.status_bar_enabled = *value,
             PlannedWrite::StatusBarShowProcess(value) => {
                 section.status_bar_show_process = *value;
@@ -849,15 +818,6 @@ pub fn clamp_width_percent(raw: u8) -> u8 {
 /// valid, fully transparent surface.
 pub fn clamp_opacity(raw: u8) -> u8 {
     raw.min(100)
-}
-
-/// Whether a bare write of `key` must cancel a pending drag
-/// write-back (newest intent wins): the drag path persists exactly
-/// the height percent, so the two writers race only on that key. A
-/// bare height write supersedes the pending settle; a bare write of
-/// any other key leaves a pending height write alone to land.
-pub fn bare_write_cancels_pending_drag(key: ConfigKey, drag_write_pending: bool) -> bool {
-    drag_write_pending && key == ConfigKey::HeightPercent
 }
 
 // --- the view's pure half: parsing, per-key commit planning, timing
@@ -1042,15 +1002,12 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::Opacity
         | ConfigKey::ColorSchemeDark
         | ConfigKey::ColorSchemeLight
-        // The drag handle's key — not a settings control, but its
-        // echo re-renders the pane immediately: live by
-        // construction. The status band's keys join it: the band
+        // The status band's keys: the band
         // leaves or joins the column on the config echo (the
         // terminal's pinned height follows the same frame), and the
         // eight "Show …" rows drop or restore their segment on the
         // next render — with the hidden segment's inputs never
         // gathered.
-        | ConfigKey::SettingsDrawerWidth
         | ConfigKey::StatusBarEnabled
         | ConfigKey::TabBarMinTabs
         | ConfigKey::TabBarBorder
@@ -1119,8 +1076,7 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::CommandFinishNotificationEnabled
         | ConfigKey::CommandFinishNotificationAfterSecs
         | ConfigKey::NewTabAfterCurrent
-        | ConfigKey::CloseConfirmationEnabled
-        | ConfigKey::SettingsDrawerClickClose => ApplyTiming::NextTrigger,
+        | ConfigKey::CloseConfirmationEnabled => ApplyTiming::NextTrigger,
     }
 }
 
@@ -2550,9 +2506,6 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))
         }
-        ConfigKey::SettingsDrawerClickClose => {
-            Some(PlannedWrite::SettingsDrawerClickClose(checked))
-        }
         ConfigKey::RespectPanel => Some(PlannedWrite::RespectPanel(checked)),
         ConfigKey::StatusBarEnabled => Some(PlannedWrite::StatusBarEnabled(checked)),
         ConfigKey::TabBarBorder => Some(PlannedWrite::TabBarBorder(checked)),
@@ -2583,76 +2536,6 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
 /// text as "the global range" the profile-manager spec names.
 pub const FONT_SIZE_MIN: u16 = 6;
 pub const FONT_SIZE_MAX: u16 = 32;
-
-/// The drawer pane's default width in px (spec drawer-resize
-/// criterion 1): what a never-dragged drawer renders — `None` in
-/// the config — wherever the surface is wide enough that half of it
-/// reaches this. Deliberately above libcosmic's 480px framework
-/// band; the drawer-resize initiative widened it, and the veil-less
-/// drawer revisit grew it a further 10% (560 → 616).
-pub const DEFAULT_DRAWER_WIDTH: u16 = 616;
-
-/// The drawer pane's minimum width in px: the settings content's
-/// floor, carried over from the framework band the settings-drawer
-/// initiative sized against.
-pub const DRAWER_MIN_WIDTH: u16 = 344;
-
-/// The drawer pane's maximum width as a fraction of the surface
-/// width (spec criterion 3): the drawer never covers more than half
-/// the drop-down, on any output.
-pub const WIDTH_CAP_FRACTION: f32 = 0.5;
-
-/// The drawer pane's width in px from the user's stored preference
-/// and the current surface width (spec criterion 4): `None` (never
-/// dragged) renders the wider default; any stored value clamps into
-/// [344px, 50% of surface] so a stale or hand-edited config can
-/// never overflow the surface or crush the settings content. This
-/// render-time clamp is the one place width policy lives — the
-/// write path only floors, because the cap needs the surface width
-/// this pure seam never sees.
-pub fn drawer_width(preferred: Option<u16>, surface_width: f32) -> f32 {
-    let preferred = preferred.map_or(f32::from(DEFAULT_DRAWER_WIDTH), f32::from);
-    drawer_width_clamp(preferred, surface_width)
-}
-
-/// The band every width passes through — render's stored/default
-/// path and the drag's live path share it, so a live drag can never
-/// leave the band render would clamp back into anyway.
-fn drawer_width_clamp(preferred: f32, surface_width: f32) -> f32 {
-    let cap = (surface_width * WIDTH_CAP_FRACTION).max(f32::from(DRAWER_MIN_WIDTH));
-    preferred.clamp(f32::from(DRAWER_MIN_WIDTH), cap)
-}
-
-/// The drawer drag's live width from the pointer's window-absolute
-/// x (spec criterion 2): the pane is pinned to the surface's right
-/// edge, so its width is the pointer's distance from that edge —
-/// rounded to whole px and clamped through the shared band. The
-/// `surface_width - x` target can be negative on a fling past the
-/// edge; the band floors it, never a panic.
-pub fn drawer_drag_px(pointer_x: f32, surface_width: f32) -> u16 {
-    px_u16(drawer_width_clamp(surface_width - pointer_x, surface_width))
-}
-
-/// Round a banded px value into the `u16` domain the live state and
-/// the config field share. Safe by construction: callers clamp
-/// below `u16::MAX` first (the band's cap is half a surface width).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "rounded and clamped into the u16 band before the cast"
-)]
-fn px_u16(px: f32) -> u16 {
-    px.round() as u16
-}
-
-/// The write a drag release commits (spec criterion 3): only a real
-/// drag writes — `None` (a plain click armed no live value) and a
-/// drag that lands back on the stored px both commit nothing, so
-/// the file never churns without a change.
-pub fn drawer_release_write(live: Option<u16>, stored: Option<u16>) -> Option<PlannedWrite> {
-    live.filter(|&px| Some(px) != stored)
-        .map(|px| PlannedWrite::SettingsDrawerWidth(Some(px)))
-}
 
 impl ConfigKey {
     /// The control's human-facing label (its file field is
@@ -2688,9 +2571,6 @@ impl ConfigKey {
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
             ConfigKey::NewTabCwd => "New tab directory",
             ConfigKey::CloseConfirmationEnabled => "Confirm closing a tab with a running process",
-            ConfigKey::SettingsDrawerClickClose => {
-                "Close the settings drawer by clicking the terminal"
-            }
             ConfigKey::RespectPanel => "Respect panel",
             ConfigKey::Shell => "Shell",
             ConfigKey::Args => "Arguments",
@@ -2701,10 +2581,6 @@ impl ConfigKey {
             ConfigKey::ColorSchemeDark => "Dark color scheme",
             ConfigKey::ColorSchemeLight => "Light color scheme",
             ConfigKey::ThemePreference => "Application theme",
-            // No control renders this label (no section lists the
-            // key); the arm keeps the match exhaustive for the
-            // drag-only writer.
-            ConfigKey::SettingsDrawerWidth => "Drawer width",
             ConfigKey::StatusBarEnabled => "Show the status band",
             ConfigKey::StatusBarShowProcess => "Show the process name",
             ConfigKey::StatusBarShowPath => "Show the working directory",

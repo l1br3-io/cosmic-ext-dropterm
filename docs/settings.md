@@ -17,7 +17,7 @@ The drawer is an overlay pinned to the right edge of the drop-down surface, so t
 | Tab | Carries |
 |---|---|
 | **Appearance** | How the terminal looks: the Appearance card (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown) and the Window card (height, width, alignment, edge). |
-| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation, closing the drawer by clicking the terminal - [configuration](configuration.md#settings-drawer-click-close)), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images). |
+| **Behavior** | How DropTerm acts, one card per concern: Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation, closing the drawer by clicking the terminal - [configuration](configuration.md)), and Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images). |
 | **Profiles** | The profile manager - its own section below. |
 | **Keybindings** | The shortcut editor - its own section below. |
 | **Advanced** | The power controls: `respect_panel`, `layer`, and `keyboard_mode`. |
@@ -116,7 +116,7 @@ These toggles (the Tabs and Dropdown cards) default to `true`, which is exactly 
 - `slide_animation_enabled`: `false` restores instant show/hide.
 - `new_tab_after_current`: `false` appends new tabs at the end of the list (Guake's default ordering) instead of directly after the active tab. `Ctrl+Shift+T`, `Ctrl+Shift+H`, the tab bar's `+`, and the remote `new-tab` follow it; duplicates always land after the active tab, and session restore keeps the saved order.
 - `close_confirmation_enabled`: `false` restores instant, unconfirmed closes ([configuration](configuration.md#close-confirmation)).
-- `settings_drawer_click_close`: `false` drops the click catcher - the terminal beneath the open drawer stays fully interactive, and the drawer closes only through Close, Escape, the gear, the keyboard verb, or a surface hide ([configuration](configuration.md#settings-drawer-click-close)).
+- `settings_drawer_click_close`: `false` drops the click catcher - the terminal beneath the open drawer stays fully interactive, and the drawer closes only through Close, Escape, the gear, the keyboard verb, or a surface hide ([configuration](configuration.md)).
 
 ## Input ranges and limitations
 

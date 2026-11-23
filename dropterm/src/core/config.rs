@@ -312,18 +312,6 @@ pub struct DropTermConfig {
     /// gated), and the decision reads this key at request time, so a
     /// mid-session flip applies to the very next close.
     pub close_confirmation_enabled: bool,
-    /// Whether a left-click on the exposed surface dismisses an
-    /// open settings drawer (drawer-click-close spec). Shipped by
-    /// the veil-less drawer revisit (2026-11-20): the drawer's
-    /// overlay once dimmed and swallowed every press — first the
-    /// libcosmic `context_drawer`, then the hand-rolled veil — so
-    /// the module sat parked; the transparent catcher the overlay
-    /// now composes observes the dismiss press the old captures
-    /// never let through. Defaults to `true`; `false` drops the
-    /// catcher entirely, leaving the terminal fully interactive
-    /// beneath the open drawer. Read at press time, so a mid-session
-    /// flip applies to the very next click.
-    pub settings_drawer_click_close: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
@@ -365,14 +353,6 @@ pub struct DropTermConfig {
     /// section.
     #[serde(skip)]
     pub custom_key_binds: BTreeMap<String, Binding>,
-    /// The settings drawer pane's width in px, as the user last
-    /// dragged it. `None` (the default) renders the built-in
-    /// default width; a stored value clamps at render into
-    /// [344px, 50% of surface width] — the render-time clamp is the
-    /// policy, so any stale or hand-edited value loads safe.
-    /// Written once per drag release; double-clicking the drawer's
-    /// drag handle resets it to `None`.
-    pub settings_drawer_width: Option<u16>,
     /// Whether the status band renders at the surface's free edge
     /// (status-bar spec): the 28 px strip narrating the active
     /// terminal, adjacent to the grab bar under `tab_position: Auto`
@@ -631,14 +611,12 @@ impl Default for DropTermConfig {
             command_finish_notification_after_secs: 5,
             new_tab_after_current: true,
             close_confirmation_enabled: true,
-            settings_drawer_click_close: true,
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
             new_tab_cwd: NewTabCwd::default(),
             default_cwd: None,
             custom_key_binds: BTreeMap::new(),
-            settings_drawer_width: None,
             status_bar_enabled: true,
             status_bar_show_process: true,
             status_bar_show_path: true,

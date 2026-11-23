@@ -80,11 +80,9 @@ pub(crate) enum ControlKind {
 }
 
 /// The control a section-hosted key renders. Every key a `Section`
-/// lists resolves — pinned against `page_section`'s partition below —
-/// and the one key no section hosts (`SettingsDrawerWidth`, the
-/// drag handle's writer) resolves to nothing.
-pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
-    let kind = match key {
+/// lists resolves — pinned against `page_section`'s partition below.
+pub(crate) fn control_kind(key: ConfigKey) -> ControlKind {
+    match key {
         ConfigKey::FontName => ControlKind::FontPicker,
         ConfigKey::ColorSchemeDark | ConfigKey::ColorSchemeLight => ControlKind::SchemePicker,
         ConfigKey::Shell => ControlKind::ShellPicker,
@@ -106,13 +104,11 @@ pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
         | ConfigKey::CommandFinishNotificationAfterSecs
         | ConfigKey::AutosuggestionsDelayMs
         | ConfigKey::TabBarMinTabs => ControlKind::Text,
-        ConfigKey::SettingsDrawerWidth => return None,
         // Every remaining exposed key is a toggle — the section map's
         // own exactly-once pin (core's tests) guarantees this arm is
         // exactly the toggle set.
         _ => ControlKind::Toggle,
-    };
-    Some(kind)
+    }
 }
 
 /// The option rows a dropdown key lists, in table order — the labels
@@ -693,7 +689,7 @@ impl SettingsWindow {
         let shell = self.shell.clone();
         let label = key.label();
         let description = drawer_description(key);
-        let control: gpui::AnyElement = match control_kind(key).expect("section keys resolve") {
+        let control: gpui::AnyElement = match control_kind(key) {
             ControlKind::Toggle => {
                 let checked = toggle_state(key, config);
                 let toggle = Switch::new(key.key_name()).checked(checked).on_click(
@@ -874,7 +870,6 @@ fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
         ConfigKey::AutosuggestionsMenuAuto => config.autosuggestions_menu_auto,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
-        ConfigKey::SettingsDrawerClickClose => config.settings_drawer_click_close,
         ConfigKey::RespectPanel => config.respect_panel,
         ConfigKey::StatusBarEnabled => config.status_bar_enabled,
         ConfigKey::TabBarBorder => config.tab_bar_border,
@@ -2078,49 +2073,25 @@ impl SettingsWindow {
 mod tests {
     use super::*;
 
-    /// Every section-hosted key resolves to a control, and the one
-    /// key no section hosts resolves to none — the rendering face of
-    /// the ported control map, pinned against the section partition.
-    #[test]
-    fn every_section_key_resolves_a_control_and_no_others_do() {
-        for page in SettingsPage::ALL {
-            if let Some(section) = page_section(page) {
-                for key in section.keys() {
-                    assert!(
-                        control_kind(*key).is_some(),
-                        "{key:?} (section {section:?}) renders no control"
-                    );
-                }
-            }
-        }
-        assert_eq!(control_kind(ConfigKey::SettingsDrawerWidth), None);
-    }
-
     /// The dispatch's classes spot-pinned: the pickers and the shell
     /// control, the four sliders, the eight dropdowns, the seven texts,
     /// and one toggle representative — the full partition is the
     /// section-map tests' own exactly-once pin.
     #[test]
     fn the_control_classes_dispatch_as_the_libcosmic_drawer_drew_them() {
-        assert_eq!(
-            control_kind(ConfigKey::FontName),
-            Some(ControlKind::FontPicker)
-        );
+        assert_eq!(control_kind(ConfigKey::FontName), ControlKind::FontPicker);
         assert_eq!(
             control_kind(ConfigKey::ColorSchemeDark),
-            Some(ControlKind::SchemePicker)
+            ControlKind::SchemePicker
         );
-        assert_eq!(
-            control_kind(ConfigKey::Shell),
-            Some(ControlKind::ShellPicker)
-        );
+        assert_eq!(control_kind(ConfigKey::Shell), ControlKind::ShellPicker);
         for key in [
             ConfigKey::HeightPercent,
             ConfigKey::WidthPercent,
             ConfigKey::Opacity,
             ConfigKey::FontSize,
         ] {
-            assert_eq!(control_kind(key), Some(ControlKind::Slider));
+            assert_eq!(control_kind(key), ControlKind::Slider);
         }
         for key in [
             ConfigKey::HAlign,
@@ -2132,7 +2103,7 @@ mod tests {
             ConfigKey::KeyboardMode,
             ConfigKey::ThemePreference,
         ] {
-            assert_eq!(control_kind(key), Some(ControlKind::Dropdown));
+            assert_eq!(control_kind(key), ControlKind::Dropdown);
         }
         for key in [
             ConfigKey::Args,
@@ -2142,15 +2113,15 @@ mod tests {
             ConfigKey::AutosuggestionsDelayMs,
             ConfigKey::TabBarMinTabs,
         ] {
-            assert_eq!(control_kind(key), Some(ControlKind::Text));
+            assert_eq!(control_kind(key), ControlKind::Text);
         }
         assert_eq!(
             control_kind(ConfigKey::HideOnFocusLoss),
-            Some(ControlKind::Toggle)
+            ControlKind::Toggle
         );
         assert_eq!(
             control_kind(ConfigKey::StatusBarShowClock),
-            Some(ControlKind::Toggle)
+            ControlKind::Toggle
         );
     }
 }

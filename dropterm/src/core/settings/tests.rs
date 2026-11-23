@@ -14,114 +14,6 @@ fn section_keys() -> Vec<ConfigKey> {
         .collect()
 }
 
-// --- the drawer pane's width (drawer-resize T1) ---
-
-#[test]
-fn drawer_width_defaults_to_616_where_the_cap_allows() {
-    // Spec drawer-resize criterion 1: never dragged (`None`)
-    // renders the wider default — 616px (560 grown 10% by the
-    // veil-less drawer revisit) on any surface wide enough that
-    // half of it reaches 616 (surfaces ≥ 1232px).
-    assert_eq!(drawer_width(None, 2000.0), 616.0);
-    assert_eq!(drawer_width(None, 1232.0), 616.0);
-}
-
-#[test]
-fn drawer_width_caps_the_default_at_half_the_surface() {
-    // Between 688px and 1232px the 50% cap wins over the
-    // default: the drawer never covers more than half the
-    // drop-down surface.
-    assert_eq!(drawer_width(None, 900.0), 450.0);
-    assert_eq!(drawer_width(None, 728.0), 364.0);
-    assert_eq!(drawer_width(None, 688.0), 344.0);
-}
-
-#[test]
-fn drawer_width_floors_at_344_on_narrow_surfaces() {
-    // Below 688px (2 × the floor) the cap falls under the
-    // floor; the floor wins and the overlay clamps the pane to
-    // the surface — the settings-drawer OQ-3 behavior carries
-    // over unchanged.
-    assert_eq!(drawer_width(None, 600.0), 344.0);
-    assert_eq!(drawer_width(None, 0.0), 344.0);
-}
-
-#[test]
-fn drawer_width_clamps_a_stored_preference_into_the_band() {
-    // Criterion 4: a stale or hand-edited stored width can
-    // never overflow the surface or crush the settings content
-    // — render clamps whatever it finds, both directions.
-    // 65_535 is `u16::MAX`, the largest a stored value can be.
-    assert_eq!(drawer_width(Some(100), 2000.0), 344.0);
-    assert_eq!(drawer_width(Some(65_535), 2000.0), 1000.0);
-    assert_eq!(drawer_width(Some(65_535), 728.0), 364.0);
-    assert_eq!(drawer_width(Some(400), 2000.0), 400.0);
-}
-
-#[test]
-fn drawer_width_writes_floor_at_the_minimum_only() {
-    // The write path's half of the width policy: the floor is
-    // static, so `clamped` enforces it; the cap needs the
-    // surface width this pure seam never sees, so render owns
-    // it (see `drawer_width`). `None` — the double-click reset
-    // — passes through untouched.
-    assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(Some(100)).clamped(),
-        PlannedWrite::SettingsDrawerWidth(Some(DRAWER_MIN_WIDTH))
-    );
-    assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(Some(600)).clamped(),
-        PlannedWrite::SettingsDrawerWidth(Some(600))
-    );
-    assert_eq!(
-        PlannedWrite::SettingsDrawerWidth(None).clamped(),
-        PlannedWrite::SettingsDrawerWidth(None)
-    );
-}
-
-#[test]
-fn drawer_drag_targets_the_pointer_absolutely() {
-    // Criterion 2: the pane is pinned to the surface's right
-    // edge, so the drag's width is the pointer's window-absolute
-    // distance from that edge — rounded to whole px, clamped
-    // through the same policy as render, so a live drag can
-    // never leave the band either.
-    assert_eq!(drawer_drag_px(1440.0, 2000.0), 560);
-    // Sub-px motion rounds, it doesn't tear.
-    assert_eq!(drawer_drag_px(1440.4, 2000.0), 560);
-    assert_eq!(drawer_drag_px(1439.6, 2000.0), 560);
-    // Beyond the cap (width 1100 > 1000) and below the floor
-    // (width 100) clamp exactly like render.
-    assert_eq!(drawer_drag_px(900.0, 2000.0), 1000);
-    assert_eq!(drawer_drag_px(1900.0, 2000.0), 344);
-    // A fling past the surface's right edge saturates low and
-    // floors — never negative, never a panic.
-    assert_eq!(drawer_drag_px(2100.0, 2000.0), 344);
-}
-
-#[test]
-fn drawer_release_commits_only_real_drags() {
-    // Criterion 3: one write per drag release — and no write at
-    // all without one. A plain click on the handle arms no live
-    // value; a drag that lands back on the stored px rewrites
-    // nothing (no file churn); only a real change persists.
-    assert_eq!(drawer_release_write(None, None), None);
-    assert_eq!(drawer_release_write(None, Some(480)), None);
-    assert_eq!(
-        drawer_release_write(Some(600), Some(600)),
-        None,
-        "dragged back to the stored width — no write"
-    );
-    assert_eq!(
-        drawer_release_write(Some(600), None),
-        Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
-    );
-    assert_eq!(
-        drawer_release_write(Some(600), Some(500)),
-        Some(PlannedWrite::SettingsDrawerWidth(Some(600)))
-    );
-}
-
 // --- the page regrouping (settings-window SW1) ---
 
 #[test]
@@ -272,6 +164,15 @@ fn a_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
+fn the_exactly_once_count_is_54() {
+    // The settings window's count (settings-window SW6): the two
+    // drawer keys retired, the section-hosted map sits at 54 — one
+    // planned-write variant per exposed key, each in exactly one
+    // section.
+    assert_eq!(section_keys().len(), 54);
+}
+
+#[test]
 fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
     // One planned-write variant per config key — the writer side of
     // the control→key map — each landing in exactly one section.
@@ -303,7 +204,6 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::NewTabAfterCurrent(true),
         PlannedWrite::NewTabCwd(NewTabCwd::Inherit),
         PlannedWrite::CloseConfirmationEnabled(true),
-        PlannedWrite::SettingsDrawerClickClose(true),
         PlannedWrite::DefaultCwd(None),
         PlannedWrite::Shell(String::new()),
         PlannedWrite::Args(Vec::new()),
@@ -403,10 +303,6 @@ fn key_names_match_the_config_file_fields() {
             ConfigKey::CloseConfirmationEnabled,
             "close_confirmation_enabled",
         ),
-        (
-            ConfigKey::SettingsDrawerClickClose,
-            "settings_drawer_click_close",
-        ),
         (ConfigKey::Shell, "shell"),
         (ConfigKey::Args, "args"),
         (ConfigKey::ScrollbackLines, "scrollback_lines"),
@@ -416,7 +312,6 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::ColorSchemeDark, "color_scheme_dark"),
         (ConfigKey::ColorSchemeLight, "color_scheme_light"),
         (ConfigKey::ThemePreference, "theme_preference"),
-        (ConfigKey::SettingsDrawerWidth, "settings_drawer_width"),
         (ConfigKey::TabBarMinTabs, "tab_bar_min_tabs"),
         (ConfigKey::TabBarBorder, "tab_bar_border"),
         (ConfigKey::StatusBarBorder, "status_bar_border"),
@@ -478,49 +373,6 @@ fn planned_writes_clamp_the_ranged_keys_and_pass_others_through() {
     assert_eq!(unchanged.clamped(), unchanged);
     let enum_key = PlannedWrite::TabPosition(TabPosition::Bottom);
     assert_eq!(enum_key.clamped(), enum_key);
-}
-
-#[test]
-fn a_bare_height_write_cancels_a_pending_drag_write_back() {
-    assert!(bare_write_cancels_pending_drag(
-        ConfigKey::HeightPercent,
-        true
-    ));
-}
-
-#[test]
-fn a_bare_write_without_a_pending_drag_write_cancels_nothing() {
-    assert!(!bare_write_cancels_pending_drag(
-        ConfigKey::HeightPercent,
-        false
-    ));
-}
-
-#[test]
-fn a_bare_write_of_a_non_geometry_key_never_touches_pending_drag_state() {
-    for key in [
-        ConfigKey::FontName,
-        ConfigKey::Opacity,
-        ConfigKey::SlideAnimationEnabled,
-    ] {
-        assert!(
-            !bare_write_cancels_pending_drag(key, true),
-            "{} must not cancel a pending height write",
-            key.key_name()
-        );
-    }
-}
-
-#[test]
-fn a_bare_width_write_leaves_a_pending_height_settle_alone() {
-    // Width is a geometry key but not *the drag's* key: the race
-    // rule cancels per key ("for the same key"), so moving the
-    // width slider while a height settle is debouncing does not
-    // drop it — the settle still lands.
-    assert!(!bare_write_cancels_pending_drag(
-        ConfigKey::WidthPercent,
-        true
-    ));
 }
 
 // --- parsing, timing copy, and buffer semantics ---
@@ -1099,17 +951,13 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
 }
 
 #[test]
-fn the_dropdown_card_hosts_the_dropdown_mechanics_and_click_close() {
-    // The Dropdown card: the drop-down's own mechanics — the
-    // focus-loss hide and the slide — plus the drawer's click-close
-    // row, un-parked by the veil-less drawer revisit.
+fn the_dropdown_card_hosts_the_dropdown_mechanics() {
+    // The Dropdown page: the drop-down's own mechanics — the
+    // focus-loss hide and the slide. The drawer's click-close row
+    // retired with the drawer (settings-window SW6).
     assert_eq!(
         Section::Dropdown.keys(),
-        &[
-            ConfigKey::HideOnFocusLoss,
-            ConfigKey::SlideAnimationEnabled,
-            ConfigKey::SettingsDrawerClickClose,
-        ]
+        &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled]
     );
 }
 

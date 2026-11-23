@@ -6120,15 +6120,6 @@ fn close_confirm_layer(
 /// inside its render — queued entity updates flush inside the
 /// caller's borrow, so the report rides plain shared state instead.
 impl Shell {
-    /// The open drawer's overlay composition: a full-surface layer
-    /// holding every pointer event (the libcosmic `context_drawer`'s
-    /// capture rule — the band beneath never sees a press), the
-    /// right-anchored panel at core's width math over the live drag
-    /// (display-only until release), and the resize handle on the
-    /// pane's leading edge — drag tracks the pointer's window-absolute
-    /// x through `drawer_drag_px`, the release writes the width, a
-    /// double-click resets to the built-in default and clears the
-    /// stored value.
     /// The band's context-menu layer (gn-4, the owner's ruling):
     /// the shell-owned Kit `PopupMenu` deferred above everything,
     /// over a full-window occluder — a press anywhere outside the
