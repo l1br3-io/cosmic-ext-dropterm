@@ -1,6 +1,6 @@
 # Script commands
 
-A Lua plugin can register named commands, and those commands become keybindable exactly like the built-in verbs: a row in the settings drawer's Keybindings page, a chord you bind there, and a press that runs the script's handler. A `plugins/uptime.lua` like this
+A Lua plugin can register named commands, and those commands become keybindable exactly like the built-in verbs: a row in the Settings window's Keybindings page, a chord you bind there, and a press that runs the script's handler. A `plugins/uptime.lua` like this
 
 ```lua
 local dropterm = require('dropterm')

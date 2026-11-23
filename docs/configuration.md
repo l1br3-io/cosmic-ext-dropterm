@@ -1,6 +1,6 @@
 # Configuration
 
-DropTerm keeps every setting in plain RON files under one directory and reloads them live - changes apply without a restart, whether made in the [settings drawer](settings.md) or by editing a file directly.
+DropTerm keeps every setting in plain RON files under one directory and reloads them live - changes apply without a restart, whether made in the [Settings window](settings.md) or by editing a file directly.
 
 ```
 ~/.config/io.github.l1br3_io.dropterm/
@@ -20,7 +20,7 @@ The directory follows `$XDG_CONFIG_HOME` (`~/.config` when it is unset). Each `.
 )
 ```
 
-Most keys are editable in the [settings drawer](settings.md); one is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
+Most keys are editable in the [Settings window](settings.md); one is reserved for behavior that does not ship yet ([Parked and reserved keys](#parked-and-reserved-keys)).
 
 This layout starts fresh: versions before it kept settings under `~/.config/cosmic/<app id>/v1/` (one file per key, through cosmic-config), and nothing here reads or imports those files - the first start of this version begins from the defaults. Copy over any setting you want to keep by writing it into the section file that owns it.
 
@@ -109,7 +109,7 @@ Geometry applies live: a shown surface is reshaped in place, a hidden one picks 
 
 | Key | Values | Default | What it does |
 |---|---|---|---|
-| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The default family ships inside the app, so it renders on every platform — including systems that install no fonts at all (box-drawing and block glyphs included). The settings drawer's picker lists the installed monospace families; a name the renderer cannot resolve falls back through the platform natives (Menlo, Consolas, and their peers) to the bundled default, keeping your value in the file. |
+| `font_name` | font family name | `Noto Sans Mono` | The terminal's typeface. The default family ships inside the app, so it renders on every platform — including systems that install no fonts at all (box-drawing and block glyphs included). The Settings window's picker lists the installed monospace families; a name the renderer cannot resolve falls back through the platform natives (Menlo, Consolas, and their peers) to the bundled default, keeping your value in the file. |
 | `font_size` | points | `14` | The terminal's font size. |
 | `opacity` | 0-100 | `100` | Background opacity. |
 | `color_scheme_dark` | scheme name | `GitHub Dark` | Scheme used while the system is in dark mode. |
@@ -124,7 +124,7 @@ Scheme names come from the built-in registry - the same names the drawer's picke
 |---|---|---|---|
 | `tab_position` | `Auto`, `Top`, `Bottom` | `Auto` | Which slot the tab strip takes in the surface column, independent of `edge`. `Auto` keeps the historic layout - the strip beside the status band, the band adjacent to the grab bar. `Top`/`Bottom` pin the strip to the extreme slot on that side of the surface; when a pin claims the grab side, the status band yields one slot inward so the pin reads. All three entries differ on both anchor edges. |
 
-A change never resizes anything - the strip reorders immediately on a shown surface. Pick it in the Geometry section of the [settings drawer](settings.md).
+A change never resizes anything - the strip reorders immediately on a shown surface. Pick it in the Window page of the [Settings window](settings.md).
 
 ## Tab titles
 
@@ -149,7 +149,7 @@ A manual rename wins in every mode. Changing the mode re-titles every live tab i
 |---|---|---|---|
 | `tab_bar_min_tabs` | 1 and up | `2` | How many tabs the strip needs before tab rows render. The default `2` keeps a single tab's row hidden - the strip then carries only its `+` and gear. `1` keeps that row on, so the one tab reads, renames (a double-click), and closes from the strip; a higher value holds rows back until that many tabs exist. kitty's own knob, name and default. |
 
-The strip itself never hides either way - the corner affordances render at any count. A change is pure paint: the strip re-renders on the config echo's next view pass, nothing reshapes. Set it on the [settings drawer](settings.md)'s Tabs card, or by writing the key.
+The strip itself never hides either way - the corner affordances render at any count. A change is pure paint: the strip re-renders on the config echo's next view pass, nothing reshapes. Set it on the [Settings window](settings.md)'s Tabs page, or by writing the key.
 
 ## Status bar
 
@@ -265,7 +265,7 @@ With an autohide panel, the hidden panel still reserves its handle strip, so a r
 
 ## Profiles
 
-Profiles are named presets of what a tab runs, managed on the [settings drawer](settings.md)'s Profiles tab - or hand-edited in `profiles.ron`, in this shape:
+Profiles are named presets of what a tab runs, managed on the [Settings window](settings.md)'s Profiles page - or hand-edited in `profiles.ron`, in this shape:
 
 ```ron
 // ~/.config/io.github.l1br3_io.dropterm/profiles.ron
@@ -307,7 +307,7 @@ The appearance fields resolve per field, never per profile: a set field wins, an
 
 ## Keybindings
 
-Keybindings are customized in the drawer's Keybindings tab or by hand in `keybinds.ron`. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
+Keybindings are customized in the Settings window's Keybindings page or by hand in `keybinds.ron`. `custom_key_binds` (default empty - all defaults) maps one action id to one binding; the full action-id table lives in [keybindings](keybindings.md):
 
 ```ron
 // ~/.config/io.github.l1br3_io.dropterm/keybinds.ron
