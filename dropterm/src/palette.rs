@@ -380,46 +380,47 @@ impl Render for Palette {
             println!("dropterm: palette overlay painted");
         }
         let dismiss = Rc::clone(&self.on_dismiss);
-        // The close-confirm's own composition, element for element:
-        // the positioned root, the scrim as its direct absolute
-        // child, the occluding panel inside the scrim.
-        div().size_full().relative().child(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x0000_0080))
-                .flex()
-                .justify_center()
-                .items_start()
-                // The palette's key context: Escape rides the bound
-                // dismissal while the container holds focus; while the
-                // list holds it, the List's own Cancel (deeper in the
-                // context stack) wins — both paths close.
-                .key_context("palette")
-                .track_focus(&self.container_focus)
-                .on_action(move |_: &DismissPalette, window, cx| dismiss(window, cx))
-                // The scrim's press dismisses (the panel's occlusion
-                // keeps its own presses — the List's rows included —
-                // off this listener).
-                .on_mouse_down(MouseButton::Left, {
-                    let dismiss = Rc::clone(&self.on_dismiss);
-                    move |_, window, cx| dismiss(window, cx)
-                })
-                .child(
-                    div()
-                        .occlude()
-                        .mt(px(48.))
-                        .w(px(520.))
-                        .h(px(360.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(hairline)
-                        .bg(card)
-                        .text_color(fg)
-                        .overflow_hidden()
-                        .child(List::new(&self.list).size_full()),
-                ),
-        )
+        // The overlay's root is out-of-flow, the settings drawer's
+        // and close-confirm's own rule: an in-flow full-size sibling
+        // under the band lays out past the window's visible area —
+        // mounted, focusable, hit-testable, and nowhere on screen
+        // (the invisible open this fixes). Absolute against the
+        // shell's positioned overlay host puts the layer on top.
+        div()
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x0000_0080))
+            .flex()
+            .justify_center()
+            .items_start()
+            // The palette's key context: Escape rides the bound
+            // dismissal while the container holds focus; while the
+            // list holds it, the List's own Cancel (deeper in the
+            // context stack) wins — both paths close.
+            .key_context("palette")
+            .track_focus(&self.container_focus)
+            .on_action(move |_: &DismissPalette, window, cx| dismiss(window, cx))
+            // The scrim's press dismisses (the panel's occlusion
+            // keeps its own presses — the List's rows included —
+            // off this listener).
+            .on_mouse_down(MouseButton::Left, {
+                let dismiss = Rc::clone(&self.on_dismiss);
+                move |_, window, cx| dismiss(window, cx)
+            })
+            .child(
+                div()
+                    .occlude()
+                    .mt(px(48.))
+                    .w(px(520.))
+                    .h(px(360.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(hairline)
+                    .bg(card)
+                    .text_color(fg)
+                    .overflow_hidden()
+                    .child(List::new(&self.list).size_full()),
+            )
     }
 }
 
