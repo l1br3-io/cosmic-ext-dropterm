@@ -30,7 +30,7 @@ use gpui_component::kbd::Kbd;
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{ActiveTheme as _, IndexPath};
 
-use crate::app_shell::{DismissPalette, Shell};
+use crate::app_shell::DismissPalette;
 use crate::terminal::input::{TermAction, gpui_key_name};
 
 // --- the routing table (the bin-side Verb→funnel half) ---
@@ -100,10 +100,10 @@ pub(crate) fn route(verb: Verb, profiles: &[Profile], tab_len: usize) -> Option<
 /// The palette's pick callback: the row's command, with the window
 /// and app the List's confirm hands. The shell's own closure closes
 /// the palette, then routes — the context-menu `PickFn`'s shape.
-type PickFn = Rc<dyn Fn(Command, &mut gpui::Window, &mut App)>;
+pub(crate) type PickFn = Rc<dyn Fn(Command, &mut gpui::Window, &mut App)>;
 /// The palette's dismissal callback: Esc (the List's Cancel or the
 /// container's bound action), the scrim's press, the toggle chord.
-type DismissFn = Rc<dyn Fn(&mut gpui::Window, &mut App)>;
+pub(crate) type DismissFn = Rc<dyn Fn(&mut gpui::Window, &mut App)>;
 
 /// The row's chord chip keystroke: the first chord of the display
 /// form ("Ctrl + Shift + O", or the first of a joined default set)
@@ -295,29 +295,18 @@ pub(crate) struct Palette {
 }
 
 impl Palette {
+    /// The palette over a fresh catalog. The shell hands in the two
+    /// callbacks every path ends in — the pick and the dismissal —
+    /// so the surface holds no shell reference and the same
+    /// construction mounts it headless.
     pub(crate) fn new(
-        shell: Entity<Shell>,
         catalog: Vec<Command>,
+        on_pick: PickFn,
+        on_dismiss: DismissFn,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A strong handle, the drawer's own precedent: the shell →
-        // palette → shell cycle lives exactly while the palette
-        // stands, and every dismissal path drops it.
-        let pick_shell = shell.clone();
-        let pick: PickFn = Rc::new(move |command, window, cx| {
-            // Close first, then execute — activate-then-close, never
-            // act-under-the-modal (the peers' rule the spec pins).
-            pick_shell.update(cx, |shell, cx| {
-                shell.close_palette(cx);
-                shell.run_pick(command, window, cx);
-            });
-        });
-        let dismiss: DismissFn = Rc::new(move |_window, cx| {
-            shell.update(cx, Shell::close_palette);
-        });
-        let delegate =
-            PaletteDelegate::from_catalog(catalog, Rc::clone(&pick), Rc::clone(&dismiss));
+        let delegate = PaletteDelegate::from_catalog(catalog, on_pick, Rc::clone(&on_dismiss));
         let list = cx.new(|cx| ListState::new(delegate, window, cx));
         let container_focus = cx.focus_handle();
         // The blur dismissal: the list's handle losing focus to
@@ -337,7 +326,7 @@ impl Palette {
                 dismiss(window, cx);
             }),
             painted_once: false,
-            on_dismiss: Rc::clone(&dismiss),
+            on_dismiss,
         }
     }
 
@@ -427,6 +416,7 @@ impl Render for Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     fn profile(name: &str) -> Profile {
         Profile {
@@ -442,6 +432,18 @@ mod tests {
 
     fn profiles() -> Vec<Profile> {
         vec![profile("ssh-web"), profile("htop")]
+    }
+
+    /// The surface pins' catalog: the registry and two profiles over
+    /// default binds.
+    fn surface_catalog() -> Vec<Command> {
+        dropterm::core::palette::compose(
+            &std::collections::BTreeMap::default(),
+            &profiles(),
+            &[],
+            &[],
+            &[],
+        )
     }
 
     #[test]
@@ -557,5 +559,132 @@ mod tests {
         let stroke = chord_keystroke("Insert").expect("a bare key parses");
         assert_eq!(stroke.key, "insert");
         assert!(!stroke.modifiers.control && !stroke.modifiers.shift);
+    }
+
+    // --- the surface, mounted headless ---
+
+    /// The real palette as a test window's root with its two
+    /// callbacks wired to a log — the images panel's probe shape. The
+    /// log records `"dismiss"` and `"pick <id>"` in call order.
+    ///
+    /// Element blur listeners do not fire in this harness: gpui gives
+    /// a focus event its paths only while the window is active, and
+    /// the test window never is. The blur dismissal stays an
+    /// owner-walk row.
+    #[allow(clippy::type_complexity)]
+    fn mount(
+        cx: &mut gpui::TestAppContext,
+        catalog: Vec<Command>,
+    ) -> (
+        gpui::VisualTestContext,
+        Entity<Palette>,
+        Rc<RefCell<Vec<String>>>,
+    ) {
+        cx.update(gpui_component::init);
+        // The boot's palette binding: the container's own Escape.
+        cx.update(|cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "escape",
+                DismissPalette,
+                Some("palette"),
+            )]);
+        });
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let pick_log = Rc::clone(&log);
+        let dismiss_log = Rc::clone(&log);
+        let handle = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                            origin: gpui::Point::default(),
+                            size: gpui::size(px(1000.), px(800.)),
+                        })),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        cx.new(|cx| {
+                            Palette::new(
+                                catalog,
+                                Rc::new(move |command, _window, _cx| {
+                                    pick_log.borrow_mut().push(format!("pick {}", command.id));
+                                }),
+                                Rc::new(move |_window, _cx| {
+                                    dismiss_log.borrow_mut().push("dismiss".to_string());
+                                }),
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                )
+            })
+            .expect("open the palette's window");
+        let mut cx = gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let palette: Entity<Palette> = cx.update(|window, _| {
+            window
+                .root()
+                .expect("the palette is the window's root type")
+                .expect("the window has a root")
+        });
+        cx.update(|window, cx| palette.update(cx, |palette, cx| palette.focus(window, cx)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (cx, palette, log)
+    }
+
+    #[gpui::test]
+    fn the_open_palette_hands_the_keyboard_to_its_list(cx: &mut gpui::TestAppContext) {
+        let (mut cx, palette, log) = mount(cx, surface_catalog());
+        assert!(
+            cx.update(|window, cx| palette.read(cx).focus_handle(cx).is_focused(window)),
+            "the list holds the keyboard at open"
+        );
+        assert!(log.borrow().is_empty(), "opening dismisses nothing");
+    }
+
+    #[gpui::test]
+    fn a_scrim_press_dismisses(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _palette, log) = mount(cx, surface_catalog());
+        // Bare scrim: below the top-centered panel (48px down, 360
+        // tall in the 800px window).
+        cx.simulate_click(gpui::point(px(20.), px(700.)), gpui::Modifiers::default());
+        assert_eq!(*log.borrow(), ["dismiss"], "the scrim's press dismisses");
+    }
+
+    #[gpui::test]
+    fn a_row_click_picks(cx: &mut gpui::TestAppContext) {
+        let catalog = surface_catalog();
+        let first = catalog[0].id.clone();
+        let (mut cx, _palette, log) = mount(cx, catalog);
+        // The first row's center: the panel 48px down, its first
+        // section header 28px, the rows 32px.
+        cx.simulate_click(gpui::point(px(500.), px(92.)), gpui::Modifiers::default());
+        cx.run_until_parked();
+        // The surface hands the shell its pick callback; closing
+        // first is that callback's own act (app_shell.rs).
+        assert_eq!(
+            *log.borrow(),
+            [format!("pick {first}").as_str()],
+            "a row's click picks it"
+        );
+    }
+
+    #[gpui::test]
+    fn enter_picks_the_selected_row(cx: &mut gpui::TestAppContext) {
+        let catalog = surface_catalog();
+        let first = catalog[0].id.clone();
+        let (mut cx, _palette, log) = mount(cx, catalog);
+        cx.simulate_keystrokes("down");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            *log.borrow(),
+            [format!("pick {first}").as_str()],
+            "Down selects the first row, Enter picks it"
+        );
     }
 }

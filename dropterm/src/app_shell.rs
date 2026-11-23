@@ -2479,9 +2479,24 @@ impl Shell {
             &scheme_names,
             &[],
         );
+        // The palette's two callbacks — the wiring only: the pick
+        // closes the palette then routes, every dismissal closes.
         let shell = cx.entity();
+        let pick_shell = shell.clone();
+        let on_pick: crate::palette::PickFn = std::rc::Rc::new(move |command, window, cx| {
+            // Close first, then execute — activate-then-close, never
+            // act-under-the-modal (the peers' rule the spec pins).
+            pick_shell.update(cx, |shell, cx| {
+                shell.close_palette(cx);
+                shell.run_pick(command, window, cx);
+            });
+        });
+        let on_dismiss: crate::palette::DismissFn = std::rc::Rc::new(move |_window, cx| {
+            shell.update(cx, Shell::close_palette);
+        });
         let row_count = catalog.len();
-        let palette = cx.new(|cx| crate::palette::Palette::new(shell, catalog, window, cx));
+        let palette =
+            cx.new(|cx| crate::palette::Palette::new(catalog, on_pick, on_dismiss, window, cx));
         palette.update(cx, |palette, cx| palette.focus(window, cx));
         // The close path's repair handle, captured while the read is
         // safe: construction is complete here, and the blur path that
