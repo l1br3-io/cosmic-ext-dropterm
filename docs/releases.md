@@ -42,7 +42,7 @@ The autosuggestions release: fish-style ghost text computed entirely terminal-si
 - Autosuggestions - history ghosts, paths, command names, the subcommand/flag table ([autosuggestions](autosuggestions.md))
 - The idle delay - `autosuggestions_delay_ms`, the ghost at the pause instead of the churn ([the delay](autosuggestions.md#the-delay))
 - The status band's command lifecycle - the duration segment, the finished-command notification, the scrolled-back chip, the band's pointer idioms ([command time](status-bar.md#command-time), [the scrolled-back chip](status-bar.md#the-scrolled-back-chip), [reading and copying](status-bar.md#reading-and-copying))
-- The font picker - the Appearance card's family list, each row previewed in its own face ([settings](settings.md#the-five-tabs))
+- The font picker - the Appearance card's family list, each row previewed in its own face ([settings](settings.md#the-sidebar))
 - Desktop presence - hidden from the dock and window switcher by default, `show_in_dock` to restore it ([configuration](configuration.md#layer-focus-and-panels))
 - The docs layer - Common tasks, the FAQ, the complete sample config ([common tasks](howto.md), [FAQ](faq.md))
 - Fixes - toggle-show on an empty desktop lands focused with keybinds live, the block caret paints in the first shown frame, font zoom applies immediately, an empty title report clears the title
@@ -53,7 +53,7 @@ The autosuggestions release: fish-style ghost text computed entirely terminal-si
 The status band release: a 28 px glance strip beside the grab bar narrating the active terminal - foreground process, working directory with git branch, profile, cell dimensions, tab position, zoom, clock, command time, scroll position - every segment click-to-copy, drag-selectable, individually toggleable, with its own context menu. Profiles grew a full manager (transactional edit form, armed two-step delete, inherit-aware pickers), the tab strip and status band gained border hairlines, and the documentation you are reading shipped: this site, the research decision log, and the two drift gates that pin docs to code. Development installs split from the installed release under a `-dev` identity so the two never tug each other.
 
 - The status band - segments, click-to-copy, selection, context menu, per-segment toggles ([status bar](status-bar.md))
-- The profiles manager - the drawer's Profiles tab: form, clone, delete, the default picker ([settings](settings.md#profiles-tab), [profiles](configuration.md#profiles))
+- The profiles manager - the drawer's Profiles tab: form, clone, delete, the default picker ([settings](settings.md#profiles-page), [profiles](configuration.md#profiles))
 - Bar border hairlines - `tab_bar_border`, `status_bar_border` ([configuration](configuration.md#bar-borders))
 - The docs site and its gates - this Jekyll tree, the config-key test, the link gate ([development](development.md))
 - Dev/installed split - the `-dev` launcher identity and its own config and state ([development](development.md#development-launcher))
