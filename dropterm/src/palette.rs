@@ -17,6 +17,7 @@
 
 use std::rc::Rc;
 
+use dropterm::core::keybinds::Binding;
 use dropterm::core::palette::{Command, Section, Verb};
 use dropterm::core::profile::Profile;
 use dropterm::core::settings::SettingsTab;
@@ -31,7 +32,9 @@ use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{ActiveTheme as _, IndexPath};
 
 use crate::app_shell::DismissPalette;
-use crate::terminal::input::{TermAction, gpui_key_name};
+use crate::terminal::input::{
+    Chord, TermAction, chord_matches, effective_key_binds, gpui_key_name,
+};
 
 // --- the routing table (the bin-side Verb→funnel half) ---
 
@@ -96,6 +99,20 @@ pub(crate) fn route(verb: Verb, profiles: &[Profile], tab_len: usize) -> Option<
 }
 
 // --- the surface (the close-confirm's shape, the Kit List's innards) ---
+
+/// The chord that dismisses the palette: the one that opens it. The
+/// palette holds the keyboard while it stands, so the open chord never
+/// reaches the pane's key listener — the surface answers the chord
+/// itself, and it answers to exactly the press the pane's own
+/// effective map does, a `custom_key_binds` override included. `None`
+/// only if the registry lacked the row.
+pub(crate) fn toggle_chord(
+    custom_binds: &std::collections::BTreeMap<String, Binding>,
+) -> Option<Chord> {
+    effective_key_binds(custom_binds)
+        .into_iter()
+        .find_map(|(chord, action)| (action == TermAction::CommandPalette).then_some(chord))
+}
 
 /// The palette's pick callback: the row's command, with the window
 /// and app the List's confirm hands. The shell's own closure closes
@@ -291,6 +308,8 @@ pub(crate) struct Palette {
     /// The first paint's evidence line, once per open — the walk's
     /// ground truth that the overlay's render actually runs.
     painted_once: bool,
+    /// The chord that opened the palette — the toggle's key.
+    toggle: Option<Chord>,
     on_dismiss: DismissFn,
 }
 
@@ -301,6 +320,7 @@ impl Palette {
     /// construction mounts it headless.
     pub(crate) fn new(
         catalog: Vec<Command>,
+        toggle: Option<Chord>,
         on_pick: PickFn,
         on_dismiss: DismissFn,
         window: &mut gpui::Window,
@@ -326,6 +346,7 @@ impl Palette {
                 dismiss(window, cx);
             }),
             painted_once: false,
+            toggle,
             on_dismiss,
         }
     }
@@ -389,6 +410,22 @@ impl Render for Palette {
             .key_context("palette")
             .track_focus(&self.container_focus)
             .on_action(move |_: &DismissPalette, window, cx| dismiss(window, cx))
+            // The toggle: the palette holds the keyboard while it
+            // stands, so the open chord never reaches the pane's key
+            // map — the root answers it itself, through the pane's
+            // own matcher, and keeps it (an owned chord never leaves
+            // its surface).
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let owned = this
+                    .toggle
+                    .as_ref()
+                    .is_some_and(|chord| chord_matches(chord, &event.keystroke));
+                if !owned {
+                    return;
+                }
+                cx.stop_propagation();
+                (this.on_dismiss)(window, cx);
+            }))
             // The scrim's press dismisses (the panel's occlusion
             // keeps its own presses — the List's rows included —
             // off this listener).
@@ -416,6 +453,7 @@ impl Render for Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dropterm::core::keybinds::ModifierName;
     use std::cell::RefCell;
 
     fn profile(name: &str) -> Profile {
@@ -434,16 +472,25 @@ mod tests {
         vec![profile("ssh-web"), profile("htop")]
     }
 
+    fn no_binds() -> std::collections::BTreeMap<String, Binding> {
+        std::collections::BTreeMap::default()
+    }
+
+    /// `command_palette` rebound to Alt+P — a chord no default holds.
+    fn alt_p_palette() -> std::collections::BTreeMap<String, Binding> {
+        std::collections::BTreeMap::from([(
+            "command_palette".to_string(),
+            Binding {
+                modifiers: vec![ModifierName::Alt],
+                key: "P".to_string(),
+            },
+        )])
+    }
+
     /// The surface pins' catalog: the registry and two profiles over
-    /// default binds.
-    fn surface_catalog() -> Vec<Command> {
-        dropterm::core::palette::compose(
-            &std::collections::BTreeMap::default(),
-            &profiles(),
-            &[],
-            &[],
-            &[],
-        )
+    /// the given binds.
+    fn surface_catalog(custom_binds: &std::collections::BTreeMap<String, Binding>) -> Vec<Command> {
+        dropterm::core::palette::compose(custom_binds, &profiles(), &[], &[], &[])
     }
 
     #[test]
@@ -574,7 +621,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn mount(
         cx: &mut gpui::TestAppContext,
-        catalog: Vec<Command>,
+        custom_binds: &std::collections::BTreeMap<String, Binding>,
     ) -> (
         gpui::VisualTestContext,
         Entity<Palette>,
@@ -605,7 +652,8 @@ mod tests {
                     |window, cx| {
                         cx.new(|cx| {
                             Palette::new(
-                                catalog,
+                                surface_catalog(custom_binds),
+                                toggle_chord(custom_binds),
                                 Rc::new(move |command, _window, _cx| {
                                     pick_log.borrow_mut().push(format!("pick {}", command.id));
                                 }),
@@ -638,7 +686,7 @@ mod tests {
 
     #[gpui::test]
     fn the_open_palette_hands_the_keyboard_to_its_list(cx: &mut gpui::TestAppContext) {
-        let (mut cx, palette, log) = mount(cx, surface_catalog());
+        let (mut cx, palette, log) = mount(cx, &no_binds());
         assert!(
             cx.update(|window, cx| palette.read(cx).focus_handle(cx).is_focused(window)),
             "the list holds the keyboard at open"
@@ -648,7 +696,7 @@ mod tests {
 
     #[gpui::test]
     fn a_scrim_press_dismisses(cx: &mut gpui::TestAppContext) {
-        let (mut cx, _palette, log) = mount(cx, surface_catalog());
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
         // Bare scrim: below the top-centered panel (48px down, 360
         // tall in the 800px window).
         cx.simulate_click(gpui::point(px(20.), px(700.)), gpui::Modifiers::default());
@@ -657,9 +705,8 @@ mod tests {
 
     #[gpui::test]
     fn a_row_click_picks(cx: &mut gpui::TestAppContext) {
-        let catalog = surface_catalog();
-        let first = catalog[0].id.clone();
-        let (mut cx, _palette, log) = mount(cx, catalog);
+        let first = surface_catalog(&no_binds())[0].id.clone();
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
         // The first row's center: the panel 48px down, its first
         // section header 28px, the rows 32px.
         cx.simulate_click(gpui::point(px(500.), px(92.)), gpui::Modifiers::default());
@@ -675,9 +722,8 @@ mod tests {
 
     #[gpui::test]
     fn enter_picks_the_selected_row(cx: &mut gpui::TestAppContext) {
-        let catalog = surface_catalog();
-        let first = catalog[0].id.clone();
-        let (mut cx, _palette, log) = mount(cx, catalog);
+        let first = surface_catalog(&no_binds())[0].id.clone();
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
         cx.simulate_keystrokes("down");
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -686,5 +732,66 @@ mod tests {
             [format!("pick {first}").as_str()],
             "Down selects the first row, Enter picks it"
         );
+    }
+
+    // --- the toggle chord ---
+
+    #[test]
+    fn the_toggle_chord_is_the_keybind_map_s_own_entry() {
+        // The default: the registry's Ctrl+Shift+O, matched the way
+        // the pane matches it.
+        let chord = toggle_chord(&no_binds()).expect("the registry carries command_palette");
+        assert!(chord_matches(
+            &chord,
+            &Keystroke::parse("ctrl-shift-o").expect("a keystroke")
+        ));
+        assert!(!chord_matches(
+            &chord,
+            &Keystroke::parse("ctrl-shift-p").expect("a keystroke")
+        ));
+
+        // A custom bind moves the toggle with it.
+        let chord = toggle_chord(&alt_p_palette()).expect("the custom bind resolves");
+        assert!(chord_matches(
+            &chord,
+            &Keystroke::parse("alt-p").expect("a keystroke")
+        ));
+        assert!(!chord_matches(
+            &chord,
+            &Keystroke::parse("ctrl-shift-o").expect("a keystroke")
+        ));
+    }
+
+    #[gpui::test]
+    fn the_toggle_chord_dismisses_from_the_held_keyboard(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
+        cx.simulate_keystrokes("ctrl-shift-o");
+        assert_eq!(
+            *log.borrow(),
+            ["dismiss"],
+            "the open chord, pressed again while the palette holds the keyboard, closes it"
+        );
+    }
+
+    #[gpui::test]
+    fn another_owned_chord_stays_in_the_palette(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _palette, log) = mount(cx, &no_binds());
+        cx.simulate_keystrokes("ctrl-shift-p");
+        assert!(
+            log.borrow().is_empty(),
+            "the images panel's chord is not the palette's to act on"
+        );
+    }
+
+    #[gpui::test]
+    fn a_custom_bind_moves_the_toggle(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _palette, log) = mount(cx, &alt_p_palette());
+        cx.simulate_keystrokes("ctrl-shift-o");
+        assert!(
+            log.borrow().is_empty(),
+            "the released default no longer toggles"
+        );
+        cx.simulate_keystrokes("alt-p");
+        assert_eq!(*log.borrow(), ["dismiss"], "the custom chord toggles");
     }
 }

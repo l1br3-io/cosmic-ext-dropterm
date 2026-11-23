@@ -2495,8 +2495,10 @@ impl Shell {
             shell.update(cx, Shell::close_palette);
         });
         let row_count = catalog.len();
-        let palette =
-            cx.new(|cx| crate::palette::Palette::new(catalog, on_pick, on_dismiss, window, cx));
+        let toggle = crate::palette::toggle_chord(&custom_binds);
+        let palette = cx.new(|cx| {
+            crate::palette::Palette::new(catalog, toggle, on_pick, on_dismiss, window, cx)
+        });
         palette.update(cx, |palette, cx| palette.focus(window, cx));
         // The close path's repair handle, captured while the read is
         // safe: construction is complete here, and the blur path that
