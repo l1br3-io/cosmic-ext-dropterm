@@ -186,6 +186,12 @@ pub struct TerminalOptions {
     /// next commit: `false` restores the recency-only ring exactly
     /// (no cwd capture, no store read or write).
     pub autosuggestions_history_context: bool,
+    /// The history store's explicit path (suggest-depth spec, OQ-2):
+    /// `None` resolves the XDG state seat's `history.ron` at
+    /// construction; the pty test harness points it at a temp path so
+    /// suites never read or write the real seat. Construction truth,
+    /// never rewritten by `set_config`.
+    pub history_state_path: Option<PathBuf>,
 }
 
 impl Default for TerminalOptions {
@@ -213,6 +219,7 @@ impl Default for TerminalOptions {
             autosuggestions_specs_table: suggest::builtin_specs_arc(),
             autosuggestions_specs_loading: false,
             autosuggestions_history_context: true,
+            history_state_path: None,
         }
     }
 }
@@ -601,6 +608,10 @@ pub struct Terminal {
     /// resolved options flag, re-read at every `set_config`; a flip
     /// applies at the next commit.
     autosuggestions_history_context: bool,
+    /// The history store's resolved path (suggest-depth spec, OQ-2):
+    /// the options' explicit path or the state seat's default,
+    /// fixed at construction — every later read and write keys on it.
+    history_state_path: PathBuf,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -1355,10 +1366,12 @@ fn shell_history_seed(program: &str, home: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The history store's state-seat path (suggest-depth spec, OQ-2):
-/// `history.ron` under the session state directory — history is
-/// state, not config.
-fn history_state_path() -> PathBuf {
+/// The history store's default state-seat path (suggest-depth spec,
+/// OQ-2): `history.ron` under the session state directory — history
+/// is state, not config. The options' override field resolves here
+/// when unset; the pty test harness points its terminals at temp
+/// paths so suites never read or write the real seat.
+fn default_history_state_path() -> PathBuf {
     crate::core::session::state_dir().join("history.ron")
 }
 
@@ -1369,22 +1382,21 @@ fn history_state_path() -> PathBuf {
 /// run; anything invalid — unreadable, unparseable, or a wrong
 /// version — quarantines to a `.bak` sibling (the session store's
 /// pattern) and seeds nothing. Never panics on bad input.
-fn history_store_seed() -> Vec<(String, Option<String>)> {
-    let path = history_state_path();
-    let text = match fs::read_to_string(&path) {
+fn history_store_seed(path: &Path) -> Vec<(String, Option<String>)> {
+    let text = match fs::read_to_string(path) {
         Ok(text) => text,
         // A missing file is the silent first run, not an error.
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => {
             log::warn!("failed to read history store {}: {err}", path.display());
-            return quarantine_history_store(&path);
+            return quarantine_history_store(path);
         }
     };
     if let Some(store) = suggest::parse_history_store(&text) {
         store.into_seed_pairs()
     } else {
         log::warn!("failed to parse history store {}", path.display());
-        quarantine_history_store(&path)
+        quarantine_history_store(path)
     }
 }
 
@@ -1412,15 +1424,14 @@ fn quarantine_history_store(path: &Path) -> Vec<(String, Option<String>)> {
 /// commit, then the shared tmp-sibling + fsync + rename dance. Every
 /// tab commits into the same union, so a write merges rather than
 /// clobbers its peers' entries.
-fn save_history_store_commit(command: &str, cwd: Option<&str>) -> io::Result<()> {
-    let path = history_state_path();
-    let mut store = match fs::read_to_string(&path) {
+fn save_history_store_commit(path: &Path, command: &str, cwd: Option<&str>) -> io::Result<()> {
+    let mut store = match fs::read_to_string(path) {
         Ok(text) => suggest::parse_history_store(&text).unwrap_or_else(|| {
             log::warn!(
                 "history store {} was invalid; quarantining and starting fresh",
                 path.display()
             );
-            quarantine_history_store(&path);
+            quarantine_history_store(path);
             suggest::HistoryStore::new()
         }),
         Err(err) if err.kind() == io::ErrorKind::NotFound => suggest::HistoryStore::new(),
@@ -1433,7 +1444,7 @@ fn save_history_store_commit(command: &str, cwd: Option<&str>) -> io::Result<()>
             "history store serialization failed",
         )
     })?;
-    crate::core::session::write_text_atomic(&path, &text)
+    crate::core::session::write_text_atomic(path, &text)
 }
 
 impl Terminal {
@@ -1462,6 +1473,14 @@ impl Terminal {
         let default_bg = convert_color(colors, Color::Named(NamedColor::Background));
         let default_fg = convert_color(colors, Color::Named(NamedColor::Foreground));
 
+        // The history store's resolved seat (suggest-depth spec,
+        // OQ-2): the options' explicit path or the state default,
+        // resolved once — the boot seed and every later write key on
+        // the same file.
+        let history_state_path = options
+            .history_state_path
+            .clone()
+            .unwrap_or_else(default_history_state_path);
         let mut metadata_set = IndexSet::new();
         let default_metada = Metadata::new(default_bg, default_fg);
         let (default_metada_idx, _) = metadata_set.insert_full(default_metada);
@@ -1571,6 +1590,7 @@ impl Terminal {
             autosuggestions_specs_table: options.autosuggestions_specs_table.clone(),
             autosuggestions_specs_loading: options.autosuggestions_specs_loading,
             autosuggestions_history_context: options.autosuggestions_history_context,
+            history_state_path: history_state_path.clone(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -1615,7 +1635,7 @@ impl Terminal {
                 let mut suggest = Suggest::new();
                 if options.autosuggestions_enabled {
                     if options.autosuggestions_history_context {
-                        suggest.seed_history_contexted(history_store_seed());
+                        suggest.seed_history_contexted(history_store_seed(&history_state_path));
                     }
                     suggest.seed_history(shell_history_seed(
                         &options.spawned_program,
@@ -3503,7 +3523,11 @@ impl Terminal {
                     // read-merge-save per committed command, human
                     // rate, never the keystroke path.
                     if let Some((command, cwd)) = self.suggest.take_store_commit()
-                        && let Err(err) = save_history_store_commit(&command, cwd.as_deref())
+                        && let Err(err) = save_history_store_commit(
+                            &self.history_state_path,
+                            &command,
+                            cwd.as_deref(),
+                        )
                     {
                         log::warn!("failed to persist history store: {err}");
                     }

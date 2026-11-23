@@ -8,6 +8,24 @@ use super::*;
 
 use crate::core::terminal::PlainHost;
 
+/// Terminal options with an isolated history store (suggest-depth
+/// spec, OQ-2): the state-seat path points at a never-existing temp
+/// file unique to this call, so no test reads the real seat's
+/// history and no committed test typing ever writes it — the suites
+/// stay hermetic whatever the owner's `DropTerm` has been running.
+fn isolated_options() -> TerminalOptions {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    TerminalOptions {
+        history_state_path: Some(std::env::temp_dir().join(format!(
+            "dropterm-history-test-{}-{seq}.ron",
+            std::process::id()
+        ))),
+        ..TerminalOptions::default()
+    }
+}
+
 #[test]
 fn tagged_event_proxy_stamps_events_with_tab_id() {
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -82,7 +100,7 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh cwd test terminal");
@@ -118,7 +136,7 @@ fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -180,7 +198,7 @@ fn toggle_shaped_resizes_never_reprint_the_bash_prompt() {
             env,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn an interactive bash");
@@ -271,7 +289,7 @@ fn foreground_check_tracks_a_live_pty_from_idle_to_child_and_back() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -312,7 +330,7 @@ fn grid_floors_the_live_pixel_size_into_cells() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -361,7 +379,7 @@ fn spawn_grid_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal")
@@ -513,20 +531,20 @@ fn cell_metric_changes_after_settle_deviates_without_rebaselining() {
     // options — `set_config` reads the live `zoom_adj`, so the
     // zoom lands with no options edit at all.
     terminal.set_zoom_adj(2);
-    terminal.set_config(&TerminalOptions::default(), &Colors::default());
+    terminal.set_config(&isolated_options(), &Colors::default());
     assert_eq!(terminal.spawn_grid(), resting);
     assert_ne!(terminal.grid().0, 40, "zoomed cells deviate from rest");
 
     let enlarged = TerminalOptions {
         font_size: 24,
-        ..TerminalOptions::default()
+        ..isolated_options()
     };
     terminal.set_config(&enlarged, &Colors::default());
     assert_eq!(terminal.spawn_grid(), resting);
     assert_ne!(terminal.grid().0, 40, "bigger cells deviate from rest");
 
     terminal.set_zoom_adj(0);
-    terminal.set_config(&TerminalOptions::default(), &Colors::default());
+    terminal.set_config(&isolated_options(), &Colors::default());
     assert_eq!(
         terminal.grid().0,
         40,
@@ -578,7 +596,7 @@ fn process_name_tracks_a_live_pty_from_idle_to_child_and_back() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -651,7 +669,7 @@ fn a_non_ssh_foreground_comm_yields_no_destination() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -700,7 +718,7 @@ fn a_live_ssh_comm_reads_its_cmdline_destination() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal");
@@ -758,7 +776,7 @@ fn autosuggest_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh test terminal")
@@ -957,7 +975,7 @@ fn menu_auto_terminal() -> Terminal {
     terminal.set_config(
         &TerminalOptions {
             autosuggestions_menu_auto: true,
-            ..TerminalOptions::default()
+            ..isolated_options()
         },
         &Colors::default(),
     );
@@ -1669,7 +1687,7 @@ fn command_timer_steps_with_autosuggestions_disabled() {
         },
         &TerminalOptions {
             autosuggestions_enabled: false,
-            ..TerminalOptions::default()
+            ..isolated_options()
         },
         &Colors::default(),
     )
@@ -1713,7 +1731,7 @@ fn the_path_spawn_gate_reads_spawn_resolved_truth_from_the_options() {
             },
             &TerminalOptions {
                 spawned_program: spawned_program.to_owned(),
-                ..TerminalOptions::default()
+                ..isolated_options()
             },
             &Colors::default(),
         )
@@ -2365,7 +2383,7 @@ fn generator_terminal(dir: &Path) -> Terminal {
         &TerminalOptions {
             spawned_program: "/bin/sh".to_owned(),
             spawn_path: std::env::var("PATH").ok(),
-            ..TerminalOptions::default()
+            ..isolated_options()
         },
         &Colors::default(),
     )
@@ -2483,7 +2501,7 @@ fn latch_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh latch test terminal")
@@ -2562,7 +2580,7 @@ fn cwd_report_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh cwd-report test terminal")
@@ -2673,7 +2691,7 @@ fn progress_report_terminal() -> (Terminal, mpsc::UnboundedReceiver<(TabId, Even
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh progress-report test terminal");
@@ -3199,7 +3217,7 @@ fn image_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/cat inline-image test terminal")
@@ -4890,7 +4908,7 @@ fn real_rc_toggle_churn_rss_curve() {
             env,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn an interactive bash with the login rc");
@@ -4996,7 +5014,7 @@ fn a_one_col_churn_over_wide_glyphs_stays_bounded() {
             env,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn an interactive bash");
@@ -5098,7 +5116,7 @@ fn an_image_pastes_its_path_visible_at_the_bash_prompt() {
             env,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn an interactive bash");
@@ -5206,7 +5224,7 @@ fn a_family_change_answers_true_once_and_remeasures() {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions::default(),
+        &isolated_options(),
         &Colors::default(),
     )
     .expect("spawn a /bin/sh family test terminal");
