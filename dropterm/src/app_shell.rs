@@ -6248,14 +6248,18 @@ fn boot_tab_fleet(
 /// exists and the flow is not retired; a binding through any path
 /// retires it.
 fn open_first_run_onboarding(cx: &mut App, shell: &Entity<Shell>) {
-    shell.update(cx, |shell, cx| {
-        let bound = !shell.settings.summon.display.is_empty();
-        let dismissed = shell.config.onboarding_dismissed;
-        if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
-            let entity = cx.entity();
-            crate::onboarding::open_onboarding(cx, entity, crate::onboarding::Origin::FirstRun);
-        }
-    });
+    // The read ends before the open: open_onboarding reads the shell
+    // itself, and a read inside a live lease panics.
+    let (bound, dismissed) = {
+        let shell = shell.read(cx);
+        (
+            !shell.settings.summon.display.is_empty(),
+            shell.config.onboarding_dismissed,
+        )
+    };
+    if dropterm::core::global_shortcut::onboarding_should_show(bound, dismissed) {
+        crate::onboarding::open_onboarding(cx, shell.clone(), crate::onboarding::Origin::FirstRun);
+    }
 }
 
 /// Boot the shell: load the config, create the shell entity, and run
@@ -7115,6 +7119,24 @@ mod tests {
                 "the armed pair dies with the close"
             );
         });
+    }
+
+    #[gpui::test]
+    fn an_unbound_cold_boot_opens_the_onboarding_window(cx: &mut gpui::TestAppContext) {
+        // open_onboarding reads the shell, so the first-run decision
+        // must not still hold it when the window opens. The scaffold's
+        // standing panel plays no part here.
+        let (shell, _signals_tx, _tab, cx) = shell_with_standing_panel(cx);
+        let before = cx.update(|_window, cx| {
+            shell.update(cx, |shell, _| {
+                shell.settings.summon.display.clear();
+                shell.config.onboarding_dismissed = false;
+            });
+            cx.windows().len()
+        });
+        cx.update(|_window, cx| open_first_run_onboarding(cx, &shell));
+        let after = cx.update(|_window, cx| cx.windows().len());
+        assert_eq!(after, before + 1, "the onboarding window must open");
     }
 
     struct ConfirmVerbProbe {
