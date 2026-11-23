@@ -18,7 +18,7 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -242,6 +242,18 @@ pub(crate) struct Observation<'a> {
     /// a fresh-prompt anchor adoption resets it (a new line is new
     /// typing).
     pub(crate) typed_idle_ms: u16,
+    /// The shell's working directory at this update (suggest-depth
+    /// spec, OQ-1): the engine's `/proc/{shell_pid}/cwd` truth,
+    /// borrowed — the model never reads the filesystem. The
+    /// idle→running commit records it as the run command's context;
+    /// `None` (a cwd that cannot be read) commits contextless.
+    pub(crate) working_cwd: Option<&'a str>,
+    /// The history-context config gate (suggest-depth spec, OQ-1):
+    /// `autosuggestions_history_context` as resolved into the
+    /// terminal's options. `false` restores the recency-only ring
+    /// exactly — no cwd capture, no persistence cue — a live flip
+    /// applying at the next commit.
+    pub(crate) history_context: bool,
 }
 
 /// The engine-owned autosuggest state (autosuggest spec): the adopted
@@ -261,6 +273,17 @@ pub(crate) struct Suggest {
     /// (suggest-delay spec) — the engine's cue to expose a reveal
     /// deadline and arm the one-shot tick.
     withheld: bool,
+    /// The committed commands' working directories (suggest-depth
+    /// spec, OQ-1): one cwd per command — the most recent — parallel
+    /// to the ring and bounded with it (a cap-evicted command's
+    /// context dies with its seat). Absent means contextless.
+    cwd_by_command: HashMap<String, String>,
+    /// The persistence cue (suggest-depth spec, OQ-2): the command
+    /// (and its cwd, when known) the engine owes the DropTerm-side
+    /// store, set by a qualifying commit under the toggle and taken
+    /// one-shot after each step — the model never touches the
+    /// filesystem.
+    store_commit: Option<(String, Option<String>)>,
 }
 
 impl Suggest {
@@ -276,6 +299,8 @@ impl Suggest {
             ring: VecDeque::new(),
             showing: None,
             withheld: false,
+            cwd_by_command: HashMap::new(),
+            store_commit: None,
         }
     }
 
@@ -331,8 +356,37 @@ impl Suggest {
     /// a seeded ring is indistinguishable from a well-lived-in one.
     pub(crate) fn seed_history(&mut self, entries: impl IntoIterator<Item = String>) {
         for entry in entries {
-            commit(&mut self.ring, &entry);
+            commit(&mut self.ring, &mut self.cwd_by_command, &entry, None);
         }
+    }
+
+    /// Seeds the ring with `DropTerm`'s own persisted history
+    /// (suggest-depth spec, OQ-2): `(command, cwd)` pairs in
+    /// oldest-first store order, each committing with its recorded
+    /// context. The caller seeds this before the contextless
+    /// shell-history seed, so the shell file's cross-session order
+    /// wins collisions (commit's promote) while the cwds ride through
+    /// the map.
+    pub(crate) fn seed_history_contexted(
+        &mut self,
+        entries: impl IntoIterator<Item = (String, Option<String>)>,
+    ) {
+        for (command, cwd) in entries {
+            commit(
+                &mut self.ring,
+                &mut self.cwd_by_command,
+                &command,
+                cwd.as_deref(),
+            );
+        }
+    }
+
+    /// Takes the pending persistence cue (suggest-depth spec, OQ-2):
+    /// the committed command and its cwd, when the toggle armed one —
+    /// consumed exactly once by the engine's store write after each
+    /// step.
+    pub(crate) fn take_store_commit(&mut self) -> Option<(String, Option<String>)> {
+        self.store_commit.take()
     }
 }
 
@@ -358,7 +412,20 @@ pub(crate) fn step(obs: &Observation<'_>, suggest: &mut Suggest) -> Option<Showi
     let was_running = suggest.last_foreground_child;
     suggest.last_foreground_child = obs.foreground_child;
     if !was_running && obs.foreground_child {
-        commit(&mut suggest.ring, &suggest.capture);
+        // The commit's context (suggest-depth spec, OQ-1): the cwd
+        // the observation carried, only while the toggle arms it —
+        // and a qualifying commit under the toggle hands itself to
+        // the engine's store write.
+        let cwd = obs.history_context.then_some(obs.working_cwd).flatten();
+        let recorded = commit(
+            &mut suggest.ring,
+            &mut suggest.cwd_by_command,
+            &suggest.capture,
+            cwd,
+        );
+        if recorded && obs.history_context {
+            suggest.store_commit = Some((suggest.capture.clone(), cwd.map(str::to_string)));
+        }
     } else if was_running && !obs.foreground_child {
         suggest.adopt_armed = true;
     }
@@ -2092,17 +2159,113 @@ fn match_tier(query: &str, label: &str) -> Option<MatchTier> {
     })
 }
 
-/// Commits one command to the ring: empty and whitespace-only lines
-/// never record, a re-typed command promotes to most-recent (fish's
-/// effective order), and the oldest entry evicts past the cap.
-fn commit(ring: &mut VecDeque<String>, command: &str) {
+/// Commits one command to the ring with its context (suggest-depth
+/// spec, OQ-1): empty and whitespace-only lines never record, a
+/// re-typed command promotes to most-recent (fish's effective order)
+/// and its context moves with it — one cwd per command, the most
+/// recent — and the oldest entry evicts past the cap, its context
+/// dying with its seat (dedupe keeps one seat per command, so the
+/// map stays ring-bounded). A `None` cwd commits contextless, never
+/// erasing a standing one — contextless reads "unknown", not "none".
+/// Returns whether the ring recorded.
+fn commit(
+    ring: &mut VecDeque<String>,
+    cwd_by_command: &mut HashMap<String, String>,
+    command: &str,
+    cwd: Option<&str>,
+) -> bool {
     if command.trim().is_empty() {
-        return;
+        return false;
     }
     ring.retain(|entry| entry != command);
     ring.push_back(command.to_string());
     while ring.len() > RING_CAP {
-        ring.pop_front();
+        if let Some(evicted) = ring.pop_front() {
+            cwd_by_command.remove(&evicted);
+        }
+    }
+    if let Some(cwd) = cwd {
+        cwd_by_command.insert(command.to_string(), cwd.to_string());
+    }
+    true
+}
+
+/// The persisted history store's version (suggest-depth spec, OQ-2):
+/// a file carrying any other version quarantines at load, never
+/// loads partially.
+const HISTORY_STORE_VERSION: u32 = 1;
+
+/// The DropTerm-side persisted history (suggest-depth spec, OQ-2):
+/// the app-global union of committed commands in ring order, each
+/// with the working directory it last ran in — the format is state,
+/// not config, so it lives under the XDG state seat the engine
+/// resolves. Pure data: the engine owns every read, write, and
+/// quarantine. No `Default`: the version is never incidental.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct HistoryStore {
+    version: u32,
+    entries: Vec<HistoryStoreEntry>,
+}
+
+impl HistoryStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            version: HISTORY_STORE_VERSION,
+            entries: Vec::new(),
+        }
+    }
+
+    /// The boot seed's pair view (suggest-depth spec, OQ-2): the
+    /// entries as `(command, cwd)` pairs in store order, ready for
+    /// [`Suggest::seed_history_contexted`].
+    pub(crate) fn into_seed_pairs(self) -> Vec<(String, Option<String>)> {
+        self.entries
+            .into_iter()
+            .map(|entry| (entry.command, entry.cwd))
+            .collect()
+    }
+}
+
+/// One persisted command and its recorded context — `None` is
+/// contextless (a cwd that could not be read, or a contextless
+/// seed), never "no directory".
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+struct HistoryStoreEntry {
+    command: String,
+    cwd: Option<String>,
+}
+
+/// Commits one command into the persisted store (suggest-depth spec,
+/// OQ-2): the ring's own dedupe, promote, and cap semantics over the
+/// entry list, so the file stays bounded and ordered like the ring
+/// it seeds.
+pub(crate) fn commit_store(store: &mut HistoryStore, command: &str, cwd: Option<&str>) {
+    if command.trim().is_empty() {
+        return;
+    }
+    store.entries.retain(|entry| entry.command != command);
+    store.entries.push(HistoryStoreEntry {
+        command: command.to_string(),
+        cwd: cwd.map(str::to_string),
+    });
+    if store.entries.len() > RING_CAP {
+        store.entries.drain(..store.entries.len() - RING_CAP);
+    }
+}
+
+/// Serializes the store as RON text (the session state's own shape,
+/// one pretty-printed struct).
+pub(crate) fn history_store_text(store: &HistoryStore) -> Option<String> {
+    ron::to_string(store).ok()
+}
+
+/// Parses persisted-store text (suggest-depth spec, OQ-2): `None` is
+/// any invalid input — unparseable, non-struct, or a version other
+/// than [`HISTORY_STORE_VERSION`] — the caller's quarantine trigger.
+pub(crate) fn parse_history_store(text: &str) -> Option<HistoryStore> {
+    match ron::from_str::<HistoryStore>(text) {
+        Ok(store) if store.version == HISTORY_STORE_VERSION => Some(store),
+        _ => None,
     }
 }
 

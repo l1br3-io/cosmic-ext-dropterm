@@ -519,6 +519,19 @@ pub struct DropTermConfig {
     /// chord-only behavior stays one `false` away. Flips apply live
     /// on the config echo.
     pub autosuggestions_menu_auto: bool,
+    /// Whether history commits remember their working directory and
+    /// persist DropTerm-side (suggest-depth spec, OQ-1/OQ-2): with
+    /// the key on, an Enter-committed command records the shell's
+    /// cwd beside it, merges into the app-global `history.ron` under
+    /// the XDG state seat (capped and deduped like the ring), and
+    /// seeds back at boot before the shell's own history file — so
+    /// suggestions from history can rank by where you are (the
+    /// context-first ranking rides its own task). Defaults to `true`
+    /// (OQ-1); `false` restores the recency-only ring exactly: no
+    /// cwd capture, and an off run never touches the store file (a
+    /// corrupt one waits untouched for the key to come back). Flips
+    /// apply live at the next commit.
+    pub autosuggestions_history_context: bool,
     /// The idle-delay display gate for autosuggestions (suggest-delay
     /// spec): a qualifying suggestion is withheld until the typed
     /// segment has been stable this many milliseconds — the
@@ -639,6 +652,7 @@ impl Default for DropTermConfig {
             autosuggestions_commands_enabled: true,
             autosuggestions_menu_enabled: true,
             autosuggestions_menu_auto: true,
+            autosuggestions_history_context: true,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),
             autosuggestions_completions_extended: true,

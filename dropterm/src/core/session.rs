@@ -409,19 +409,32 @@ fn quarantine(path: &Path) -> Option<SessionState> {
 }
 
 /// Atomically writes `state` to `path` (`KConfig` `QSaveFile` semantics):
-/// serialize to a `.tmp` sibling in the same directory, fsync it, rename
-/// over the target, then best-effort fsync the parent directory so the
-/// rename itself survives a crash. Parent directories are created on
-/// demand.
+/// serialize, then write through [`write_text_atomic`].
 ///
 /// # Errors
 ///
-/// Returns the underlying [`io::Error`] when serialization, directory
-/// creation, writing, fsync, or the rename fails; a failure at any
-/// point leaves any previous file intact.
+/// Returns the underlying [`io::Error`] when serialization or the
+/// atomic write fails; a failure at any point leaves any previous
+/// file intact.
 pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
     let text =
         ron::to_string(state).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    write_text_atomic(path, &text)
+}
+
+/// Atomically writes `text` to `path` (`KConfig` `QSaveFile`
+/// semantics): write to a `.tmp` sibling in the same directory,
+/// fsync it, rename over the target, then best-effort fsync the
+/// parent directory so the rename itself survives a crash. Parent
+/// directories are created on demand. Every DropTerm-side state
+/// store writes through this one dance.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] when directory creation,
+/// writing, fsync, or the rename fails; a failure at any point
+/// leaves any previous file intact.
+pub fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -437,7 +450,7 @@ pub fn save_atomic(path: &Path, state: &SessionState) -> std::io::Result<()> {
     if let Some(parent) = path.parent()
         && let Err(err) = File::open(parent).and_then(|dir| dir.sync_all())
     {
-        log::warn!("failed to fsync session dir {}: {err}", parent.display());
+        log::warn!("failed to fsync state dir {}: {err}", parent.display());
     }
     Ok(())
 }
@@ -450,12 +463,12 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// `$XDG_STATE_HOME/<app id>/session.ron`, defaulting to
-/// `~/.local/state/…` per the XDG base-directory specification (only
-/// an absolute `XDG_STATE_HOME` is honored). The directory is this
-/// build's app id ([`crate::core::APP_ID`]) — the dev identity gets
-/// its own session file.
-pub fn state_file_path() -> PathBuf {
+/// `$XDG_STATE_HOME/<app id>`, defaulting to `~/.local/state/…` per
+/// the XDG base-directory specification (only an absolute
+/// `XDG_STATE_HOME` is honored) — the seat every DropTerm-side state
+/// file lives under. The directory is this build's app id
+/// ([`crate::core::APP_ID`]) — the dev identity gets its own seat.
+pub fn state_dir() -> PathBuf {
     // XDG base-directory specification: only an absolute XDG_STATE_HOME
     // counts; anything else (unset, empty, relative) falls back to
     // ~/.local/state.
@@ -464,11 +477,15 @@ pub fn state_file_path() -> PathBuf {
         .filter(|base| base.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
     match base {
-        Some(base) => base.join(crate::core::APP_ID).join("session.ron"),
-        None => PathBuf::from(".local/state")
-            .join(crate::core::APP_ID)
-            .join("session.ron"),
+        Some(base) => base.join(crate::core::APP_ID),
+        None => PathBuf::from(".local/state").join(crate::core::APP_ID),
     }
+}
+
+/// `$XDG_STATE_HOME/<app id>/session.ron` — the session file under
+/// the state seat.
+pub fn state_file_path() -> PathBuf {
+    state_dir().join("session.ron")
 }
 
 #[cfg(test)]

@@ -40,6 +40,11 @@ fn obs() -> Observation<'static> {
         // no delay, a line stable forever — today, bit-for-bit.
         delay_ms: 0,
         typed_idle_ms: u16::MAX,
+        // The history-context clear case (suggest-depth spec): no
+        // readable cwd, the toggle on — commits record contextless,
+        // today's ring behavior bit-for-bit.
+        working_cwd: None,
+        history_context: true,
     }
 }
 
@@ -400,8 +405,9 @@ fn a_keystroke_on_an_established_showing_dismisses_instantly() {
 #[test]
 fn ring_evicts_the_oldest_past_the_cap() {
     let mut ring = VecDeque::new();
+    let mut contexts = HashMap::new();
     for i in 0..=RING_CAP {
-        commit(&mut ring, &format!("cmd-{i}"));
+        commit(&mut ring, &mut contexts, &format!("cmd-{i}"), None);
     }
     assert_eq!(ring.len(), RING_CAP);
     assert_eq!(
@@ -414,9 +420,10 @@ fn ring_evicts_the_oldest_past_the_cap() {
 #[test]
 fn ring_promotes_a_retyped_command_to_most_recent() {
     let mut ring = VecDeque::new();
-    commit(&mut ring, "ls");
-    commit(&mut ring, "cd");
-    commit(&mut ring, "ls");
+    let mut contexts = HashMap::new();
+    commit(&mut ring, &mut contexts, "ls", None);
+    commit(&mut ring, &mut contexts, "cd", None);
+    commit(&mut ring, &mut contexts, "ls", None);
     assert_eq!(ring.len(), 2, "the retype promoted, never duplicated");
     assert_eq!(ring.back().map(String::as_str), Some("ls"));
 }
@@ -424,8 +431,9 @@ fn ring_promotes_a_retyped_command_to_most_recent() {
 #[test]
 fn ring_never_records_blank_lines() {
     let mut ring = VecDeque::new();
-    commit(&mut ring, "");
-    commit(&mut ring, " \t ");
+    let mut contexts = HashMap::new();
+    commit(&mut ring, &mut contexts, "", None);
+    commit(&mut ring, &mut contexts, " \t ", None);
     assert!(ring.is_empty());
 }
 
@@ -2411,6 +2419,182 @@ fn seed_history_commits_in_order_deduping_and_capping() {
     let mut suggest = Suggest::new();
     suggest.seed_history(seeded);
     assert_eq!(suggest.ring.len(), RING_CAP);
+}
+
+// --- the history store (suggest-depth) ---
+
+#[test]
+fn a_commit_records_the_cwd_the_command_ran_in() {
+    let mut suggest = adopted();
+    // Idle typing refreshes the capture but records nothing.
+    step(
+        &Observation {
+            before_cursor: "$ cargo test",
+            cursor_column: 12,
+            ..obs()
+        },
+        &mut suggest,
+    );
+    // Enter: the child takes the foreground, and the commit pairs
+    // the command with the cwd the observation carried.
+    step(
+        &Observation {
+            foreground_child: true,
+            working_cwd: Some("/src/dropterm"),
+            ..obs()
+        },
+        &mut suggest,
+    );
+    assert_eq!(
+        suggest.cwd_by_command.get("cargo test").map(String::as_str),
+        Some("/src/dropterm"),
+        "the commit records the command's working directory"
+    );
+}
+
+#[test]
+fn a_commit_hands_the_store_the_command_and_its_cwd() {
+    let mut suggest = adopted();
+    step(
+        &Observation {
+            before_cursor: "$ just check",
+            cursor_column: 12,
+            ..obs()
+        },
+        &mut suggest,
+    );
+    step(
+        &Observation {
+            foreground_child: true,
+            working_cwd: Some("/src/dropterm"),
+            ..obs()
+        },
+        &mut suggest,
+    );
+    assert_eq!(
+        suggest.take_store_commit(),
+        Some(("just check".to_string(), Some("/src/dropterm".to_string()))),
+        "the persistence cue carries the command and its context"
+    );
+    assert_eq!(suggest.take_store_commit(), None, "the handoff is one-shot");
+}
+
+#[test]
+fn the_store_round_trips_a_restart_with_order_and_context() {
+    let mut store = HistoryStore::new();
+    commit_store(&mut store, "cargo test", Some("/src/dropterm"));
+    commit_store(&mut store, "just check", Some("/just"));
+    commit_store(&mut store, "ls", None);
+    let text = history_store_text(&store).expect("the store serializes");
+    let parsed = parse_history_store(&text).expect("the store parses back");
+    assert_eq!(parsed.version, HISTORY_STORE_VERSION);
+    let mut revived = Suggest::new();
+    revived.seed_history_contexted(
+        parsed
+            .entries
+            .into_iter()
+            .map(|entry| (entry.command, entry.cwd)),
+    );
+    assert_eq!(
+        revived.ring.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["cargo test", "just check", "ls"],
+        "the revived ring keeps the store's order"
+    );
+    assert_eq!(
+        revived.cwd_by_command.get("cargo test").map(String::as_str),
+        Some("/src/dropterm"),
+        "the context rides through the restart"
+    );
+    assert!(
+        !revived.cwd_by_command.contains_key("ls"),
+        "a contextless entry stays contextless"
+    );
+}
+
+#[test]
+fn the_store_rejects_garbage_and_wrong_versions() {
+    assert_eq!(parse_history_store("not ron at all"), None);
+    let wrong = HistoryStore {
+        version: HISTORY_STORE_VERSION + 1,
+        ..HistoryStore::new()
+    };
+    let text = history_store_text(&wrong).expect("serializes");
+    assert_eq!(
+        parse_history_store(&text),
+        None,
+        "an unknown version never loads"
+    );
+}
+
+#[test]
+fn the_cap_and_dedupe_hold_with_context_present() {
+    let mut suggest = Suggest::new();
+    suggest.seed_history_contexted([
+        ("ls".to_string(), Some("/a".to_string())),
+        ("cd".to_string(), Some("/b".to_string())),
+    ]);
+    // A retype promotes the command and moves its context — one cwd
+    // per command, the most recent.
+    suggest.seed_history_contexted([("ls".to_string(), Some("/c".to_string()))]);
+    assert_eq!(
+        suggest.ring.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["cd", "ls"],
+        "the retype promoted, never duplicated"
+    );
+    assert_eq!(
+        suggest.cwd_by_command.get("ls").map(String::as_str),
+        Some("/c")
+    );
+    assert_eq!(
+        suggest.cwd_by_command.get("cd").map(String::as_str),
+        Some("/b")
+    );
+    // The cap: the overflow evicts the oldest seats and their
+    // contexts die with them.
+    let overflow: Vec<(String, Option<String>)> = (1..=RING_CAP)
+        .map(|i| (format!("cmd-{i}"), Some(format!("/dir-{i}"))))
+        .collect();
+    suggest.seed_history_contexted(overflow);
+    assert_eq!(suggest.ring.len(), RING_CAP);
+    assert!(
+        !suggest.cwd_by_command.contains_key("cd"),
+        "the evicted entry's context died with its seat"
+    );
+    assert!(!suggest.cwd_by_command.contains_key("ls"));
+    assert_eq!(suggest.ring.front().map(String::as_str), Some("cmd-1"));
+    assert_eq!(
+        suggest.cwd_by_command.get("cmd-256").map(String::as_str),
+        Some("/dir-256")
+    );
+}
+
+#[test]
+fn history_context_off_returns_the_recency_only_ring() {
+    let mut suggest = adopted();
+    step(
+        &Observation {
+            before_cursor: "$ git stash",
+            cursor_column: 11,
+            ..obs()
+        },
+        &mut suggest,
+    );
+    step(
+        &Observation {
+            foreground_child: true,
+            working_cwd: Some("/src/dropterm"),
+            history_context: false,
+            ..obs()
+        },
+        &mut suggest,
+    );
+    assert_eq!(
+        suggest.ring.back().map(String::as_str),
+        Some("git stash"),
+        "the ring still records, recency-only"
+    );
+    assert!(suggest.cwd_by_command.is_empty(), "no context captured");
+    assert_eq!(suggest.take_store_commit(), None, "no persistence cue");
 }
 
 // --- the menu's full candidate collection (suggest-menu) ---

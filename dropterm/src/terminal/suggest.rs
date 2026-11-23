@@ -259,6 +259,7 @@ pub(crate) fn pane_options(
         autosuggestions_commands_enabled: config.autosuggestions_commands_enabled,
         autosuggestions_menu_enabled: config.autosuggestions_menu_enabled,
         autosuggestions_menu_auto: config.autosuggestions_menu_auto,
+        autosuggestions_history_context: config.autosuggestions_history_context,
         autosuggestions_delay_ms: config.autosuggestions_delay_ms,
         autosuggestions_aliases: config.autosuggestions_aliases.clone(),
         autosuggestions_specs_table: specs_table.cloned().unwrap_or_else(suggest::empty_specs),
