@@ -1135,6 +1135,250 @@ fn the_tab_opener_gates_hold_at_a_live_line_end_only() {
 }
 
 #[test]
+fn a_single_qualifying_row_opens_the_menu() {
+    // The ≥2 demand is gone (suggest-parity spec, record finding 3):
+    // one qualifying row pops the menu without the chord, the
+    // selection at the top.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    terminal.suggest.seed_history(["sleep 30".to_string()]);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion().is_some(),
+        "the typed prefix echoes",
+    );
+    assert!(
+        terminal.menu_is_open(),
+        "the single qualifying row opens the menu"
+    );
+    assert_eq!(terminal.menu_rows().len(), 1);
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn a_one_character_typed_segment_stays_silent() {
+    // The 2-char floor (Warp's MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_
+    // WHILE_TYPING, suggest-parity spec): a one-character typed
+    // segment never auto-pops, whatever the rows.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"s"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion().is_some(),
+        "the prefix echoes",
+    );
+    assert!(
+        !terminal.menu_is_open(),
+        "a one-character typed segment stays silent"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn a_mid_line_cursor_stays_silent() {
+    // The line-end gate (suggest-parity spec, record finding 3): an
+    // update whose typed segment changed with text right of the
+    // cursor never auto-pops. The grid cursor is stepped back two
+    // cells directly — the pump reads it as its truth, no shell
+    // line-editor in the loop — so the typed segment narrows to
+    // `sle` (which still collects) while `ep` sits right of the
+    // cursor.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"sleep"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() >= 3,
+        "the line-end echo opens the menu",
+    );
+    // Escape closes it — the closed baseline the silence asserts
+    // against.
+    terminal.menu_press(suggest::MenuKey::Other);
+    assert!(!terminal.menu_is_open());
+    // The mid-line fact: the cursor steps left over `ep`, the typed
+    // segment narrows (`sleep` → `sle`, a typed change), and text
+    // sits right of the cursor.
+    {
+        let mut term = terminal.term.lock();
+        term.grid_mut().cursor.point.column.0 -= 2;
+    }
+    terminal.update();
+    assert!(!terminal.menu_is_open(), "a mid-line cursor stays silent");
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn typing_over_an_auto_opened_menu_swaps_the_rows_in_place() {
+    // Fresh rows while typing (suggest-parity spec, record finding
+    // 3): an auto-opened menu's rows recompute in place — no close
+    // frame — the selection reset to the top; narrowing to a single
+    // row keeps the menu (only an empty set closes it). The poll
+    // rides the ghost's own suffix — update-derived, and `30` only
+    // exists at the `sleep ` state — so the look that matches is
+    // the echo's update itself.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    terminal
+        .suggest
+        .seed_history(["sleep 30".to_string(), "sleepy".to_string()]);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() == 2,
+        "the two-row echo opens the menu",
+    );
+    terminal.menu_press(suggest::MenuKey::Down);
+    assert_eq!(terminal.menu_selected(), 1);
+    // `sleep ` narrows to the single line, and the gate swaps the
+    // rows in place instead of closing. The poll rides the cursor
+    // column, not the ghost — both chars' echo lands as the final
+    // state.
+    terminal.input_no_scroll(&b"p "[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion() == Some("30"),
+        "the narrowed echo settles",
+    );
+    assert!(
+        terminal.menu_is_open(),
+        "narrowing to one row keeps the menu"
+    );
+    assert_eq!(terminal.menu_rows().len(), 1);
+    assert_eq!(
+        terminal.menu_selected(),
+        0,
+        "the re-collection resets the selection to the top"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn a_chord_opened_session_is_not_recollected_by_the_gate() {
+    // A chord-opened session is the user's (suggest-menu spec,
+    // suggest-parity spec): the gate's typed-change re-collection
+    // never touches it — the rows and the selection survive the
+    // echo of typing over the open menu. The poll rides the ghost's
+    // own suffix — update-derived, and `y` only exists at the `sleep`
+    // state — so the look that matches is the echo's update itself.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion().is_some(),
+        "the typed prefix echoes",
+    );
+    assert!(terminal.menu_open(), "the chord opens the menu");
+    terminal.menu_press(suggest::MenuKey::Down);
+    assert_eq!(terminal.menu_selected(), 1);
+    terminal.input_no_scroll(&b"p"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion() == Some("y"),
+        "the echo of typing over the session lands",
+    );
+    assert!(terminal.menu_is_open(), "the session survived the echo");
+    assert_eq!(
+        terminal.menu_selected(),
+        1,
+        "the selection survived — no re-collection over the session"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
+fn the_accept_echo_does_not_reopen_and_the_next_keystroke_does() {
+    // The accept-echo suppression (suggest-parity spec): the
+    // accept's write echoes back as a typed change, and the update
+    // that lands it must not re-collect — the menu stays closed.
+    // The next genuine keystroke re-collects: the one-shot flag is
+    // consumed, not stuck.
+    let mut terminal = menu_auto_terminal();
+    resize_cols(&mut terminal, 100); // the grant applied first
+    terminal.settle_spawn_grid_now(); // the funnel's close, after
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    seed_three_sleep_commands(&mut terminal);
+    terminal.input_no_scroll(&b"slee"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| t.menu_is_open() && t.menu_rows().len() >= 3,
+        "the echo opens the three-row menu",
+    );
+    // Row 0 is the ring's newest (`sleepy`); the accept writes its
+    // suffix and closes.
+    terminal.menu_press(suggest::MenuKey::Accept);
+    assert!(!terminal.menu_is_open(), "the accept closed the menu");
+    terminal.update();
+    assert!(
+        !terminal.menu_is_open(),
+        "the press's own repaint keeps it closed"
+    );
+    poll_update_until(
+        &mut terminal,
+        |t| t.suggestion().is_none(),
+        "the accept's echo settles",
+    );
+    assert!(
+        !terminal.menu_is_open(),
+        "the accept's echo never re-opens the menu"
+    );
+    // The next genuine keystroke re-collects: the flag was
+    // consumed, not stuck.
+    terminal.input_no_scroll(&b"\x7f"[..]);
+    poll_update_until(
+        &mut terminal,
+        Terminal::menu_is_open,
+        "the backspace's echo re-collects",
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
 fn autosuggest_accept_full_lands_the_suffix_in_the_grid() {
     let mut terminal = autosuggest_terminal();
     terminal.arm_spawn_grid_next_resize();

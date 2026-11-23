@@ -601,6 +601,13 @@ pub struct Terminal {
     /// only its own rules (the press, the lifecycle moments). Reset
     /// on every open, either kind.
     menu_auto_opened: bool,
+    /// One-shot accept-echo suppression (suggest-parity spec): a
+    /// menu accept's write echoes back as a typed change, and the
+    /// update that lands it must not re-collect, or the menu pops
+    /// over the line the accept just completed. The accept path
+    /// arms it; the first update that would re-collect consumes it,
+    /// so only a genuine new keystroke does.
+    menu_accept_echo: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
     /// observation carries it per update, so a live flip applies
@@ -1472,6 +1479,7 @@ impl Terminal {
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
+            menu_accept_echo: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
             suggest_typed_at: Instant::now(),
             suggest_last_before_cursor: String::new(),
@@ -2529,6 +2537,9 @@ impl Terminal {
         };
         match self.menu.press(key, &typed) {
             suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
+                // The write's echo will read as a typed change — arm
+                // the one-shot suppression (suggest-parity spec).
+                self.menu_accept_echo = true;
                 self.input_no_scroll(suffix.into_bytes());
             }
             _ => {}
@@ -3378,17 +3389,18 @@ impl Terminal {
                     if observation.display_offset != 0 && self.menu.is_open() {
                         self.menu.close();
                     }
-                    // The auto-popup opt-in (suggest-menu spec, the
-                    // OQ-1 condition decided in the module's final
-                    // task): with the key on, an update whose typed
-                    // segment just changed collects the providers'
-                    // full sets — two or more candidates pops the menu
-                    // without the chord, narrowing past the boundary
-                    // (or any ineligibility, which collects nothing)
-                    // closes an auto-opened one. A chord-opened
-                    // session is the user's: only its own rules
-                    // close it. Default off never runs a byte of
-                    // this — the chord is today's only opener.
+                    // The auto-popup gate (suggest-parity spec, the
+                    // record's as-you-type path): with the key on, an
+                    // update whose typed segment just changed — at the
+                    // line end, past the two-character floor — collects
+                    // the providers' full sets. A single qualifying row
+                    // pops the menu without the chord now, and an
+                    // auto-opened one re-collects fresh rows in place
+                    // (only an empty set closes it). A chord- or
+                    // Tab-opened session is the user's: only its own
+                    // rules touch it. Default off never runs a byte of
+                    // this — the chord is today's only opener (SP4
+                    // flips the default).
                     //
                     // The typed-changed gate is the menu's own keys'
                     // survival: every menu-scoped press repaints
@@ -3400,22 +3412,34 @@ impl Terminal {
                     // never stuck, and the standing menu kept
                     // consuming Enter as the next accept). Nothing
                     // changed, nothing to re-evaluate.
+                    //
+                    // The accept-echo suppression (suggest-parity
+                    // spec): a menu accept's write echoes back as a
+                    // typed change — the update that lands it must not
+                    // re-collect, or the menu pops over the line the
+                    // accept just completed. One-shot, consumed by the
+                    // first update that would re-collect, so only a
+                    // genuine new keystroke does.
                     if self.autosuggestions_menu_auto
                         && self.autosuggestions_menu_enabled
                         && self.autosuggestions_enabled
                         && observation.focused
                         && !observation.foreground_child
                         && observation.display_offset == 0
+                        && observation.after_cursor_blank
                         && typed_changed
                         && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
-                        && !typed.is_empty()
+                        && typed.chars().count() >= 2
+                        && !std::mem::take(&mut self.menu_accept_echo)
                     {
                         let collected = suggest::candidates(typed, &self.suggest, &observation);
-                        if collected.len() >= 2 {
+                        if collected.is_empty() {
+                            if self.menu.is_open() && self.menu_auto_opened {
+                                self.menu.close();
+                            }
+                        } else if !self.menu.is_open() || self.menu_auto_opened {
                             self.menu_auto_opened = true;
                             self.menu.open(collected);
-                        } else if self.menu.is_open() && self.menu_auto_opened {
-                            self.menu.close();
                         }
                     }
                     // The adoption reset (suggest-delay spec): a
