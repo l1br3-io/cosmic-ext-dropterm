@@ -2175,7 +2175,7 @@ fn typing_into_a_draft_field_clears_the_stale_error() {
 
 #[test]
 fn a_focus_loss_hide_preserves_the_profile_draft_and_its_text() {
-    // The DrawerTransition rule, page-local half: a hide keeps
+    // The close-clears/hide-preserves rule, page-local half: a hide keeps
     // the open draft and its buffered text for the next show.
     let mut draft = Some(ProfileDraft::add());
     draft.as_mut().unwrap().name = "half-typed".to_string();

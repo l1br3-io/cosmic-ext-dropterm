@@ -794,8 +794,7 @@ impl SettingsWindow {
     /// One section page's content: the section's title over one
     /// bordered, rounded group of its rows with hairlines between
     /// them (settings-window SW5, the Obsidian shape). The fold-away
-    /// cards retired with `AccordionState`: a window has the room for
-    /// every row at once.
+    /// cards retired: a window has the room for every row at once.
     fn section_group(
         &self,
         section: dropterm::core::settings::Section,

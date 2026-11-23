@@ -146,10 +146,10 @@ impl Section {
 /// Every config key the settings window exposes: all of
 /// `DropTermConfig` except `output`, which is dead at runtime and
 /// unreachable from the UI. The two drawer keys retired with the
-/// window (settings-window SW6): `settings_drawer_width` had no
-/// pane left to drag and `settings_drawer_click_close` no terminal
-/// beneath to click — a file still carrying either line keeps
-/// loading and ignores it (pinned by test).
+/// window (settings-window SW6): the width key had no pane left to
+/// drag and the click-close key no terminal beneath to click — a
+/// file still carrying either retired line keeps loading and
+/// ignores it (pinned by test).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
     HeightPercent,
@@ -1966,10 +1966,10 @@ pub const fn selection_after_save(mode: &ProfileDraftMode, profiles_len: usize) 
     }
 }
 
-/// A Profiles-page draft lifecycle transition — the page-local
-/// half of [`DrawerTransition`]'s rule: focus-loss hides preserve the
-/// open draft (and its buffered text) for the next show; the drawer's
-/// explicit close and the page's back affordance both clear it, so a
+/// A Profiles-page draft lifecycle transition — the page-local half
+/// of the close-clears/hide-preserves rule: focus-loss hides preserve
+/// the open draft (and its buffered text) for the next show; the
+/// window's explicit close and leaving the page both clear it, so a
 /// reopened page starts from config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileDraftTransition {
