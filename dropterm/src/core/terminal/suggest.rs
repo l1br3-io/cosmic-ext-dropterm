@@ -577,16 +577,44 @@ fn source_rank(source: SuggestionSource) -> usize {
     }
 }
 
-/// History's candidate function — the exact phase-1 ring walk,
-/// unchanged, moved behind the provider seam: the most recent entry
-/// with the typed line as a strict prefix, its remainder the
-/// candidate suffix (fish's backbone, zsh-autosuggestions' default
-/// history strategy).
-fn history_candidate(typed: &str, ring: &VecDeque<String>) -> Option<String> {
+/// The context-first ranking key (suggest-depth spec, OQ-3): an
+/// entry whose recorded cwd equals the current one ranks ahead of
+/// the rest — Warp's similar-context preference with cwd as the
+/// whole context (OQ-9 defers `exit_code/shell_host`); recency breaks
+/// ties within each group, and contextless entries ride the second
+/// group. A `None` current (the toggle off, or a cwd that cannot be
+/// read) matches nothing — today's recency-only walk bit-for-bit.
+fn context_matches(
+    entry: &str,
+    cwd_by_command: &HashMap<String, String>,
+    current: Option<&str>,
+) -> bool {
+    current.is_some_and(|cwd| {
+        cwd_by_command
+            .get(entry)
+            .is_some_and(|recorded| recorded == cwd)
+    })
+}
+
+/// History's candidate function — the phase-1 ring walk moved behind
+/// the provider seam and deepened (suggest-depth spec, OQ-3): the
+/// most recent context-matching entry with the typed line as a
+/// strict prefix first, else the most recent prefix entry (fish's
+/// backbone, zsh-autosuggestions' default strategy, kept as the
+/// fallback). The match itself stays case-sensitive (the depth
+/// record's explicit strategy).
+fn history_candidate(
+    typed: &str,
+    ring: &VecDeque<String>,
+    cwd_by_command: &HashMap<String, String>,
+    current: Option<&str>,
+) -> Option<String> {
+    let prefix = |entry: &String| entry.starts_with(typed) && entry.len() > typed.len();
     let entry = ring
         .iter()
         .rev()
-        .find(|entry| entry.starts_with(typed) && entry.len() > typed.len())?;
+        .find(|entry| prefix(entry) && context_matches(entry, cwd_by_command, current))
+        .or_else(|| ring.iter().rev().find(|entry| prefix(entry)))?;
     Some(entry[typed.len()..].to_string())
 }
 
@@ -1544,8 +1572,14 @@ fn provider_candidate(
     suggest: &Suggest,
     obs: &Observation<'_>,
 ) -> Option<String> {
+    // The ranking's context (suggest-depth spec, OQ-3): the cwd,
+    // only while the toggle arms it — an off run is the recency-only
+    // walk exactly.
+    let ranking_cwd = obs.history_context.then_some(obs.working_cwd).flatten();
     match source {
-        SuggestionSource::History => history_candidate(typed, &suggest.ring),
+        SuggestionSource::History => {
+            history_candidate(typed, &suggest.ring, &suggest.cwd_by_command, ranking_cwd)
+        }
         SuggestionSource::Path => path_candidate(typed, obs),
         SuggestionSource::Specs => specs_candidate(typed, obs),
         SuggestionSource::Catalog => catalog_candidate(typed, obs),
@@ -1681,8 +1715,14 @@ fn source_candidates(
     suggest: &Suggest,
     obs: &Observation<'_>,
 ) -> Vec<MenuCandidate> {
+    // The ranking's context (suggest-depth spec, OQ-3): the same
+    // gated cwd the ghost's dispatch resolves, so the menu's first
+    // history row and the ghost's single choice agree.
+    let ranking_cwd = obs.history_context.then_some(obs.working_cwd).flatten();
     match source {
-        SuggestionSource::History => history_candidates(typed, &suggest.ring),
+        SuggestionSource::History => {
+            history_candidates(typed, &suggest.ring, &suggest.cwd_by_command, ranking_cwd)
+        }
         SuggestionSource::Path => path_candidates(typed, obs),
         SuggestionSource::Specs => specs_candidates(typed, obs),
         SuggestionSource::Catalog => catalog_candidates(typed, obs),
@@ -1691,12 +1731,24 @@ fn source_candidates(
 }
 
 /// History's whole set: every ring entry with the typed line as a
-/// strict prefix, most recent first — the ghost's own walk continued
-/// past the first hit, bounded by the ring's own cap.
-fn history_candidates(typed: &str, ring: &VecDeque<String>) -> Vec<MenuCandidate> {
-    ring.iter()
+/// strict prefix, context-matching entries first with recency among
+/// equals (suggest-depth spec, OQ-3 — the ghost's own choice is this
+/// list's head), then the rest most recent first, bounded by the
+/// ring's own cap.
+fn history_candidates(
+    typed: &str,
+    ring: &VecDeque<String>,
+    cwd_by_command: &HashMap<String, String>,
+    current: Option<&str>,
+) -> Vec<MenuCandidate> {
+    let (matching, rest): (Vec<&String>, Vec<&String>) = ring
+        .iter()
         .rev()
         .filter(|entry| entry.starts_with(typed) && entry.len() > typed.len())
+        .partition(|entry| context_matches(entry, cwd_by_command, current));
+    matching
+        .into_iter()
+        .chain(rest)
         .map(|entry| MenuCandidate {
             label: entry.clone(),
             suffix: entry[typed.len()..].to_string(),

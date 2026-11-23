@@ -2597,6 +2597,110 @@ fn history_context_off_returns_the_recency_only_ring() {
     assert_eq!(suggest.take_store_commit(), None, "no persistence cue");
 }
 
+// --- the context-first ranking (suggest-depth, SP-D3) ---
+
+/// An anchored suggest seeded with mixed contexts: `git status` ran
+/// in /a (oldest), `git pull` in /b, `git push` in /a, and `git log`
+/// contextless (newest overall — so a recency-only walk answers
+/// `log`, a context-first one `push` from /a).
+fn context_suggest() -> Suggest {
+    let mut suggest = Suggest::new();
+    let settle = Observation {
+        before_cursor: "$ ",
+        cursor_column: 2,
+        fresh_prompt: true,
+        ..obs()
+    };
+    step(&settle, &mut suggest);
+    suggest.seed_history_contexted([
+        ("git status".to_string(), Some("/a".to_string())),
+        ("git pull".to_string(), Some("/b".to_string())),
+        ("git push".to_string(), Some("/a".to_string())),
+        ("git log".to_string(), None),
+    ]);
+    suggest
+}
+
+/// The menu's history rows under a working observation at "$ git"
+/// in /a.
+fn context_history_rows(suggest: &Suggest, o: &Observation<'_>) -> Vec<String> {
+    candidates("git", suggest, o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::History)
+        .map(|row| row.label)
+        .collect()
+}
+
+#[test]
+fn menu_history_ranks_cwd_matches_first_recency_among_equals() {
+    let suggest = context_suggest();
+    let o = Observation {
+        before_cursor: "$ git",
+        cursor_column: 5,
+        working_cwd: Some("/a"),
+        ..obs()
+    };
+    assert_eq!(
+        context_history_rows(&suggest, &o),
+        vec![
+            "git push".to_string(),
+            "git status".to_string(),
+            "git log".to_string(),
+            "git pull".to_string(),
+        ],
+        "the /a entries lead (recency among them), then the rest recency-first"
+    );
+}
+
+#[test]
+fn the_ghosts_history_choice_agrees_with_the_menus_first_row() {
+    let mut suggest = context_suggest();
+    let o = Observation {
+        before_cursor: "$ git",
+        cursor_column: 5,
+        working_cwd: Some("/a"),
+        ..obs()
+    };
+    let showing = step(&o, &mut suggest).expect("history answers");
+    assert_eq!(
+        showing.suffix, " push",
+        "the cwd-matching entry wins the ghost"
+    );
+    let rows = context_history_rows(&suggest, &o);
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some("git push"),
+        "the ghost's single choice is the menu's first history row"
+    );
+}
+
+#[test]
+fn ranking_without_context_falls_back_to_recency_only() {
+    let suggest = context_suggest();
+    let recency = vec![
+        "git log".to_string(),
+        "git push".to_string(),
+        "git pull".to_string(),
+        "git status".to_string(),
+    ];
+    // No readable cwd: today's walk exactly.
+    let unreadable = Observation {
+        before_cursor: "$ git",
+        cursor_column: 5,
+        ..obs()
+    };
+    assert_eq!(context_history_rows(&suggest, &unreadable), recency);
+    // The toggle off: recency-only even with the cwd known.
+    let off = Observation {
+        before_cursor: "$ git",
+        cursor_column: 5,
+        working_cwd: Some("/a"),
+        history_context: false,
+        ..obs()
+    };
+    assert_eq!(context_history_rows(&suggest, &off), recency);
+}
+
 // --- the menu's full candidate collection (suggest-menu) ---
 
 #[test]
