@@ -29,6 +29,7 @@ Every app-level shortcut and its default chords, in the same groups the settings
 | Scroll to bottom | `Ctrl+Shift+End` | `scroll_to_bottom` |
 | Hide the overlay | `Ctrl+Shift+Q` | `hide` |
 | Open settings | `Ctrl+Shift+I` | `settings` |
+| Open the command palette | `Ctrl+Shift+O` | `command_palette` |
 | Open the images panel | `Ctrl+Shift+P` | `images_panel` |
 | Toggle the status bar | `Ctrl+Shift+B` | `toggle_status_bar` |
 | Show completions | `Ctrl+Space` | `show_completions` |

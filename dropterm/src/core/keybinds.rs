@@ -521,6 +521,30 @@ mod registry_tests {
         );
     }
 
+    /// The defaults table in docs/keybindings.md names every registry
+    /// row's action id — the docs gate's twin of
+    /// `every_config_key_is_documented`: a registry row without a doc
+    /// row fails here.
+    #[test]
+    fn every_binding_row_is_documented() {
+        let docs = include_str!("../../../docs/keybindings.md");
+        // The numbered activation family ships one collapsed doc row
+        // (`activate_tab_1` … `activate_tab_8`), so the family's
+        // endpoints stand in for its middle ids.
+        let collapsed = |id: &str| {
+            id.starts_with("activate_tab_")
+                && docs.contains("`activate_tab_1`")
+                && docs.contains("`activate_tab_8`")
+        };
+        for row in binding_rows() {
+            let id = row.id;
+            assert!(
+                docs.contains(&format!("`{id}`")) || collapsed(id),
+                "binding row `{id}` is not documented in docs/keybindings.md"
+            );
+        }
+    }
+
     #[test]
     fn captured_key_names_normalize_the_file_format() {
         assert_eq!(capture_key_name("c").as_deref(), Some("C"));
