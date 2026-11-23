@@ -1732,10 +1732,20 @@ impl Shell {
                 self.dump_visible_grid(label, cx);
                 match self.machine.state {
                     SurfaceState::Hidden => {
+                        // The supersede rides ahead of the show, the
+                        // same batch rule `show_intent` runs (SW4).
+                        if self.settings_window.is_some() {
+                            actions.push(Action::CloseSettingsWindow);
+                        }
                         let intents = self.machine.decide_show(self.inputs);
                         self.execute_into(intents, actions);
                     }
                     SurfaceState::Hiding(handle) => {
+                        // Mid-slide reversal: the supersede rides
+                        // ahead, the same batch rule (SW4).
+                        if self.settings_window.is_some() {
+                            actions.push(Action::CloseSettingsWindow);
+                        }
                         let intents = self.machine.decide_reverse_show(handle, self.inputs);
                         self.execute_into(intents, actions);
                     }
@@ -1844,6 +1854,13 @@ impl Shell {
     /// reversal on the live surface, and nothing while already on its
     /// way — the machine's own guards decide.
     fn show_intent(&mut self, actions: &mut Vec<Action>) {
+        // The exclusive pair's other half (settings-window SW4): a
+        // show request while the window stands supersedes it — the
+        // close rides ahead of the surface's own actions in the same
+        // batch, and the superseded close queues no return.
+        if self.settings_window.is_some() {
+            actions.push(Action::CloseSettingsWindow);
+        }
         match self.machine.state {
             SurfaceState::Hidden => {
                 let intents = self.machine.decide_show(self.inputs);
@@ -1917,7 +1934,7 @@ struct Pumped {
 /// here — App level, no shell update on the stack — because
 /// `remove_window` fired it. Registered once at boot; the test
 /// scaffold registers the same watcher.
-pub(crate) fn registersettings_close_watcher_subscription(cx: &mut App, shell: &Entity<Shell>) {
+pub(crate) fn register_settings_close_watcher(cx: &mut App, shell: &Entity<Shell>) {
     let owned = shell.clone();
     let watcher = cx.on_window_closed(move |cx, id| {
         let is_settings =
@@ -2105,6 +2122,10 @@ fn open_shaped_window(
 /// Applies one window action against live windows — App-level work by
 /// necessity (see [`Shell::pump`]): opens draw their root view
 /// synchronously, so no shell update may be on the stack.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the tick's whole apply surface — one arm per window action, the walks read them in order"
+)]
 fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
     match action {
         Action::OpenMeasuring { handle, options } => {
@@ -2200,6 +2221,23 @@ fn apply_action(cx: &mut App, shell: &Entity<Shell>, action: Action) {
                 "dropterm: window activated at +{}ms",
                 shell.read(cx).boot.elapsed().as_millis()
             );
+        }
+        Action::CloseSettingsWindow => {
+            // The supersede (settings-window SW4): the cause in one
+            // short shell update, the removal at App level — the
+            // observer's reset runs with no borrow on the stack, and
+            // the `Superseded` cause queues no return.
+            if let Some(handle) = shell.read(cx).settings_window {
+                shell.update(cx, |shell, _| {
+                    shell.settings_close_cause =
+                        Some(dropterm::core::settings::CloseCause::Superseded);
+                });
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                println!(
+                    "dropterm: settings window superseded by the show at +{}ms",
+                    shell.read(cx).boot.elapsed().as_millis()
+                );
+            }
         }
         Action::OpenAbout => {
             // The tray's Help (tray Task T4): the About window, opened
@@ -6723,7 +6761,7 @@ pub(crate) fn boot(
     }
     // Every Settings window close route meets in one observer
     // (settings-window SW3).
-    registersettings_close_watcher_subscription(cx, &shell);
+    register_settings_close_watcher(cx, &shell);
     // The onboarding (summon-onboarding spec): the Yakuake-style
     // ask-once, consulted here at cold boot only — a warm forward
     // exits at the single-instance seam before GPUI boots, and
@@ -8368,7 +8406,7 @@ mod tests {
                 )
             })
         });
-        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
         // The startup show: a real measuring window, adopted into the
         // executor's registry.
         pump_and_apply(&shell, cx);
@@ -8462,7 +8500,7 @@ mod tests {
         // where none was set) queues the drop-down's return, observed
         // through the funnel's show.
         let ((shell, _verbs, _signals, phase), cx) = shell_with_signal_wire(cx);
-        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
         // Absorb the scaffold's startup action, so the surface stands
         // hidden for the return's observation.
         cx.update(|_window, cx| shell.update(cx, Shell::pump));
@@ -8577,6 +8615,89 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_show_request_while_the_window_is_open_closes_it_without_a_return(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // The exclusive pair's other half (settings-window SW4): a
+        // show request while the window stands — the show verb here,
+        // the toggle from hidden in the second round — supersedes it:
+        // the window removes with the `Superseded` cause, the show
+        // still runs, and no return is queued (proven by the idle
+        // pump after the surface is driven back under: a wrongly
+        // queued return would start the show again).
+        let ((shell, verbs, signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+
+        for round in 0..2 {
+            // Open the window; the surface stands hidden.
+            cx.update(|_, cx| {
+                Shell::open_settings_window(
+                    &shell,
+                    dropterm::core::settings::SettingsPage::Appearance,
+                    cx,
+                );
+            });
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                let read = shell.read(cx);
+                assert!(read.settings_window.is_some(), "the window stands");
+                assert!(
+                    matches!(read.machine.state, SurfaceState::Hidden),
+                    "the surface stands hidden"
+                );
+            });
+            // The show request supersedes the window and runs the
+            // show. The scaffold's startup dispatch armed the toggle
+            // debounce; a real summon lands well past it, and the
+            // test waits the window out explicitly.
+            std::thread::sleep(
+                dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE
+                    + std::time::Duration::from_millis(10),
+            );
+            let action = if round == 0 {
+                cli::Action::Show
+            } else {
+                cli::Action::Toggle
+            };
+            verbs.send(action).expect("the show request queues");
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                let read = shell.read(cx);
+                assert!(
+                    read.settings_window.is_none() && !read.settings.open,
+                    "the show request closed the window"
+                );
+                assert!(
+                    matches!(read.machine.state, SurfaceState::Measuring(_)),
+                    "the show itself still ran"
+                );
+                assert!(
+                    read.settings_close_cause.is_none(),
+                    "the superseded cause was consumed, not left standing"
+                );
+            });
+            // Drive the surface back under; the idle pump then proves
+            // the absence: a wrongly queued return would start the
+            // show again right here.
+            signals
+                .send(view::PaneSignal::Hide)
+                .expect("the hide queues");
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                assert!(matches!(shell.read(cx).machine.state, SurfaceState::Hidden));
+            });
+            pump_and_apply(&shell, cx);
+            cx.update(|_, cx| {
+                assert!(
+                    matches!(shell.read(cx).machine.state, SurfaceState::Hidden),
+                    "the supersede queued no return — the idle pump finds nothing"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
     fn a_trigger_while_open_switches_the_page_without_a_second_window(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -8584,7 +8705,7 @@ mod tests {
         // a trigger naming a page while the window stands switches
         // the page and activates instead of opening a second window.
         let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
-        cx.update(|_, cx| registersettings_close_watcher_subscription(cx, &shell));
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
         cx.update(|_window, cx| shell.update(cx, Shell::pump));
         cx.update(|_, cx| {
             Shell::open_settings_window(
