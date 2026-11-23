@@ -20,7 +20,7 @@ use std::rc::Rc;
 use dropterm::core::keybinds::Binding;
 use dropterm::core::palette::{Command, Section, Verb};
 use dropterm::core::profile::Profile;
-use dropterm::core::settings::SettingsTab;
+use dropterm::core::settings::SettingsPage;
 use dropterm::core::tabs::{CloseSweep, select_tab_target};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -59,9 +59,9 @@ pub(crate) enum Route {
     /// The zero-based fleet index — resolved from the one-based verb
     /// through `select_tab_target`, the stale pick's boundary.
     SelectTab(usize),
-    /// The settings drawer at its page — the palette's open-at-page
+    /// Settings at its page — the palette's open-at-page
     /// seam (`open_settings_at`).
-    OpenSettings(SettingsTab),
+    OpenSettings(SettingsPage),
     /// The named scheme applied live to the picker slot matching the
     /// resolved theme mode — the drawer picker's own write.
     ApplyScheme(String),
@@ -719,8 +719,8 @@ mod tests {
     #[test]
     fn settings_and_scheme_rows_route_by_name() {
         assert_eq!(
-            route(Verb::OpenSettings(SettingsTab::Keybindings), &[], 0),
-            Some(Route::OpenSettings(SettingsTab::Keybindings))
+            route(Verb::OpenSettings(SettingsPage::Keybindings), &[], 0),
+            Some(Route::OpenSettings(SettingsPage::Keybindings))
         );
         assert_eq!(
             route(Verb::ApplyScheme("Dracula".to_string()), &[], 0),

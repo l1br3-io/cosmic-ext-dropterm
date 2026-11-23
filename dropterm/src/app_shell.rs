@@ -3838,7 +3838,7 @@ impl Shell {
     /// contract.
     pub(crate) fn open_settings_at(
         shell: &Entity<Shell>,
-        page: dropterm::core::settings::SettingsTab,
+        page: dropterm::core::settings::SettingsPage,
         window: &mut Window,
         cx: &mut App,
     ) {

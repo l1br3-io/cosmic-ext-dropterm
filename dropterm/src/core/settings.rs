@@ -308,71 +308,114 @@ pub enum ConfigKey {
     OnboardingDismissed,
 }
 
-/// A settings drawer tab: a view-only regrouping of the same
-/// sections into the everyday controls and the power controls —
-/// never a second copy of the registry ([`Section::keys`], the
-/// control→key map, is untouched by the grouping) — plus the
-/// Profiles manager's and the Keybindings editor's tabs, which host
-/// no `Section` card at all (their pages are the frontend's profiles page and
-/// the frontend's keybindings page).
+/// A settings page: one sidebar entry and the rows its content
+/// pane shows. The seven section pages each host exactly one
+/// [`Section`] ([`page_section`]); Profiles and Keybindings host
+/// none (their pages are the manager and the editor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsTab {
-    /// How the terminal looks: the look card and the window's shape.
+pub enum SettingsPage {
+    /// How the terminal looks: the Appearance section.
     Appearance,
-    /// How `DropTerm` acts: the tabs, dropdown mechanics, and
-    /// terminal cards.
-    Behavior,
-    /// The profile manager (the frontend's profiles page) — no sections, so it
-    /// never perturbs the section partition.
+    /// The drop-down's shape on screen: the Window section.
+    Window,
+    /// The tab strip's rows: the Tabs section.
+    Tabs,
+    /// The status band's rows: the `StatusBar` section.
+    StatusBar,
+    /// The drop-down's mechanics: the Dropdown section.
+    Dropdown,
+    /// The terminal engine's rows: the Terminal section.
+    Terminal,
+    /// The profile manager — no sections, so it never perturbs
+    /// the section partition.
     Profiles,
-    /// The keybinding editor (the frontend's keybindings page) — no sections, so
-    /// it never perturbs the section partition.
+    /// The keybinding editor — no sections, so it never perturbs
+    /// the section partition.
     Keybindings,
+    /// The power controls: the Advanced section.
     Advanced,
 }
 
-/// The sections a tab's page hosts, in display order. Every
-/// [`Section`] appears in exactly one tab and the union is
-/// [`Section::ALL`] — pinned by test, so regrouping can never drop
-/// or duplicate a card. The Profiles and Keybindings tabs host
-/// none: their pages are the manager and the editor, not section
-/// cards.
-pub const fn tab_sections(tab: SettingsTab) -> &'static [Section] {
-    match tab {
-        SettingsTab::Appearance => &[Section::Appearance, Section::Window],
-        SettingsTab::Behavior => &[
-            Section::Tabs,
-            Section::StatusBar,
-            Section::Dropdown,
-            Section::Terminal,
+/// The [`Section`] a page hosts: exactly one for the seven section
+/// pages, none for Profiles and Keybindings. Every [`Section`] is
+/// exactly one page's — the exposed-key exactly-once pin is
+/// re-expressed over this partition, so regrouping can never drop
+/// or duplicate a card.
+pub const fn page_section(page: SettingsPage) -> Option<Section> {
+    match page {
+        SettingsPage::Appearance => Some(Section::Appearance),
+        SettingsPage::Window => Some(Section::Window),
+        SettingsPage::Tabs => Some(Section::Tabs),
+        SettingsPage::StatusBar => Some(Section::StatusBar),
+        SettingsPage::Dropdown => Some(Section::Dropdown),
+        SettingsPage::Terminal => Some(Section::Terminal),
+        SettingsPage::Advanced => Some(Section::Advanced),
+        SettingsPage::Profiles | SettingsPage::Keybindings => None,
+    }
+}
+
+/// The sidebar's two headers and their pages, in page order — the
+/// nav's single source, so no row can exist without a page to
+/// serve it. The palette's Settings rows follow the same order.
+pub const NAV_GROUPS: [(&str, &[SettingsPage]); 2] = [
+    (
+        "Terminal",
+        &[
+            SettingsPage::Appearance,
+            SettingsPage::Window,
+            SettingsPage::Tabs,
+            SettingsPage::StatusBar,
+            SettingsPage::Dropdown,
+            SettingsPage::Terminal,
+            SettingsPage::Advanced,
         ],
-        SettingsTab::Profiles | SettingsTab::Keybindings => &[],
-        SettingsTab::Advanced => &[Section::Advanced],
+    ),
+    (
+        "Profiles & keys",
+        &[SettingsPage::Profiles, SettingsPage::Keybindings],
+    ),
+];
+
+/// The header a page sits under — [`NAV_GROUPS`]'s per-page view,
+/// so the grouping has one copy.
+pub const fn page_group(page: SettingsPage) -> &'static str {
+    match page {
+        SettingsPage::Profiles | SettingsPage::Keybindings => "Profiles & keys",
+        _ => "Terminal",
     }
 }
 
-/// The tab's strip label — hardcoded English like every label in
-/// this drawer.
-pub const fn tab_header(tab: SettingsTab) -> &'static str {
-    match tab {
-        SettingsTab::Appearance => "Appearance",
-        SettingsTab::Behavior => "Behavior",
-        SettingsTab::Profiles => "Profiles",
-        SettingsTab::Keybindings => "Keybindings",
-        SettingsTab::Advanced => "Advanced",
+/// The page's label — the section's title, or `Profiles` /
+/// `Keybindings`. Hardcoded English like every label in this
+/// window.
+pub const fn page_title(page: SettingsPage) -> &'static str {
+    match page {
+        SettingsPage::Appearance => Section::Appearance.title(),
+        SettingsPage::Window => Section::Window.title(),
+        SettingsPage::Tabs => Section::Tabs.title(),
+        SettingsPage::StatusBar => Section::StatusBar.title(),
+        SettingsPage::Dropdown => Section::Dropdown.title(),
+        SettingsPage::Terminal => Section::Terminal.title(),
+        SettingsPage::Advanced => Section::Advanced.title(),
+        SettingsPage::Profiles => "Profiles",
+        SettingsPage::Keybindings => "Keybindings",
     }
 }
 
-impl SettingsTab {
-    /// Every tab, in strip order — the strip's rows come from this
-    /// list and nothing else, so no row can exist without a page to
-    /// serve it.
-    pub const ALL: [SettingsTab; 5] = [
-        SettingsTab::Appearance,
-        SettingsTab::Behavior,
-        SettingsTab::Profiles,
-        SettingsTab::Keybindings,
-        SettingsTab::Advanced,
+impl SettingsPage {
+    /// Every page, in page order — the nav's rows come from this
+    /// list and nothing else, and the palette's Settings rows
+    /// follow it too.
+    pub const ALL: [SettingsPage; 9] = [
+        SettingsPage::Appearance,
+        SettingsPage::Window,
+        SettingsPage::Tabs,
+        SettingsPage::StatusBar,
+        SettingsPage::Dropdown,
+        SettingsPage::Terminal,
+        SettingsPage::Advanced,
+        SettingsPage::Profiles,
+        SettingsPage::Keybindings,
     ];
 }
 

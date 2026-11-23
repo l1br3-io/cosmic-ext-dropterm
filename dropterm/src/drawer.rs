@@ -18,7 +18,7 @@
 //! halves — the text inputs, sliders, and pickers, built once at open
 //! — and renders the open page from the shell's live state each
 //! frame. The Profiles and Keybindings pages arrive with this task's
-//! later increments; their tabs ride [`SettingsTab::ALL`] in the
+//! later increments; their pages ride [`SettingsPage::ALL`] in the
 //! strip with an honest placeholder page until then.
 
 use std::iter::once;
@@ -32,10 +32,10 @@ use dropterm::core::profile::Profile;
 use dropterm::core::settings::{
     self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
     KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer,
-    SettingsTab, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField,
-    blur_decision, drawer_description, dropdown_selected, etc_shells_content,
-    profile_scheme_selected, shell_dropdown_selected, shell_label, shell_picker_options,
-    tab_header, tab_sections, toggle_write,
+    SettingsPage, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS,
+    TextField, blur_decision, drawer_description, dropdown_selected, etc_shells_content,
+    page_section, page_title, profile_scheme_selected, shell_dropdown_selected, shell_label,
+    shell_picker_options, toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -83,7 +83,7 @@ pub(crate) enum ControlKind {
 }
 
 /// The control a section-hosted key renders. Every key a `Section`
-/// lists resolves — pinned against `tab_sections`'s partition below —
+/// lists resolves — pinned against `page_section`'s partition below —
 /// and the one key no section hosts (`SettingsDrawerWidth`, the
 /// drag handle's writer) resolves to nothing.
 pub(crate) fn control_kind(key: ConfigKey) -> Option<ControlKind> {
@@ -210,7 +210,7 @@ pub(crate) struct SummonSnapshot {
 /// refresh from counting as typing.
 pub(crate) struct SettingsState {
     pub(crate) open: bool,
-    pub(crate) page: SettingsTab,
+    pub(crate) page: SettingsPage,
     pub(crate) buffer: SettingsBuffer,
     /// The section cards' accordion (core's model): which cards
     /// stand collapsed. Session state, never a config key — it
@@ -255,7 +255,7 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             open: false,
-            page: SettingsTab::Appearance,
+            page: SettingsPage::Appearance,
             buffer: SettingsBuffer::default(),
             accordion: dropterm::core::settings::AccordionState::default(),
             refreshing: false,
@@ -795,16 +795,15 @@ impl SettingsDrawer {
             .min_w_0()
             .overflow_y_scroll();
         match page {
-            SettingsTab::Profiles => {
+            SettingsPage::Profiles => {
                 content = content.child(self.profiles_page(window, cx));
             }
-            SettingsTab::Keybindings => {
+            SettingsPage::Keybindings => {
                 content = content.child(self.keybindings_page(cx));
             }
             _ => {
-                for (index, section) in tab_sections(page).iter().enumerate() {
-                    content =
-                        content.child(self.section_card(*section, index, &config, window, cx));
+                for (index, section) in page_section(page).into_iter().enumerate() {
+                    content = content.child(self.section_card(section, index, &config, window, cx));
                 }
             }
         }
@@ -2029,12 +2028,12 @@ impl Render for SettingsDrawer {
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border);
-        for (index, tab) in SettingsTab::ALL.into_iter().enumerate() {
-            let selected = tab == page;
+        for (index, listed) in SettingsPage::ALL.into_iter().enumerate() {
+            let selected = listed == page;
             let target = shell.clone();
             strip = strip.child(
                 gpui::div()
-                    .id(("settings-tab", index))
+                    .id(("settings-page", index))
                     .flex_1()
                     .min_w_0()
                     .h_7()
@@ -2053,11 +2052,11 @@ impl Render for SettingsDrawer {
                             .min_w_0()
                             .max_w_full()
                             .truncate()
-                            .child(tab_header(tab)),
+                            .child(page_title(listed)),
                     )
                     .on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
                         target.update(cx, |shell, cx| {
-                            shell.settings.page = tab;
+                            shell.settings.page = listed;
                             cx.notify();
                         });
                     }),
@@ -2109,8 +2108,8 @@ mod tests {
     /// the ported control map, pinned against the section partition.
     #[test]
     fn every_section_key_resolves_a_control_and_no_others_do() {
-        for tab in SettingsTab::ALL {
-            for section in tab_sections(tab) {
+        for page in SettingsPage::ALL {
+            if let Some(section) = page_section(page) {
                 for key in section.keys() {
                     assert!(
                         control_kind(*key).is_some(),

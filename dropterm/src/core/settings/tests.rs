@@ -4,8 +4,12 @@ use std::collections::BTreeMap;
 use crate::core::theme_source::scheme_names;
 
 fn section_keys() -> Vec<ConfigKey> {
-    Section::ALL
+    // Across the pages, not the sections directly: the pin the
+    // settings window carries is every exposed key exactly once
+    // across the nine pages.
+    SettingsPage::ALL
         .iter()
+        .filter_map(|page| page_section(*page))
         .flat_map(|section| section.keys().iter().copied())
         .collect()
 }
@@ -118,58 +122,116 @@ fn drawer_release_commits_only_real_drags() {
     );
 }
 
-// --- the tab regrouping (settings-tabs ST-1) ---
+// --- the page regrouping (settings-window SW1) ---
 
 #[test]
-fn the_tabs_partition_every_section_exactly_once() {
-    // The tabs are a view-only regrouping (criterion 2): every
-    // Section appears in exactly one tab, the union is
-    // Section::ALL, and each tab's display order is pinned so
-    // the page composition cannot silently reshuffle. The
-    // Profiles and Keybindings tabs host no Section card — their
-    // pages are the manager and the editor.
+fn the_pages_partition_every_section_exactly_once() {
+    // The pages are a view-only regrouping: the seven section
+    // pages each host exactly one Section — Profiles and
+    // Keybindings host none — so every Section is exactly one
+    // page's and the union is Section::ALL. Pinned so regrouping
+    // can never drop or duplicate a card.
     assert_eq!(
-        tab_sections(SettingsTab::Appearance),
-        &[Section::Appearance, Section::Window]
+        page_section(SettingsPage::Appearance),
+        Some(Section::Appearance)
+    );
+    assert_eq!(page_section(SettingsPage::Window), Some(Section::Window));
+    assert_eq!(page_section(SettingsPage::Tabs), Some(Section::Tabs));
+    assert_eq!(
+        page_section(SettingsPage::StatusBar),
+        Some(Section::StatusBar)
     );
     assert_eq!(
-        tab_sections(SettingsTab::Behavior),
-        &[
-            Section::Tabs,
-            Section::StatusBar,
-            Section::Dropdown,
-            Section::Terminal,
-        ]
+        page_section(SettingsPage::Dropdown),
+        Some(Section::Dropdown)
     );
-    assert_eq!(tab_sections(SettingsTab::Profiles), &[]);
-    assert_eq!(tab_sections(SettingsTab::Keybindings), &[]);
-    assert_eq!(tab_sections(SettingsTab::Advanced), &[Section::Advanced]);
-    let across_tabs: Vec<Section> = SettingsTab::ALL
+    assert_eq!(
+        page_section(SettingsPage::Terminal),
+        Some(Section::Terminal)
+    );
+    assert_eq!(
+        page_section(SettingsPage::Advanced),
+        Some(Section::Advanced)
+    );
+    assert_eq!(page_section(SettingsPage::Profiles), None);
+    assert_eq!(page_section(SettingsPage::Keybindings), None);
+    let across_pages: Vec<Section> = SettingsPage::ALL
         .iter()
-        .flat_map(|tab| tab_sections(*tab).iter().copied())
+        .filter_map(|page| page_section(*page))
         .collect();
-    assert_eq!(across_tabs.len(), Section::ALL.len());
+    assert_eq!(across_pages.len(), Section::ALL.len());
     for section in Section::ALL {
         assert_eq!(
-            across_tabs
+            across_pages
                 .iter()
                 .filter(|listed| **listed == section)
                 .count(),
             1,
-            "{section:?} must appear in exactly one tab"
+            "{section:?} must appear in exactly one page"
         );
     }
 }
 
 #[test]
-fn tab_headers_are_the_strip_labels() {
-    // Hardcoded English like every label in this drawer — no
-    // fluent/i18n in this repo.
-    assert_eq!(tab_header(SettingsTab::Appearance), "Appearance");
-    assert_eq!(tab_header(SettingsTab::Behavior), "Behavior");
-    assert_eq!(tab_header(SettingsTab::Profiles), "Profiles");
-    assert_eq!(tab_header(SettingsTab::Keybindings), "Keybindings");
-    assert_eq!(tab_header(SettingsTab::Advanced), "Advanced");
+fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
+    // The sidebar's two headers: the seven section pages in page
+    // order under Terminal, then the two manager pages under
+    // "Profiles & keys". The flattened list is ALL — the page
+    // order the palette's Settings rows follow.
+    assert_eq!(
+        NAV_GROUPS,
+        [
+            (
+                "Terminal",
+                &[
+                    SettingsPage::Appearance,
+                    SettingsPage::Window,
+                    SettingsPage::Tabs,
+                    SettingsPage::StatusBar,
+                    SettingsPage::Dropdown,
+                    SettingsPage::Terminal,
+                    SettingsPage::Advanced,
+                ][..],
+            ),
+            (
+                "Profiles & keys",
+                &[SettingsPage::Profiles, SettingsPage::Keybindings][..],
+            ),
+        ]
+    );
+    let flattened: Vec<SettingsPage> = NAV_GROUPS
+        .iter()
+        .flat_map(|(_, pages)| pages.iter().copied())
+        .collect();
+    assert_eq!(flattened, SettingsPage::ALL);
+}
+
+#[test]
+fn page_group_names_the_header_each_page_sits_under() {
+    // The per-page view of NAV_GROUPS: one lookup, no second copy
+    // of the grouping.
+    for (header, pages) in NAV_GROUPS {
+        for page in pages {
+            assert_eq!(page_group(*page), header, "{page:?}'s group");
+        }
+    }
+}
+
+#[test]
+fn page_titles_are_the_strip_labels() {
+    // The section pages title themselves after their section (the
+    // card's heading is the page's label); the two manager pages
+    // carry their own. Hardcoded English like every label here —
+    // no fluent/i18n in this repo.
+    assert_eq!(page_title(SettingsPage::Appearance), "Appearance");
+    assert_eq!(page_title(SettingsPage::Window), "Window");
+    assert_eq!(page_title(SettingsPage::Tabs), "Tabs");
+    assert_eq!(page_title(SettingsPage::StatusBar), "Status bar");
+    assert_eq!(page_title(SettingsPage::Dropdown), "Dropdown");
+    assert_eq!(page_title(SettingsPage::Terminal), "Terminal");
+    assert_eq!(page_title(SettingsPage::Advanced), "Advanced");
+    assert_eq!(page_title(SettingsPage::Profiles), "Profiles");
+    assert_eq!(page_title(SettingsPage::Keybindings), "Keybindings");
 }
 
 // --- the drawer's lifecycle transitions (settings-drawer T3) ---
@@ -1062,15 +1124,9 @@ fn the_status_bar_card_hosts_the_master_toggle_border_activity_mark_and_thirteen
     // "Show …" row per segment — each under its exact file spelling,
     // each flipping through the single planned-write path, all Live.
     assert_eq!(
-        SettingsTab::Behavior,
-        SettingsTab::ALL[1], // the Behavior page exists where the strip puts it
-    );
-    assert_eq!(
-        tab_sections(SettingsTab::Behavior)
-            .iter()
-            .position(|section| matches!(section, Section::StatusBar)),
-        Some(1),
-        "the Status bar card sits directly after Tabs on Behavior"
+        page_section(SettingsPage::StatusBar),
+        Some(Section::StatusBar),
+        "the Status bar page hosts its section outright"
     );
     assert_eq!(
         Section::StatusBar.keys(),
@@ -3384,17 +3440,17 @@ fn unfolding_restores_a_card_and_stays_idempotent() {
 }
 
 #[test]
-fn every_section_of_every_tab_toggles_through_the_model() {
+fn every_section_of_every_page_toggles_through_the_model() {
     // The rendering face reads exactly this query per card — walk
-    // the whole tab partition through fold and unfold once, so a
+    // the whole page partition through fold and unfold once, so a
     // section the model cannot express cannot render either.
-    for tab in SettingsTab::ALL {
-        for section in tab_sections(tab) {
+    for page in SettingsPage::ALL {
+        if let Some(section) = page_section(page) {
             let mut state = AccordionState::default();
-            state.set_expanded(*section, false);
-            assert!(!state.is_expanded(*section), "{section:?} will not fold");
-            state.set_expanded(*section, true);
-            assert!(state.is_expanded(*section), "{section:?} will not unfold");
+            state.set_expanded(section, false);
+            assert!(!state.is_expanded(section), "{section:?} will not fold");
+            state.set_expanded(section, true);
+            assert!(state.is_expanded(section), "{section:?} will not unfold");
         }
     }
 }
