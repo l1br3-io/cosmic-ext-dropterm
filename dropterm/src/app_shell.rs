@@ -4014,7 +4014,6 @@ impl Shell {
         self.settings_window = None;
         self.settings.open = false;
         self.settings.buffer.clear();
-        self.settings.accordion = dropterm::core::settings::AccordionState::default();
         self.settings.keybind_search.clear();
         self.settings.keybind_capture = None;
         self.settings.keybind_conflict = None;
@@ -8740,6 +8739,143 @@ mod tests {
                 "no second window opened"
             );
         });
+    }
+
+    /// The nav's page hooks (settings-window SW5): lowercase,
+    /// hyphenated — the static forms the debug-bounds lookups take.
+    const NAV_PAGE_HOOKS: [&str; 9] = [
+        "settings-nav-appearance",
+        "settings-nav-window",
+        "settings-nav-tabs",
+        "settings-nav-status-bar",
+        "settings-nav-dropdown",
+        "settings-nav-terminal",
+        "settings-nav-advanced",
+        "settings-nav-profiles",
+        "settings-nav-keybindings",
+    ];
+
+    #[gpui::test]
+    fn the_window_lists_nine_pages_under_two_headers(cx: &mut gpui::TestAppContext) {
+        // The Obsidian shape's nav (settings-window SW5): nine page
+        // rows under two headers, the open page marked. Every hook
+        // resolves to real bounds in the settings window's own frame
+        // — the render proof the headless tests can actually take.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Appearance,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let handle = cx.update(|_, cx| shell.read(cx).settings_window);
+        let mut settings = gpui::VisualTestContext::from_window(handle.expect("the window"), cx);
+        for hook in NAV_PAGE_HOOKS {
+            assert!(
+                settings.debug_bounds(hook).is_some(),
+                "{hook} rendered no row"
+            );
+        }
+        for header in [
+            "settings-nav-header-terminal",
+            "settings-nav-header-profiles-keys",
+        ] {
+            assert!(
+                settings.debug_bounds(header).is_some(),
+                "{header} rendered no group header"
+            );
+        }
+        // The open page carries the active hook; the bounds sit inside
+        // its own row's.
+        let active = settings
+            .debug_bounds("settings-nav-active")
+            .expect("the open page is marked");
+        let row = settings
+            .debug_bounds("settings-nav-appearance")
+            .expect("the appearance row");
+        assert!(
+            row.contains(&active.center()),
+            "the active mark sits on the open page's row"
+        );
+    }
+
+    #[gpui::test]
+    fn a_nav_click_swaps_the_page_and_writes_nothing(cx: &mut gpui::TestAppContext) {
+        // The nav's contract (settings-window SW5): a click swaps the
+        // content pane, writes nothing to the config, and keeps an
+        // in-flight draft — the buffered state the reopen-fresh rule
+        // clears only on close.
+        let ((shell, _verbs, _signals, _phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Appearance,
+                cx,
+            );
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                // An in-flight draft the page turn must keep.
+                shell.settings.buffer.set_text(
+                    dropterm::core::settings::TextField::Shell,
+                    "/bin/tcsh".to_string(),
+                );
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let handle = cx.update(|_, cx| shell.read(cx).settings_window);
+        let mut settings = gpui::VisualTestContext::from_window(handle.expect("the window"), cx);
+        let row = settings
+            .debug_bounds("settings-nav-profiles")
+            .expect("the profiles row rendered");
+        settings.simulate_click(row.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert_eq!(
+                read.settings.page,
+                dropterm::core::settings::SettingsPage::Profiles,
+                "the click swapped the page"
+            );
+            let config = read.config.clone();
+            assert_eq!(
+                read.settings
+                    .buffer
+                    .text(dropterm::core::settings::TextField::Shell, &config),
+                "/bin/tcsh",
+                "the in-flight draft survived the page turn"
+            );
+        });
+    }
+
+    #[test]
+    fn the_nav_click_writes_nothing() {
+        // The nav is navigation (settings-window SW5): its one job is
+        // swapping the content pane — the single write path must stay
+        // out of its click handler, pinned against the source the way
+        // the band chrome's builder is.
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/settings.rs"))
+                .expect("the settings source beside the crate root");
+        let start = source
+            .find("fn nav_column(")
+            .expect("the nav's builder beside its doc");
+        let body = &source[start
+            ..source[start..]
+                .find("\n    fn ")
+                .map(|at| start + at)
+                .expect("the next method closes the builder's slice")];
+        assert!(
+            !body.contains("write_settings"),
+            "the nav click must never write config:\n{body}"
+        );
     }
 
     #[gpui::test]

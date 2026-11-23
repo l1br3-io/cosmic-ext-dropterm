@@ -29,11 +29,11 @@ use dropterm::core::font_list;
 use dropterm::core::profile::Profile;
 use dropterm::core::settings::{
     self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
-    KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer,
-    SettingsPage, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS,
-    TextField, blur_decision, drawer_description, dropdown_selected, etc_shells_content,
-    page_section, page_title, profile_scheme_selected, shell_dropdown_selected, shell_label,
-    shell_picker_options, toggle_write,
+    KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NAV_GROUPS, NEW_TAB_CWD_OPTIONS, ProfileField,
+    SettingsBuffer, SettingsPage, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS,
+    THEME_PREFERENCE_OPTIONS, TextField, blur_decision, drawer_description, dropdown_selected,
+    etc_shells_content, page_section, page_title, profile_scheme_selected, shell_dropdown_selected,
+    shell_label, shell_picker_options, toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -41,7 +41,6 @@ use gpui::{
     Styled, Window,
 };
 use gpui_component::ActiveTheme as _;
-use gpui_component::accordion::Accordion;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -210,12 +209,6 @@ pub(crate) struct SettingsState {
     pub(crate) open: bool,
     pub(crate) page: SettingsPage,
     pub(crate) buffer: SettingsBuffer,
-    /// The section cards' accordion (core's model): which cards
-    /// stand collapsed. Session state, never a config key — it
-    /// rides the drawer across page turns and closes within one
-    /// app run, and every app start opens with every card expanded
-    /// (the fresh state's default).
-    pub(crate) accordion: dropterm::core::settings::AccordionState,
     pub(crate) refreshing: bool,
     /// Fields awaiting a blur-revert (the audit's F1): an invalid
     /// blur'd edit's stored text. The input subscriber has no
@@ -251,7 +244,6 @@ impl Default for SettingsState {
             open: false,
             page: SettingsPage::Appearance,
             buffer: SettingsBuffer::default(),
-            accordion: dropterm::core::settings::AccordionState::default(),
             refreshing: false,
             pending_reverts: Vec::new(),
             config_epoch: 0,
@@ -795,111 +787,68 @@ impl SettingsWindow {
                 content = content.child(self.keybindings_page(cx));
             }
             _ => {
-                for (index, section) in page_section(page).into_iter().enumerate() {
-                    content = content.child(self.section_card(section, index, &config, window, cx));
+                if let Some(section) = page_section(page) {
+                    content = content.child(self.section_group(section, &config, window, cx));
                 }
             }
         }
         content.into_any_element()
     }
 
-    /// One section card as an accordion item (the Kit's accordion,
-    /// rendered one card per section so the pages keep their flat
-    /// separate-cards look): the header is the trigger — title left,
-    /// disclosure chevron right — and the panel below holds the
-    /// card's control rows. The open state is controlled from the
-    /// shell's core `AccordionState` (core's model; this view is
-    /// its rendering face), so a fold survives page turns and the
-    /// drawer's own reopen. Collapsed panels unmount once the
-    /// reveal settles — a folded card costs no rows, and the Kit
-    /// states behind its controls are the drawer's own entities,
-    /// untouched by the unmount.
-    fn section_card(
+    /// One section page's content: the section's title over one
+    /// bordered, rounded group of its rows with hairlines between
+    /// them (settings-window SW5, the Obsidian shape). The fold-away
+    /// cards retired with `AccordionState`: a window has the room for
+    /// every row at once.
+    fn section_group(
         &self,
         section: dropterm::core::settings::Section,
-        index: usize,
         config: &DropTermConfig,
         window: &mut Window,
         cx: &App,
     ) -> gpui::AnyElement {
-        let open = self.shell.read(cx).settings.accordion.is_expanded(section);
-        let target = self.shell.clone();
-        let mut rows = v_flex().gap_3().min_w_0();
-        for key in section.keys() {
-            rows = rows.child(self.control_row(*key, config, window, cx));
+        let keys = section.keys();
+        let mut rows = v_flex().min_w_0();
+        for (index, key) in keys.iter().enumerate() {
+            // The hairline between rows: every row but the last
+            // carries a bottom border — the group's own border closes
+            // the tail.
+            let hairline = index + 1 < keys.len();
+            rows = rows.child(
+                gpui::div()
+                    .min_w_0()
+                    .px_4()
+                    .py_3()
+                    .when(hairline, |row| {
+                        row.border_b_1().border_color(cx.theme().border)
+                    })
+                    .child(self.control_row(*key, config, window, cx)),
+            );
         }
-        // The auto-height wrapper: the Kit accordion's own root
-        // pins `size_full`, and a percentage height against an
-        // auto-height parent resolves as content height — without
-        // it every card would stretch to the page's viewport.
         v_flex()
+            .gap_3()
             .min_w_0()
             .child(
-                Accordion::new(("settings-section", index))
-                    // The bordered treatment is the grouping
-                    // indicator itself: one outlined, rounded card
-                    // whose header — semibold title left, rotating
-                    // disclosure chevron right (the Kit's own, now
-                    // painted through the boot-registered icon
-                    // bundle) — reads as a heading above the rows it
-                    // folds.
-                    .bordered(true)
-                    .on_toggle_click(move |open_indices, _, cx| {
-                        target.update(cx, |shell, _| {
-                            shell
-                                .settings
-                                .accordion
-                                .set_expanded(section, open_indices.contains(&0));
-                        });
-                    })
-                    .item(|item| {
-                        // The scheme-derived themes set no
-                        // accordion.background, so the Kit's default
-                        // would paint white/near-black over the
-                        // drawer — the popover surface is the card.
-                        item.open(open)
-                            .bg(cx.theme().popover)
-                            // The hover affordance is an outline ring,
-                            // never a fill: the theme generator rides
-                            // BrightBlack for both secondary.background
-                            // and muted.foreground, so the Kit's dim
-                            // chevron would paint dim-on-dim and
-                            // vanish inside any filled hover. The ring
-                            // is pre-laid (border_1, transparent) and
-                            // only its color swaps on hover — no
-                            // layout shift at the transition.
-                            .hover(|hover| {
-                                hover.rounded_sm().border_color(cx.theme().muted_foreground)
-                            })
-                            .title_style(
-                                gpui::StyleRefinement::default()
-                                    .px_4()
-                                    .py_3()
-                                    .border_1()
-                                    .rounded_sm()
-                                    .border_color(gpui::transparent_black()),
-                            )
-                            // The pt keeps the ring (or the resting
-                            // header row) from sitting flush against
-                            // the first control row — the hover box
-                            // carries the header's own py_3, so
-                            // without a content gap the highlight's
-                            // bottom edge lands on the row.
-                            .content_style(gpui::StyleRefinement::default().pt_2().px_4().pb_3())
-                            .title(
-                                gpui::div()
-                                    .min_w_0()
-                                    .truncate()
-                                    // One step above the 13px row labels:
-                                    // the card's heading, below the
-                                    // header bar's 15px "Settings".
-                                    .text_size(gpui::px(14.))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(cx.theme().popover_foreground)
-                                    .child(section.title()),
-                            )
-                            .child(rows)
-                    }),
+                gpui::div()
+                    .min_w_0()
+                    .text_size(gpui::px(15.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().popover_foreground)
+                    .child(section.title()),
+            )
+            .child(
+                // The one bordered, rounded group: the grouping
+                // indicator itself, the popover surface — the
+                // scheme-derived themes set no card token, so the
+                // popover's background is the card's.
+                v_flex()
+                    .min_w_0()
+                    .border_1()
+                    .rounded_md()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .overflow_hidden()
+                    .child(rows),
             )
             .into_any_element()
     }
@@ -980,12 +929,6 @@ fn dropdown_row_of(key: ConfigKey, label: &SharedString) -> usize {
 /// so the rows share one geometry (aligned left labels, aligned
 /// right controls) whatever the control's own intrinsic width.
 const CONTROL_COLUMN_PX: f32 = 208.;
-/// The close glyph's size (user-ruled 2026-11-20 at a 16x16 floor,
-/// raised to 24px 2026-11-22): every icon glyph paints at 24px,
-/// pinned here because the ✕ would otherwise inherit whatever text
-/// size an ancestor later sets.
-const CLOSE_GLYPH_FONT_SIZE: f32 = 24.;
-
 /// One row of a section card, the settings-item discipline the
 /// libcosmic drawer drew and the Kit's own `setting` module still
 /// draws: the label and its description in a wrapping left column,
@@ -1971,107 +1914,26 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the window's whole face — header, strip, and page — in one render pass"
-    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_from_echo(window, cx);
         let shell = self.shell.clone();
         let page = self.shell.read(cx).settings.page;
-        // The window's header: the title at the left, the explicit
-        // close's ✕ at the right — a user close made visible. The
-        // route is the window's one close routine: the cause set in
-        // one short shell update, `remove_window` at App level (the
-        // observer then updates the shell with no borrow on the
-        // stack).
-        let header = {
-            let target = shell.clone();
-            h_flex()
-                .w_full()
-                .flex_none()
-                .justify_between()
-                .px_3()
-                .py_2()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .child(
-                    gpui::div()
-                        .text_size(gpui::px(15.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Settings"),
-                )
-                .child(
-                    gpui::div()
-                        .id("settings-close")
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .text_size(gpui::px(CLOSE_GLYPH_FONT_SIZE))
-                        .child("✕")
-                        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                            target.update(cx, |shell, _| {
-                                shell.settings_close_cause =
-                                    Some(dropterm::core::settings::CloseCause::User);
-                            });
-                            window.remove_window();
-                        }),
-                )
-        };
-        // The tab strip as an even-split segmented row: each tab
-        // takes an equal share of the pane's width and truncates
-        // inside it, so the strip always fits the panel — never a
-        // ragged left-packed row that overruns a narrow drawer.
-        let mut strip = h_flex()
-            .flex_none()
-            .gap_1()
-            .px_2()
-            .py_2()
-            .border_b_1()
-            .border_color(cx.theme().border);
-        for (index, listed) in SettingsPage::ALL.into_iter().enumerate() {
-            let selected = listed == page;
-            let target = shell.clone();
-            strip = strip.child(
-                gpui::div()
-                    .id(("settings-page", index))
-                    .flex_1()
-                    .min_w_0()
-                    .h_7()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .text_size(gpui::px(13.))
-                    .when(selected, |el| {
-                        el.bg(cx.theme().accent)
-                            .text_color(cx.theme().accent_foreground)
-                    })
-                    .when(!selected, |el| el.text_color(cx.theme().muted_foreground))
-                    .child(
-                        gpui::div()
-                            .min_w_0()
-                            .max_w_full()
-                            .truncate()
-                            .child(page_title(listed)),
-                    )
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, _window, cx| {
-                        target.update(cx, |shell, cx| {
-                            shell.settings.page = listed;
-                            cx.notify();
-                        });
-                    }),
-            );
-        }
+        // The nav column (settings-window SW5, the Obsidian shape):
+        // two headers with their pages in `NAV_GROUPS` order, the
+        // open page marked with the accent band — the tab strip's
+        // idiom, hand-composed because the Kit's `Sidebar` family
+        // takes its active colors from `sidebar_accent` tokens the
+        // scheme generator does not produce. A click swaps the page
+        // and writes nothing: navigation, never a write path.
+        let nav = self.nav_column(page, cx);
         let armed = self.shell.read(cx).settings.keybind_capture.is_some();
         let target = self.shell.clone();
-        v_flex()
+        h_flex()
             .id("settings-window")
             .key_context("settings-window")
             .track_focus(&self.shell.read(cx).settings_capture_focus)
             .on_action({
-                let target = self.shell.clone();
+                let target = shell.clone();
                 move |_: &crate::app_shell::DismissSettings,
                       window: &mut gpui::Window,
                       cx: &mut gpui::App| {
@@ -2094,24 +1956,127 @@ impl Render for SettingsWindow {
             .when(armed, gpui::Styled::border_1)
             .size_full()
             .min_w_0()
-            .child(header)
-            .child(strip)
-            .child(self.page_element(window, cx))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(nav)
+            // The content pane: the open page's rows, the terminal's
+            // window full width beside the nav.
+            .child(
+                v_flex()
+                    .id("settings-content")
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(self.page_element(window, cx)),
+            )
+    }
+}
+
+impl SettingsWindow {
+    /// The nav column's slug for a page — the test hook's suffix,
+    /// lowercase and hyphenated ("Status bar" reads `status-bar`).
+    fn page_slug(page: SettingsPage) -> String {
+        page_title(page).to_lowercase().replace(' ', "-")
+    }
+
+    /// The nav column: 240px of sidebar carrying the two headers and
+    /// their nine pages, the open page marked with the accent band.
+    /// Rows carry the test hooks `settings-nav-<slug>` and, on the
+    /// open page, `settings-nav-active` (the mark sits inside the
+    /// row's own bounds); the two headers carry
+    /// `settings-nav-header-<group>`.
+    fn nav_column(&self, page: SettingsPage, cx: &App) -> gpui::AnyElement {
+        let shell = self.shell.clone();
+        let mut column = v_flex()
+            .id("settings-nav")
+            .w(gpui::px(240.))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .pt_2()
+            .pb_4();
+        for (group_index, (header, pages)) in NAV_GROUPS.iter().enumerate() {
+            let header_hook = format!(
+                "settings-nav-header-{}",
+                // "Profiles & keys" reads `profiles-keys`: the ampersand
+                // drops, the words join on hyphens.
+                header
+                    .to_lowercase()
+                    .replace('&', "")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join("-")
+            );
+            column = column.child(
+                gpui::div()
+                    .min_w_0()
+                    .px_3()
+                    .pt_3()
+                    .pb_1()
+                    .text_size(gpui::px(11.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().sidebar_foreground)
+                    .child(*header)
+                    .debug_selector(move || header_hook.clone()),
+            );
+            for (row_index, listed) in pages.iter().enumerate() {
+                let selected = *listed == page;
+                let target = shell.clone();
+                let slug = Self::page_slug(*listed);
+                let row_hook = format!("settings-nav-{slug}");
+                column = column.child(
+                    gpui::div()
+                        .id(("settings-nav-row", group_index + row_index))
+                        .min_w_0()
+                        .mx_2()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .text_size(gpui::px(13.))
+                        .when(selected, |row| {
+                            // The accent band: the tab strip's idiom
+                            // carried over — filled, not tinted.
+                            row.bg(cx.theme().accent)
+                                .text_color(cx.theme().accent_foreground)
+                        })
+                        .when(!selected, |row| {
+                            row.text_color(cx.theme().sidebar_foreground)
+                                .hover(|row| row.text_color(cx.theme().popover_foreground))
+                        })
+                        .child(
+                            gpui::div()
+                                .min_w_0()
+                                .max_w_full()
+                                .truncate()
+                                .child(page_title(*listed))
+                                .when(selected, |mark| {
+                                    mark.debug_selector(|| "settings-nav-active".to_string())
+                                }),
+                        )
+                        .debug_selector(move || row_hook.clone())
+                        .on_mouse_down(gpui::MouseButton::Left, {
+                            let target = target.clone();
+                            move |_, _window, cx| {
+                                target.update(cx, |shell, cx| {
+                                    shell.settings.page = *listed;
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                );
+            }
+        }
+        column.into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The close glyph paints at the icon size (user-ruled
-    /// 2026-11-20 at a 16x16 floor, raised to 24x24 2026-11-22):
-    /// 24x24 or larger, never inherited smaller. The pin is
-    /// compile-time: a size regression fails the build, not a run.
-    #[test]
-    fn the_close_glyph_paints_at_the_icon_floor() {
-        const { assert!(CLOSE_GLYPH_FONT_SIZE >= 24.0) }
-    }
 
     /// Every section-hosted key resolves to a control, and the one
     /// key no section hosts resolves to none — the rendering face of
@@ -2129,20 +2094,6 @@ mod tests {
             }
         }
         assert_eq!(control_kind(ConfigKey::SettingsDrawerWidth), None);
-    }
-
-    /// The drawer's fresh state opens every card — the shell-owned
-    /// accordion default, wired to core's all-expanded default. The
-    /// model's own behavior is core's tests; this pin is the wiring.
-    #[test]
-    fn the_fresh_drawer_state_expands_every_section_card() {
-        let state = SettingsState::default();
-        for section in dropterm::core::settings::Section::ALL {
-            assert!(
-                state.accordion.is_expanded(section),
-                "{section:?} starts collapsed"
-            );
-        }
     }
 
     /// The dispatch's classes spot-pinned: the pickers and the shell
