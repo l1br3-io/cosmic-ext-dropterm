@@ -301,7 +301,88 @@ pub struct SlotEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::lua_host::{HostEvent, LuaHost};
     use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    /// A per-test scratch directory under the system temp dir with a
+    /// process- and test-unique name, removed (best-effort) on drop.
+    /// Std only, the lua-host tests' own shape — the event fixture
+    /// needs a plugins dir and nothing else.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let unique = format!(
+                "dropterm-slots-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            );
+            let path = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&path).expect("create scratch dir");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// The bus port every fixture script opens first.
+    const PORT: &str = "local d = require('dropterm')";
+
+    /// The event fixture's handler: one registered `slot-event`
+    /// listener that verifies the payload's key count and every
+    /// documented value in Lua — the no-extras half the Rust-side
+    /// four-keys pin cannot see — and prints its verdict, forwarded
+    /// one line per print.
+    const LISTENER: &str = "\
+d.on('slot-event', function(p)
+  local n = 0
+  for _ in pairs(p) do n = n + 1 end
+  if n == 4
+     and p.surface == 'status'
+     and p.slot == 'net'
+     and p.element_id == 'toggle'
+     and p.kind == 'press' then
+    print('slot-event payload exact')
+  else
+    print('slot-event payload wrong: count=' .. n)
+  end
+end)";
+
+    /// Poll the host's outbound stream via the tick's own
+    /// [`LuaHost::try_event`] drain until a log line matching
+    /// `wanted` lands (the match included) or the deadline passes —
+    /// the query surfaces' wait-for-the-reply rule, no silence
+    /// heuristic.
+    fn log_until(host: &LuaHost, wanted: impl Fn(&str) -> bool, timeout: Duration) -> Vec<String> {
+        let deadline = Instant::now() + timeout;
+        let mut lines = Vec::new();
+        loop {
+            match host.try_event() {
+                Some(HostEvent::Log(line)) => {
+                    let hit = wanted(&line);
+                    lines.push(line);
+                    if hit {
+                        return lines;
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    if Instant::now() >= deadline {
+                        return lines;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
 
     // --- the byte-compat pin ---
 
@@ -596,6 +677,45 @@ mod tests {
                     icon: Some("arrow-down".to_owned()),
                 }]
             }
+        );
+    }
+
+    // --- the event path (the headless proof, slot-contract SL3) ---
+
+    /// The documented payload crosses the existing emit arm: a
+    /// registered `dropterm.on('slot-event', …)` handler receives
+    /// exactly the four documented keys, no extras, values intact —
+    /// proven in Lua, where the key count is observable. The first
+    /// producer is `dialog-slot`; this task ships the contract's
+    /// proof, nothing UI-side, no new inbound host arm.
+    #[test]
+    fn the_slot_event_crosses_the_bus_with_exactly_its_documented_payload() {
+        let dir = TempDir::new("slot-event");
+        fs::write(dir.0.join("listener.lua"), format!("{PORT}\n{LISTENER}"))
+            .expect("the fixture writes");
+        let host = LuaHost::new(&dir.0);
+        let event = SlotEvent {
+            surface: "status".to_owned(),
+            slot: "net".to_owned(),
+            element_id: "toggle".to_owned(),
+            kind: "press".to_owned(),
+        };
+        // The existing LuaHostHandle::emit arm — the event-hooks
+        // precedent, no new inbound host command.
+        host.handle().emit(
+            SLOT_EVENT,
+            serde_json::to_value(&event).expect("the payload serializes"),
+        );
+        let lines = log_until(
+            &host,
+            |line| line.contains("slot-event payload"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("slot-event payload exact")),
+            "the handler must receive exactly the four documented keys with their values: {lines:?}"
         );
     }
 
