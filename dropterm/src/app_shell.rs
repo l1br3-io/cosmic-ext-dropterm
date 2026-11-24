@@ -57,7 +57,12 @@ use crate::terminal::view::{self, TerminalPane};
 // binds fire, nothing types).
 gpui::actions!(
     dropterm_gpui,
-    [DismissCloseConfirm, DismissSettings, DismissPalette]
+    [
+        DismissCloseConfirm,
+        DismissSettings,
+        DismissPalette,
+        DismissDialog
+    ]
 );
 
 /// The modal callback shape: the dismissal paths hand the shell both
@@ -471,6 +476,20 @@ pub(crate) struct Shell {
     /// lives on the palette's own list handle; the pane's claim
     /// defers to any holder.
     pub(crate) palette: Option<gpui::Entity<crate::palette::Palette>>,
+    /// The open dialog (dialog-slot spec): the script-opened modal —
+    /// one live seat, the second open replacing the first, logged.
+    pub(crate) dialog: Option<gpui::Entity<crate::dialog_slot::DialogSlot>>,
+    /// A departed dialog's focus handle: the render's repair reads it
+    /// the palette's own way.
+    dialog_focus: Option<gpui::FocusHandle>,
+    /// The close-time repair slot (the palette's shape: captured at
+    /// open, moved at close, consumed by the render).
+    dialog_focus_repair: Option<gpui::FocusHandle>,
+    /// The drain's landed spec, waiting for the render's mount: the
+    /// pump has no window, and the entity's focus work is the
+    /// first-paint repair's own (sr-1: window work never runs in the
+    /// pump; the mount carries none — creation only).
+    pending_dialog: Option<dropterm::core::slots::DialogSpec>,
     /// A dismissed palette's departed list handle: the render's
     /// repair hands the keyboard back to the active pane while the
     /// dead handle holds it — the rename input's own repair shape.
@@ -869,6 +888,10 @@ impl Shell {
             respawn_focus_repair: None,
             palette: None,
             palette_focus_repair: None,
+            dialog: None,
+            dialog_focus: None,
+            dialog_focus_repair: None,
+            pending_dialog: None,
             palette_focus: None,
             modal_focus,
             status: dropterm::core::status::StatusSegments::default(),
@@ -1079,6 +1102,16 @@ impl Shell {
         // forwarded before the drain so a handler's own print lands
         // in this tick's drain.
         self.forward_lua_focus_flips();
+        // The dialog's focus escape (dialog-slot): the dialog's own
+        // render latched it, the pump closes — the seat and the
+        // repair, never a render-time state change (sr-1).
+        let escaped = self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.read(cx).focus_escaped());
+        if escaped && self.close_dialog_quiet() {
+            cx.notify();
+        }
         self.drain_lua_host(cx);
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -2085,6 +2118,9 @@ fn reset_show_watch(cx: &mut App, shell: &Entity<Shell>) {
         // a palette open at hide is gone at the next show, never
         // re-opening over the resurrected band.
         shell.palette = None;
+        // The dialog dies with the surface too: a dialog open at hide
+        // is gone at the next show (the palette's own rule).
+        shell.dialog = None;
     });
 }
 
@@ -2697,6 +2733,142 @@ impl Shell {
         );
         self.palette = Some(palette);
         cx.notify();
+    }
+
+    /// The slot-event's one emit (dialog-slot): the shell routes the
+    /// dialog's press and dismissal over the bus — the SL3-proven
+    /// path, the payload the contract's own type serializes.
+    fn emit_dialog_event(&self, element_id: &str, kind: &str, _cx: &mut Context<Self>) {
+        let event = dropterm::core::slots::SlotEvent {
+            surface: "dialog".to_owned(),
+            slot: "dialog".to_owned(),
+            element_id: element_id.to_owned(),
+            kind: kind.to_owned(),
+        };
+        let Some(bus) = self.lua_bus.as_ref() else {
+            println!("dropterm: plugins: slot-event dropped: the plugins host is down");
+            return;
+        };
+        match serde_json::to_value(&event) {
+            Ok(payload) => bus.emit(dropterm::core::slots::SLOT_EVENT, payload),
+            Err(err) => println!("dropterm: plugins: slot-event would not serialize: {err}"),
+        }
+    }
+
+    /// The dialog's mount (dialog-slot spec, DS2): the render lands
+    /// the drain's pending spec here — entity creation only, no
+    /// window work (the keyboard is the entity's own first-paint
+    /// repair, the palette's precedent). One live seat: a second
+    /// mount replaces the first, logged.
+    /// The drain's pending dialog mounts at the render's head
+    /// (dialog-slot): the pump has no window and the mount carries
+    /// none — creation only, the keyboard is the entity's own
+    /// first-paint repair. The focus-escape latch reads after (the
+    /// pump closes on it; state changes never land in a render).
+    fn mount_pending_dialog(&mut self, cx: &mut Context<Self>) {
+        if let Some(spec) = self.pending_dialog.take() {
+            self.mount_dialog(spec, cx);
+        }
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.read(cx).focus_escaped())
+        {
+            // The latch is the pump's to spend (sr-1): it closes
+            // there, the repair block hands the keyboard back.
+        }
+    }
+
+    fn mount_dialog(&mut self, spec: dropterm::core::slots::DialogSpec, cx: &mut Context<Self>) {
+        if self.dialog.is_some() {
+            println!("dropterm: plugins: dialog replaced (one live seat)");
+            self.close_dialog(cx);
+        }
+        // The palette beside the band's: one color source for the
+        // body's spans.
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
+        let fallback = alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 };
+        let pane_background =
+            colors[alacritty_terminal::vte::ansi::NamedColor::Background].unwrap_or(fallback);
+        let (_, fg) = tab_bar::strip_pair(Some(pane_background));
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
+        let shell = cx.entity();
+        let on_press: crate::dialog_slot::DialogPressFn = std::rc::Rc::new({
+            let shell = shell.clone();
+            move |button_id, _window, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.emit_dialog_event(button_id, "press", cx);
+                    shell.close_dialog(cx);
+                });
+            }
+        });
+        let on_dismiss: crate::dialog_slot::DialogDismissFn = std::rc::Rc::new({
+            let shell = shell.clone();
+            move |_window, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.emit_dialog_event("", "dismiss", cx);
+                    shell.close_dialog(cx);
+                });
+            }
+        });
+        let dialog = cx.new(|cx| {
+            crate::dialog_slot::DialogSlot::new(spec, &palette, on_press, on_dismiss, cx)
+        });
+        // The close path's repair handle, captured while the read is
+        // safe (the palette's own shape).
+        self.dialog_focus = Some(dialog.read(cx).container_focus());
+        println!(
+            "dropterm: plugins: dialog opened at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.dialog = Some(dialog);
+    }
+
+    /// The dialog's dismissal — Escape, the scrim, the press's own
+    /// close, the replacement, the focus escape (via the pump's
+    /// latch), and the reload's drain-side close all land here. The
+    /// event already went out where one was owed; this is the seat
+    /// and the repair. `true` when a dialog actually closed (the
+    /// caller notifies).
+    /// A departed modal's repair (the palette's and the dialog's one
+    /// shape): the keyboard returns to the active pane, the slot
+    /// dropping once anything else holds it.
+    fn repair_modal_focus(
+        departed: &mut Option<gpui::FocusHandle>,
+        pane: Option<&Entity<TerminalPane>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(handle) = departed.take()
+            && handle.is_focused(window)
+        {
+            if let Some(pane) = pane {
+                pane.read(cx).focus_handle().focus(window, cx);
+            }
+            // Keep watching until the repair lands (anything else
+            // holding the keyboard needs no repair).
+            if handle.is_focused(window) {
+                *departed = Some(handle);
+            }
+        }
+    }
+
+    fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.close_dialog_quiet() {
+            cx.notify();
+        }
+    }
+
+    fn close_dialog_quiet(&mut self) -> bool {
+        if self.dialog.take().is_none() {
+            return false;
+        }
+        self.dialog_focus_repair = self.dialog_focus.take();
+        println!(
+            "dropterm: plugins: dialog closed at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        true
     }
 
     /// The palette's dismissal — the pick's first act, the Esc/scrim/
@@ -5055,6 +5227,11 @@ impl Shell {
                             }
                         }
                         self.status_scripts.note_sync(segments);
+                        // An interpreter (re)load is a dialog's death
+                        // sentence (dialog-slot: the script died with
+                        // its interpreter) — the next drain closes it
+                        // silently, nothing to emit to.
+                        self.close_dialog(cx);
                         cx.notify();
                     }
                 }
@@ -5076,13 +5253,13 @@ impl Shell {
                     self.status_scripts.apply_reply(token, stale, values);
                     cx.notify();
                 }
-                dropterm::core::lua_host::HostEvent::OpenDialog { .. } => {
-                    // DS2 (dialog-slot) mounts the modal here; until
-                    // then the validated spec lands inert — the
-                    // channel carried it, nothing shows.
+                dropterm::core::lua_host::HostEvent::OpenDialog { spec } => {
+                    self.pending_dialog = Some(spec);
+                    cx.notify();
                 }
                 dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
                     self.tab_titles.note_provider(present);
+                    self.close_dialog(cx);
                 }
                 dropterm::core::lua_host::HostEvent::CommandsSync { commands } => {
                     if commands != self.script_commands {
@@ -5095,6 +5272,7 @@ impl Shell {
                             self.boot.elapsed().as_millis()
                         );
                         self.script_commands = commands;
+                        self.close_dialog(cx);
                         cx.notify();
                     }
                 }
@@ -5839,6 +6017,7 @@ impl Shell {
 
 impl gpui::Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.mount_pending_dialog(cx);
         self.frames += 1;
         let b = window.bounds();
         if self.last_bounds.as_ref() != Some(&b) {
@@ -5950,20 +6129,19 @@ impl gpui::Render for Shell {
         // dangles the same way a departed rename input's does — the
         // keyboard returns to the active pane, the slot dropping once
         // anything else holds it.
-        if let Some(departed) = self.palette_focus_repair.take()
-            && departed.is_focused(window)
-        {
-            if let Some(pane) = self.active_pane() {
-                pane.read(cx).focus_handle().focus(window, cx);
-            }
-            // Keep watching until the repair lands (anything else
-            // holding the keyboard needs no repair).
-            if departed.is_focused(window) {
-                self.palette_focus_repair = Some(departed);
-            }
-        }
+        let pane = self.active_pane();
+        let Self {
+            palette_focus_repair,
+            dialog_focus_repair,
+            ..
+        } = self;
+        Self::repair_modal_focus(palette_focus_repair, pane.as_ref(), window, cx);
+        Self::repair_modal_focus(dialog_focus_repair, pane.as_ref(), window, cx);
         let pending = self.pending_close;
         let mut band = self.sliding_band(cx).into_any_element();
+        if self.dialog.is_some() {
+            band = self.dialog_overlay(band);
+        }
         if self.palette.is_some() {
             band = self.palette_overlay(band);
         } else if self.images_open {
@@ -5996,6 +6174,24 @@ impl Shell {
             .relative()
             .child(band.into_any_element())
             .child(palette.clone())
+            .into_any_element()
+    }
+
+    /// Composes the open dialog over the band (dialog-slot): the
+    /// palette's own shape — the band beneath, the dialog entity
+    /// above it whole (its render is the full-surface scrim and the
+    /// top-centered panel; its occlusion keeps the panel's presses
+    /// off the scrim). In-window chrome, identical in layer-shell
+    /// and plain-window modes.
+    fn dialog_overlay(&self, band: impl IntoElement) -> gpui::AnyElement {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return band.into_any_element();
+        };
+        div()
+            .size_full()
+            .relative()
+            .child(band.into_any_element())
+            .child(dialog.clone())
             .into_any_element()
     }
 
@@ -6627,6 +6823,7 @@ pub(crate) fn boot(
     cx.bind_keys([
         gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
         gpui::KeyBinding::new("escape", DismissPalette, Some("palette")),
+        gpui::KeyBinding::new("escape", DismissDialog, Some("dialog")),
         gpui::KeyBinding::new("escape", DismissSettings, Some("settings-window")),
         gpui::KeyBinding::new("escape", tab_bar::CancelTabRename, Some("tab-rename")),
     ]);

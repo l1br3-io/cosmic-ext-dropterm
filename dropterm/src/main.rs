@@ -25,6 +25,7 @@
 mod app_shell;
 mod context_menu;
 mod dbus;
+mod dialog_slot;
 mod executor;
 mod fonts;
 mod images_panel;
