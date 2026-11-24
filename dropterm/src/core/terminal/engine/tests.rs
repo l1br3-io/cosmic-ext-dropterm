@@ -114,6 +114,44 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
 }
 
 #[test]
+fn env_names_are_spawn_truth_never_rewritten_by_set_config() {
+    // The env tier's name set (suggest-depth spec, LG4): copied
+    // once at construction — the `spawn_path` contract — so a
+    // mid-run config pass (a fresh pane_options over a changed
+    // environment) cannot repaint what the tab spawned with.
+    use alacritty_terminal::tty::Shell as PtyShell;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut options = isolated_options();
+    options.spawn_env_names = Arc::from(vec!["SPAWN_TRUTH_NAME".to_string()]);
+    let mut terminal = Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &options,
+        &Colors::default(),
+    )
+    .expect("spawn the spawn-truth test terminal");
+
+    let mut rewritten = isolated_options();
+    rewritten.spawn_env_names = Arc::from(vec!["LATER_NAME".to_string()]);
+    terminal.set_config(&rewritten, &Colors::default());
+
+    assert_eq!(
+        terminal.spawn_env_names.as_ref(),
+        ["SPAWN_TRUTH_NAME".to_string()].as_slice(),
+        "set_config never rewrites spawn truth"
+    );
+    terminal.input_no_scroll(&b"exit\r"[..]);
+}
+
+#[test]
 fn an_empty_osc_title_report_arrives_as_a_bare_title_event() {
     // The delivery half of the empty-report clear: OSC 0/2 with
     // an empty payload — a TUI's only way to retract a title it

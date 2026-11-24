@@ -69,6 +69,11 @@ pub enum SuggestionSource {
     /// argv, scrubbed env, 5s kill, stale-while-revalidate — and
     /// served to the model as one more pure input.
     Generator,
+    /// The spawn-time environment-variable names (suggest-depth
+    /// spec, LG4): a `$`-rooted fragment completes against them —
+    /// names only, values never read — local-machine knowledge
+    /// riding the shared spawn allowlist.
+    Env,
 }
 
 /// How much of the showing suffix an accept key writes (autosuggest
@@ -261,6 +266,12 @@ pub(crate) struct Observation<'a> {
     /// rung from the ladder — exact and prefix rows stay, recency
     /// and coalesce order untouched.
     pub(crate) menu_fuzzy: bool,
+    /// The spawn-time environment-variable names (suggest-depth
+    /// spec, LG4): sorted, spawn-truth, engine-borrowed — names
+    /// only, values never read. A `$`-rooted fragment completes
+    /// against them; the shared spawn gate keeps them silent on a
+    /// tab spawned as ssh (the wrong machine's env).
+    pub(crate) env_names: &'a [String],
 }
 
 /// The engine-owned autosuggest state (autosuggest spec): the adopted
@@ -581,7 +592,121 @@ fn source_rank(source: SuggestionSource) -> usize {
         SuggestionSource::Specs => 2,
         SuggestionSource::Catalog => 3,
         SuggestionSource::Generator => 4,
+        SuggestionSource::Env => 5,
     }
+}
+
+/// A `$`-rooted trailing token's env-var fragment (suggest-depth
+/// spec, LG4): the name query the token carries — `$HO` → `HO`,
+/// `${HO` → `HO` — with the token's own bracket form kept, so the
+/// completion closes what the user opened. `None` is no env-var
+/// context (any other token shape).
+struct EnvFragment<'a> {
+    braced: bool,
+    query: &'a str,
+}
+
+/// Carves the env-var fragment, if the token is `$`-rooted.
+fn env_fragment(token: &str) -> Option<EnvFragment<'_>> {
+    let rest = token.strip_prefix('$')?;
+    if let Some(name) = rest.strip_prefix('{') {
+        Some(EnvFragment {
+            braced: true,
+            query: name,
+        })
+    } else {
+        Some(EnvFragment {
+            braced: false,
+            query: rest,
+        })
+    }
+}
+
+/// The suffix completing a name from its fragment: `$HO` → `ME`
+/// (the plain form), `${HO` → `ME}` (the braced form closes itself).
+fn env_suffix(name: &str, fragment: &EnvFragment<'_>) -> String {
+    let mut suffix = name[fragment.query.len()..].to_string();
+    if fragment.braced {
+        suffix.push('}');
+    }
+    suffix
+}
+
+/// The env-var provider's candidate function (suggest-depth spec,
+/// LG4): the first name strictly extending the fragment's query —
+/// the ghost's single choice, in the fragment's own bracket form
+/// (`$HO` → `ME`, `${HO` → `ME}`). The ghost's no-information floor:
+/// a bare `$` or `${` carries no query, so it stays silent. Names
+/// are `[A-Za-z0-9_]`-shaped, so no escape rule applies. Silent on
+/// a tab spawned as ssh (the wrong machine's env).
+fn env_candidate(typed: &str, obs: &Observation<'_>) -> Option<String> {
+    if !obs.paths_eligible {
+        return None;
+    }
+    let fragment = env_fragment(trailing_token(typed))?;
+    if fragment.query.is_empty() {
+        return None;
+    }
+    let name = obs
+        .env_names
+        .iter()
+        .find(|name| name.starts_with(fragment.query) && name.len() > fragment.query.len())?;
+    Some(env_suffix(name, &fragment))
+}
+
+/// The env-var provider's whole set (suggest-depth spec, LG4): the
+/// ladder over the fragment's query — exact, ci, prefix, then fuzzy
+/// — each row's label carrying the fragment's own bracket form and
+/// its suffix the append-only completion (the honest-write rule: a
+/// row that does not cs-extend the query carries no suffix).
+fn env_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
+    if !obs.paths_eligible {
+        return Vec::new();
+    }
+    let Some(fragment) = env_fragment(trailing_token(typed)) else {
+        return Vec::new();
+    };
+    let staged_row = |name: &String, rung: MatchLadder, score: Option<i64>| {
+        let label = if fragment.braced {
+            format!("${{{name}}}")
+        } else {
+            format!("${name}")
+        };
+        let suffix = name
+            .strip_prefix(fragment.query)
+            .map(|rest| {
+                let mut completion = rest.to_string();
+                if fragment.braced {
+                    completion.push('}');
+                }
+                completion
+            })
+            .unwrap_or_default();
+        (
+            MenuCandidate {
+                label,
+                suffix,
+                description: None,
+                source: SuggestionSource::Env,
+            },
+            rung,
+            score,
+        )
+    };
+    let mut staged: Vec<(MenuCandidate, MatchLadder, Option<i64>)> = Vec::new();
+    for name in obs.env_names {
+        match exact_rung(fragment.query, name) {
+            Some(rung) => staged.push(staged_row(name, rung, None)),
+            None => {
+                if obs.menu_fuzzy
+                    && let Some(score) = fuzzy_score(name, fragment.query)
+                {
+                    staged.push(staged_row(name, MatchLadder::Fuzzy, Some(score)));
+                }
+            }
+        }
+    }
+    ladder_order(staged)
 }
 
 /// One rung of the menu's match ladder (suggest-depth spec, LG1 /
@@ -1663,6 +1788,7 @@ fn provider_candidate(
         SuggestionSource::Specs => specs_candidate(typed, obs),
         SuggestionSource::Catalog => catalog_candidate(typed, obs),
         SuggestionSource::Generator => generator_candidate(typed, obs),
+        SuggestionSource::Env => env_candidate(typed, obs),
     }
 }
 
@@ -1682,6 +1808,7 @@ fn merged_candidate(
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
         SuggestionSource::Generator,
+        SuggestionSource::Env,
     ];
     providers.sort_by_key(|&source| source_rank(source));
     providers.into_iter().find_map(|source| {
@@ -1754,6 +1881,7 @@ pub(crate) fn candidates(
         SuggestionSource::Specs,
         SuggestionSource::Catalog,
         SuggestionSource::Generator,
+        SuggestionSource::Env,
     ];
     providers.sort_by_key(|&source| menu_source_rank(source));
     providers
@@ -1779,10 +1907,11 @@ pub(crate) fn candidates(
 fn menu_source_rank(source: SuggestionSource) -> usize {
     match source {
         SuggestionSource::Path => 0,
-        SuggestionSource::Specs => 1,
-        SuggestionSource::Generator => 2,
-        SuggestionSource::History => 3,
-        SuggestionSource::Catalog => 4,
+        SuggestionSource::Env => 1,
+        SuggestionSource::Specs => 2,
+        SuggestionSource::Generator => 3,
+        SuggestionSource::History => 4,
+        SuggestionSource::Catalog => 5,
     }
 }
 
@@ -1810,6 +1939,7 @@ fn source_candidates(
         SuggestionSource::Specs => specs_candidates(typed, obs),
         SuggestionSource::Catalog => catalog_candidates(typed, obs),
         SuggestionSource::Generator => generator_candidates(typed, obs),
+        SuggestionSource::Env => env_candidates(typed, obs),
     }
 }
 

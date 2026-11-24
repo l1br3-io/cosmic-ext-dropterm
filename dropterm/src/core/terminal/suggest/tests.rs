@@ -48,6 +48,9 @@ fn obs() -> Observation<'static> {
         // The fuzzy rung's clear case (suggest-depth spec): on, the
         // full ladder.
         menu_fuzzy: true,
+        // The env tier's empty default: no names, a silent tier —
+        // every pre-existing test rides today bit-for-bit.
+        env_names: &[],
     }
 }
 
@@ -736,6 +739,7 @@ fn source_rank_pins_the_ruled_priority() {
     assert_eq!(source_rank(SuggestionSource::Specs), 2);
     assert_eq!(source_rank(SuggestionSource::Catalog), 3);
     assert_eq!(source_rank(SuggestionSource::Generator), 4);
+    assert_eq!(source_rank(SuggestionSource::Env), 5);
     for pair in ruled_order.windows(2) {
         assert!(
             source_rank(pair[0]) < source_rank(pair[1]),
@@ -753,10 +757,11 @@ fn menu_source_rank_pins_the_scoped_first_order() {
     // context). The ghost's `source_rank` stays locked
     // history-first; only the list leads with the keyword's scope.
     assert_eq!(menu_source_rank(SuggestionSource::Path), 0);
-    assert_eq!(menu_source_rank(SuggestionSource::Specs), 1);
-    assert_eq!(menu_source_rank(SuggestionSource::Generator), 2);
-    assert_eq!(menu_source_rank(SuggestionSource::History), 3);
-    assert_eq!(menu_source_rank(SuggestionSource::Catalog), 4);
+    assert_eq!(menu_source_rank(SuggestionSource::Env), 1);
+    assert_eq!(menu_source_rank(SuggestionSource::Specs), 2);
+    assert_eq!(menu_source_rank(SuggestionSource::Generator), 3);
+    assert_eq!(menu_source_rank(SuggestionSource::History), 4);
+    assert_eq!(menu_source_rank(SuggestionSource::Catalog), 5);
     // The two orders are genuinely distinct seams: history is first
     // in the ghost's table and demoted below the scoped tier in the
     // menu's alone — the amendment would silently undo itself if
@@ -2830,6 +2835,100 @@ fn fuzzy_rows_never_fill_or_insert_through_tab() {
         menu.press(MenuKey::Tab, "lk"),
         MenuOutcome::Noop,
         "no fuzzy row ever fills through Tab"
+    );
+}
+
+// --- the env-var tier (suggest-depth, SP-D5) ---
+
+/// A tiny spawn-truth name set for the env tier's pins.
+static ENV_NAMES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    vec![
+        "HOME".to_string(),
+        "HOSTNAME".to_string(),
+        "PATH".to_string(),
+    ]
+});
+
+fn env_obs(before_cursor: &'static str, column: usize) -> Observation<'static> {
+    Observation {
+        before_cursor,
+        cursor_column: column,
+        env_names: &ENV_NAMES,
+        ..obs()
+    }
+}
+
+#[test]
+fn env_fragments_complete_at_the_argument_position() {
+    let suggest = adopted();
+    let o = env_obs("$ echo $HO", 10);
+    let mut ghost = adopted();
+    let showing = step(&o, &mut ghost).expect("the env tier answers");
+    assert_eq!(showing.suffix, "ME", "$HO ghosts to the plain $HOME form");
+    let rows = candidates("echo $HO", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Env)
+        .map(|row| (row.label, row.suffix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("$HOME".to_string(), "ME".to_string()),
+            ("$HOSTNAME".to_string(), "STNAME".to_string()),
+        ],
+        "the ladder over the names, each row carrying its append-only suffix"
+    );
+}
+
+#[test]
+fn env_fragments_complete_at_the_command_position() {
+    let suggest = adopted();
+    let o = env_obs("$ $HO", 5);
+    let rows = candidates("$HO", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Env)
+        .map(|row| row.label)
+        .collect::<Vec<_>>();
+    assert_eq!(rows, vec!["$HOME".to_string(), "$HOSTNAME".to_string()]);
+}
+
+#[test]
+fn the_braced_fragment_completes_the_closed_name_form() {
+    let suggest = adopted();
+    let o = env_obs("$ echo ${HO", 11);
+    let mut ghost = adopted();
+    let showing = step(&o, &mut ghost).expect("the env tier answers");
+    assert_eq!(
+        showing.suffix, "ME}",
+        "${{HO}} ghosts to the closed ${{HOME}} form"
+    );
+    let rows = candidates("echo ${HO", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Env)
+        .map(|row| (row.label, row.suffix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("${HOME}".to_string(), "ME}".to_string()),
+            ("${HOSTNAME}".to_string(), "STNAME}".to_string()),
+        ],
+        "the braced form closes itself — the ${{name}} replacement, append-only"
+    );
+}
+
+#[test]
+fn env_rows_stay_silent_over_ssh() {
+    let suggest = adopted();
+    let o = Observation {
+        paths_eligible: false,
+        ..env_obs("$ echo $HO", 10)
+    };
+    assert!(
+        candidates("echo $HO", &suggest, &o)
+            .into_iter()
+            .all(|row| row.source != SuggestionSource::Env),
+        "the wrong machine's env is silence (the shared spawn gate)"
     );
 }
 

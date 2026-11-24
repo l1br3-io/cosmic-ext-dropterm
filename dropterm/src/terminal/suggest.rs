@@ -280,6 +280,16 @@ pub(crate) fn pane_options(
         autosuggestions_specs_loading: specs_table.is_none(),
         spawn_home: std::env::var("HOME").ok(),
         spawn_path: std::env::var("PATH").ok(),
+        // The env-var tier's name set (suggest-depth spec, LG4):
+        // the pty exec's env keys, sorted and deduped — names only,
+        // values never read. Spawn truth: the engine copies it once
+        // at construction and never re-reads it.
+        spawn_env_names: {
+            let mut names: Vec<String> = std::env::vars().map(|(name, _)| name).collect();
+            names.sort_unstable();
+            names.dedup();
+            Arc::from(names)
+        },
         ..TerminalOptions::default()
     }
 }

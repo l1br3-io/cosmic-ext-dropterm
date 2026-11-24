@@ -196,6 +196,12 @@ pub struct TerminalOptions {
     /// (suggest-depth spec, OQ-5): engine-default `true`; a flip
     /// applies at the next collection.
     pub autosuggestions_menu_fuzzy: bool,
+    /// The spawn-time environment-variable names (suggest-depth
+    /// spec, LG4): the pty exec's env keys, sorted and deduped at
+    /// the options build — names only, values never read. Spawn
+    /// truth, never rewritten by `set_config` (the `spawn_path`
+    /// contract).
+    pub spawn_env_names: Arc<[String]>,
 }
 
 impl Default for TerminalOptions {
@@ -225,6 +231,7 @@ impl Default for TerminalOptions {
             autosuggestions_history_context: true,
             history_state_path: None,
             autosuggestions_menu_fuzzy: true,
+            spawn_env_names: Arc::from(Vec::new()),
         }
     }
 }
@@ -621,6 +628,10 @@ pub struct Terminal {
     /// (suggest-depth spec, OQ-5) — the resolved options flag,
     /// re-read at every `set_config`.
     autosuggestions_menu_fuzzy: bool,
+    /// The spawn-time environment-variable names (suggest-depth
+    /// spec, LG4) — spawn truth, fixed at construction, never
+    /// rewritten by `set_config`.
+    spawn_env_names: Arc<[String]>,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -1601,6 +1612,7 @@ impl Terminal {
             autosuggestions_history_context: options.autosuggestions_history_context,
             history_state_path: history_state_path.clone(),
             autosuggestions_menu_fuzzy: options.autosuggestions_menu_fuzzy,
+            spawn_env_names: options.spawn_env_names.clone(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -2847,6 +2859,7 @@ impl Terminal {
             working_cwd: working_directory.as_deref().and_then(Path::to_str),
             history_context: self.autosuggestions_history_context,
             menu_fuzzy: self.autosuggestions_menu_fuzzy,
+            env_names: &self.spawn_env_names,
         };
         let mut rows = suggest::candidates(typed, &self.suggest, &observation);
         // The loading row (async-completions): while the completion
@@ -3532,6 +3545,7 @@ impl Terminal {
                         working_cwd: working_directory.as_deref().and_then(Path::to_str),
                         history_context: self.autosuggestions_history_context,
                         menu_fuzzy: self.autosuggestions_menu_fuzzy,
+                        env_names: &self.spawn_env_names,
                     };
                     suggest::step(&observation, &mut self.suggest);
                     // The store's write side (suggest-depth spec,
