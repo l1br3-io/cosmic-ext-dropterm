@@ -116,7 +116,11 @@ impl Section {
                 ConfigKey::StatusBarShowProgramStatus,
                 ConfigKey::StatusBarShowScrollback,
             ],
-            Section::Dropdown => &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled],
+            Section::Dropdown => &[
+                ConfigKey::HideOnFocusLoss,
+                ConfigKey::SettingsCoexist,
+                ConfigKey::SlideAnimationEnabled,
+            ],
             Section::Terminal => &[
                 ConfigKey::Shell,
                 ConfigKey::Args,
@@ -161,6 +165,12 @@ pub enum ConfigKey {
     FontSize,
     Opacity,
     HideOnFocusLoss,
+    /// The exclusive pair's sever flag (settings-window SW2–SW4, the
+    /// coexist setting): with it on, the Settings window and the
+    /// drop-down ignore each other — no hide at open, no supersede at
+    /// show, no return at close. Default `false` keeps the shipped
+    /// pairing.
+    SettingsCoexist,
     SessionPersistenceEnabled,
     SlideAnimationEnabled,
     BellNotificationEnabled,
@@ -423,6 +433,7 @@ impl ConfigKey {
             ConfigKey::FontSize => "font_size",
             ConfigKey::Opacity => "opacity",
             ConfigKey::HideOnFocusLoss => "hide_on_focus_loss",
+            ConfigKey::SettingsCoexist => "settings_coexist",
             ConfigKey::SessionPersistenceEnabled => "session_persistence_enabled",
             ConfigKey::SlideAnimationEnabled => "slide_animation_enabled",
             ConfigKey::BellNotificationEnabled => "bell_notification_enabled",
@@ -492,6 +503,11 @@ pub enum PlannedWrite {
     FontSize(u16),
     Opacity(u8),
     HideOnFocusLoss(bool),
+    /// The coexist flip (settings-window SW2–SW4): severs the
+    /// exclusive pair — see [`ConfigKey::SettingsCoexist`]. The
+    /// open's hide, the show's supersede, and the close's return all
+    /// read the echoed flag, so the flip lands at the next trigger.
+    SettingsCoexist(bool),
     SessionPersistenceEnabled(bool),
     SlideAnimationEnabled(bool),
     BellNotificationEnabled(bool),
@@ -593,6 +609,7 @@ impl PlannedWrite {
             PlannedWrite::FontSize(_) => ConfigKey::FontSize,
             PlannedWrite::Opacity(_) => ConfigKey::Opacity,
             PlannedWrite::HideOnFocusLoss(_) => ConfigKey::HideOnFocusLoss,
+            PlannedWrite::SettingsCoexist(_) => ConfigKey::SettingsCoexist,
             PlannedWrite::SessionPersistenceEnabled(_) => ConfigKey::SessionPersistenceEnabled,
             PlannedWrite::SlideAnimationEnabled(_) => ConfigKey::SlideAnimationEnabled,
             PlannedWrite::BellNotificationEnabled(_) => ConfigKey::BellNotificationEnabled,
@@ -698,6 +715,7 @@ impl PlannedWrite {
             PlannedWrite::FontSize(value) => section.font_size = *value,
             PlannedWrite::Opacity(value) => section.opacity = *value,
             PlannedWrite::HideOnFocusLoss(value) => section.hide_on_focus_loss = *value,
+            PlannedWrite::SettingsCoexist(value) => section.settings_coexist = *value,
             PlannedWrite::SessionPersistenceEnabled(value) => {
                 section.session_persistence_enabled = *value;
             }
@@ -1072,6 +1090,13 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::DefaultCwd => ApplyTiming::NewTab,
         ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
+        // The coexist flag rides the trigger-timing group too
+        // (settings-window SW2–SW4): the three gates (the open's
+        // hide, the show's supersede, the close's return) read the
+        // echoed flag at their own trigger, so a mid-session flip
+        // governs the next open, show, or close — a pair standing
+        // right now keeps its current arrangement.
+        | ConfigKey::SettingsCoexist
         | ConfigKey::BellNotificationEnabled
         | ConfigKey::CommandFinishNotificationEnabled
         | ConfigKey::CommandFinishNotificationAfterSecs
@@ -2479,6 +2504,7 @@ pub fn font_pick_write(families: &[String], stored: &str, index: usize) -> Optio
 pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite> {
     match key {
         ConfigKey::HideOnFocusLoss => Some(PlannedWrite::HideOnFocusLoss(checked)),
+        ConfigKey::SettingsCoexist => Some(PlannedWrite::SettingsCoexist(checked)),
         ConfigKey::SessionPersistenceEnabled => {
             Some(PlannedWrite::SessionPersistenceEnabled(checked))
         }
@@ -2554,6 +2580,7 @@ impl ConfigKey {
             ConfigKey::FontSize => "Font size",
             ConfigKey::Opacity => "Opacity",
             ConfigKey::HideOnFocusLoss => "Hide on focus loss",
+            ConfigKey::SettingsCoexist => "Keep Settings open with the terminal",
             ConfigKey::SessionPersistenceEnabled => "Session persistence",
             ConfigKey::SlideAnimationEnabled => "Slide animation",
             ConfigKey::BellNotificationEnabled => "Bell notifications",

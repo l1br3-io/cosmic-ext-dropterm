@@ -2,7 +2,7 @@
 
 Every DropTerm setting is editable in the Settings window, and every edit applies the moment you commit it - there is no Apply button. The one exception is the Profiles page's edit form, a transactional draft with its own Save and Cancel.
 
-While the window is open the drop-down terminal hides - the two are an exclusive pair - so the terminal is not visible while a setting is changed. Edits still apply to the running tabs immediately; the result is seen on return. Closing the window (any route below) brings the drop-down back.
+While the window is open the drop-down terminal hides - the two are an exclusive pair - so the terminal is not visible while a setting is changed. Edits still apply to the running tabs immediately; the result is seen on return. Closing the window (any route below) brings the drop-down back. The pair has an opt-out: [`settings_coexist`](configuration.md) severs it, so the window and the drop-down stand together - open Settings without hiding the drop-down, summon the drop-down without closing the window, and close the window without the drop-down returning. To watch an edit live (the opacity slider with the terminal on screen), pair it with `hide_on_focus_loss: false`, since focusing the window otherwise retracts the drop-down on its own rule.
 
 ## Opening Settings
 
@@ -13,7 +13,7 @@ Four ways in:
 - click the gear button at the right end of the tab strip,
 - pick a `Settings: …` row in the command palette (nine, one per page, [command palette](command-palette.md)).
 
-Every trigger opens exactly one window at the requested page (Appearance when none is named) and hides the drop-down in both `hide_on_focus_loss` modes. A trigger while the window is open switches the page and asks for focus instead of opening a second window. Summoning the terminal while the window is open - the summon key, the tray toggle, any forwarded verb - closes the window first and queues no return: the show that closed it is the show.
+Every trigger opens exactly one window at the requested page (Appearance when none is named) and hides the drop-down in both `hide_on_focus_loss` modes - unless `settings_coexist` is on, which skips the hide. A trigger while the window is open switches the page and asks for focus instead of opening a second window. Summoning the terminal while the window is open - the summon key, the tray toggle, any forwarded verb - closes the window first and queues no return: the show that closed it is the show. With `settings_coexist` on the summon closes nothing: both windows stand together.
 
 ## The sidebar
 
@@ -21,7 +21,7 @@ The window's left column lists nine pages under two headers, the open page marke
 
 | Header | Pages |
 |---|---|
-| **Terminal** | Appearance (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown), Window (height, width, alignment, edge), Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, slide animation), Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images), Advanced (`respect_panel`, `layer`, `keyboard_mode`). |
+| **Terminal** | Appearance (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown), Window (height, width, alignment, edge), Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, keep Settings open with the terminal, slide animation), Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images), Advanced (`respect_panel`, `layer`, `keyboard_mode`). |
 | **Profiles & keys** | Profiles (the profile manager - its own section below), Keybindings (the shortcut editor - its own section below). |
 
 Every exposed control appears exactly once across the nine pages - none lost, none duplicated. A section page renders its title over one bordered group of its rows; nothing folds away.

@@ -164,12 +164,12 @@ fn a_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
-fn the_exactly_once_count_is_54() {
+fn the_exactly_once_count_is_55() {
     // The settings window's count (settings-window SW6): the two
-    // drawer keys retired, the section-hosted map sits at 54 — one
+    // drawer keys retired, the section-hosted map sits at 55 — one
     // planned-write variant per exposed key, each in exactly one
     // section.
-    assert_eq!(section_keys().len(), 54);
+    assert_eq!(section_keys().len(), 55);
 }
 
 #[test]
@@ -186,6 +186,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::FontSize(14),
         PlannedWrite::Opacity(100),
         PlannedWrite::HideOnFocusLoss(true),
+        PlannedWrite::SettingsCoexist(false),
         PlannedWrite::SessionPersistenceEnabled(true),
         PlannedWrite::SlideAnimationEnabled(true),
         PlannedWrite::BellNotificationEnabled(true),
@@ -262,6 +263,7 @@ fn key_names_match_the_config_file_fields() {
         (ConfigKey::FontSize, "font_size"),
         (ConfigKey::Opacity, "opacity"),
         (ConfigKey::HideOnFocusLoss, "hide_on_focus_loss"),
+        (ConfigKey::SettingsCoexist, "settings_coexist"),
         (
             ConfigKey::SessionPersistenceEnabled,
             "session_persistence_enabled",
@@ -953,11 +955,16 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
 #[test]
 fn the_dropdown_card_hosts_the_dropdown_mechanics() {
     // The Dropdown page: the drop-down's own mechanics — the
-    // focus-loss hide and the slide. The drawer's click-close row
-    // retired with the drawer (settings-window SW6).
+    // focus-loss hide, the Settings window's coexist sever (the
+    // exclusive pair's opt-out), and the slide. The drawer's
+    // click-close row retired with the drawer (settings-window SW6).
     assert_eq!(
         Section::Dropdown.keys(),
-        &[ConfigKey::HideOnFocusLoss, ConfigKey::SlideAnimationEnabled]
+        &[
+            ConfigKey::HideOnFocusLoss,
+            ConfigKey::SettingsCoexist,
+            ConfigKey::SlideAnimationEnabled
+        ]
     );
 }
 

@@ -206,6 +206,12 @@ pub(crate) struct SettingsState {
     pub(crate) page: SettingsPage,
     pub(crate) buffer: SettingsBuffer,
     pub(crate) refreshing: bool,
+    /// Whether this open hid the drop-down (the coexist rule,
+    /// settings-window SW2–SW4): recorded at open — the config can
+    /// flip mid-open through the window's own toggle, so the close
+    /// must consult what the open did, not what the file now says.
+    /// `false` (a coexist open) queues no return at close.
+    pub(crate) hid_terminal: bool,
     /// Fields awaiting a blur-revert (the audit's F1): an invalid
     /// blur'd edit's stored text. The input subscriber has no
     /// `Window`, so the reseed rides the render path's echo pass —
@@ -241,6 +247,7 @@ impl Default for SettingsState {
             page: SettingsPage::Appearance,
             buffer: SettingsBuffer::default(),
             refreshing: false,
+            hid_terminal: false,
             pending_reverts: Vec::new(),
             config_epoch: 0,
             profile_selection: None,
@@ -854,6 +861,7 @@ impl SettingsWindow {
 fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
     match key {
         ConfigKey::HideOnFocusLoss => config.hide_on_focus_loss,
+        ConfigKey::SettingsCoexist => config.settings_coexist,
         ConfigKey::SessionPersistenceEnabled => config.session_persistence_enabled,
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,

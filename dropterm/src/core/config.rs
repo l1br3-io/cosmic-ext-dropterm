@@ -312,6 +312,21 @@ pub struct DropTermConfig {
     /// gated), and the decision reads this key at request time, so a
     /// mid-session flip applies to the very next close.
     pub close_confirmation_enabled: bool,
+    /// Whether the Settings window and the drop-down run as
+    /// independent windows instead of the exclusive pair
+    /// (settings-window SW2–SW4). Defaults to `false` — the shipped
+    /// pairing: opening Settings explicitly hides the drop-down, a
+    /// summon supersedes the open Settings window, and a user close
+    /// returns the drop-down. `true` severs all three: Settings
+    /// opens over whatever the drop-down is doing, a summon leaves
+    /// the Settings window standing, and a close returns nothing (the
+    /// drop-down never left — the return fires only when the open
+    /// itself hid it). Watching an edit live (opacity, font size)
+    /// wants this paired with `hide_on_focus_loss: false`: with the
+    /// focus-loss hide on (the default), focusing the Settings window
+    /// still retracts the shown drop-down — that rule is its own key,
+    /// untouched here.
+    pub settings_coexist: bool,
     /// Whether the app follows the system light/dark mode or pins
     /// one. Defaults to `System`: no override is ever issued and
     /// system flips keep driving the app.
@@ -633,6 +648,7 @@ impl Default for DropTermConfig {
             command_finish_notification_after_secs: 5,
             new_tab_after_current: true,
             close_confirmation_enabled: true,
+            settings_coexist: false,
             theme_preference: ThemePreference::default(),
             profiles: Vec::new(),
             default_profile: None,
