@@ -437,3 +437,174 @@ fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
     assert_eq!(row.text, "▦ 3 images");
     assert!(!row.attention);
 }
+
+// --- the styled painter (styled-status-slot, task ST2) ---
+
+/// A palette over a fixed scheme: every ANSI word a distinct gray
+/// step, so a resolved run's color is identifiable by value.
+fn fixture_palette() -> ScriptPalette {
+    use alacritty_terminal::term::color::Colors;
+    use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+    let mut colors = Colors::default();
+    let mut set = |named: NamedColor, r: u8, g: u8, b: u8| {
+        colors[named] = Some(Rgb { r, g, b });
+    };
+    set(NamedColor::BrightBlue, 16, 16, 16); // "accent"
+    set(NamedColor::Foreground, 240, 240, 240); // "fg"'s scheme word
+    set(NamedColor::Red, 200, 40, 40);
+    set(NamedColor::Green, 40, 200, 40);
+    let fg = tab_bar::hsla(245, 245, 245);
+    ScriptPalette::resolve(&colors, fg)
+}
+
+#[test]
+fn the_palette_resolves_the_scheme_words_and_the_accent() {
+    let palette = fixture_palette();
+    assert_eq!(palette.color("red"), Some(tab_bar::hsla(200, 40, 40)));
+    assert_eq!(palette.color("green"), Some(tab_bar::hsla(40, 200, 40)));
+    assert_eq!(
+        palette.color("accent"),
+        Some(tab_bar::hsla(16, 16, 16)),
+        "the accent rides the scheme's BrightBlue (theme_gen's own mapping)"
+    );
+    assert_eq!(palette.color("fg"), Some(palette.fg));
+    assert_eq!(
+        palette.color("nope"),
+        None,
+        "a word outside the palette is unknown, not a fallback"
+    );
+}
+
+#[test]
+fn paint_script_segment_resolves_tokens_hex_glyph_and_alpha() {
+    use dropterm::core::slots::{SlotColor, SlotContent, Span};
+    use dropterm::core::status::ScriptSide;
+
+    let palette = fixture_palette();
+    let styled = SlotContent::Styled {
+        spans: vec![
+            Span {
+                text: "▼".to_owned(),
+                color: Some(SlotColor::Token("red".to_owned())),
+                icon: Some("↓".to_owned()),
+            },
+            Span {
+                text: " 1.2 MB/s".to_owned(),
+                color: Some(SlotColor::Hex("#1f9e7b".to_owned())),
+                icon: None,
+            },
+            Span {
+                text: " plain".to_owned(),
+                color: None,
+                icon: None,
+            },
+        ],
+    };
+
+    // Left side: full alpha, per-run colors resolved.
+    let runs = dropterm::core::status::script_runs(&styled);
+    let painted = paint_script_segment(&runs, ScriptSide::Left, &palette);
+    assert_eq!(painted.len(), 3, "one styled run per span, none dropped");
+    assert_eq!(painted[0].text, "↓ ▼", "the glyph prefix rides the run");
+    assert_eq!(painted[0].color, tab_bar::hsla(200, 40, 40), "token red");
+    assert_eq!(painted[1].text, " 1.2 MB/s");
+    assert_eq!(
+        painted[1].color,
+        tab_bar::hsla(0x1f, 0x9e, 0x7b),
+        "hex parses direct"
+    );
+    assert_eq!(painted[2].text, " plain");
+    assert_eq!(painted[2].color, palette.fg, "an uncolored span is fg");
+
+    // Right side: the band's dim alpha applies to every run.
+    let dimmed = paint_script_segment(&runs, ScriptSide::Right, &palette);
+    for run in &dimmed {
+        assert!(
+            (run.color.a - crate::status_bar::DIM_ALPHA).abs() < 1e-6,
+            "side alpha is the band's, applied to every run"
+        );
+    }
+    assert_eq!(dimmed[0].color.h, painted[0].color.h, "hue unchanged");
+
+    // An unknown token renders the span unstyled (fg) and never
+    // drops it.
+    let unknown = SlotContent::Styled {
+        spans: vec![
+            Span {
+                text: "a".to_owned(),
+                color: Some(SlotColor::Token("nope".to_owned())),
+                icon: None,
+            },
+            Span {
+                text: "b".to_owned(),
+                color: None,
+                icon: None,
+            },
+        ],
+    };
+    let painted = paint_script_segment(
+        &dropterm::core::status::script_runs(&unknown),
+        ScriptSide::Left,
+        &palette,
+    );
+    assert_eq!(painted.len(), 2, "no span drops for a color failure");
+    assert_eq!(
+        painted[0].color, palette.fg,
+        "unknown token renders unstyled"
+    );
+
+    // The string arm: one run, the row's own fg — today's paint.
+    let painted = paint_script_segment(
+        &dropterm::core::status::script_runs(&SlotContent::Text("git:1".to_owned())),
+        ScriptSide::Left,
+        &palette,
+    );
+    assert_eq!(painted.len(), 1);
+    assert_eq!(painted[0].text, "git:1");
+    assert_eq!(painted[0].color, palette.fg);
+}
+
+#[test]
+fn unknown_tokens_name_themselves_once_per_segment_and_reply() {
+    use dropterm::core::slots::{SlotColor, SlotContent, Span};
+    use dropterm::core::status::SegmentAnswer;
+
+    let answers = vec![
+        SegmentAnswer::Shown {
+            id: "net".to_owned(),
+            side: dropterm::core::status::ScriptSide::Left,
+            content: SlotContent::Styled {
+                spans: vec![
+                    Span {
+                        text: "a".to_owned(),
+                        color: Some(SlotColor::Token("nope".to_owned())),
+                        icon: None,
+                    },
+                    Span {
+                        text: "b".to_owned(),
+                        color: Some(SlotColor::Token("nope".to_owned())),
+                        icon: None,
+                    },
+                    Span {
+                        text: "c".to_owned(),
+                        color: Some(SlotColor::Token("nah".to_owned())),
+                        icon: None,
+                    },
+                ],
+            },
+        },
+        SegmentAnswer::Shown {
+            id: "git".to_owned(),
+            side: dropterm::core::status::ScriptSide::Right,
+            content: SlotContent::Text("fine".to_owned()),
+        },
+    ];
+    let lines = unknown_token_lines(&answers);
+    assert_eq!(
+        lines.len(),
+        2,
+        "one line per distinct unknown token per segment: {lines:?}"
+    );
+    assert!(lines[0].contains("net") && lines[0].contains("nope"));
+    assert!(lines[1].contains("net") && lines[1].contains("nah"));
+}

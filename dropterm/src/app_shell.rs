@@ -4956,7 +4956,12 @@ impl Shell {
         cx: &mut Context<Self>,
         pane_background: Option<alacritty_terminal::vte::ansi::Rgb>,
     ) -> status_bar::StatusBandView {
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
         let (strip, fg) = tab_bar::strip_pair(pane_background);
+        // The styled runs' palette (styled-status-slot): resolved
+        // beside the strip pair, same scheme, same render — one
+        // color source, no second theme path.
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
         let width = self
             .last_bounds
             .map_or(0.0, |bounds| bounds.size.width.as_f32());
@@ -4989,6 +4994,7 @@ impl Shell {
         };
         status_bar::StatusBandView::new(self.status.clone(), strip, fg)
             .font(self.band_font.clone())
+            .palette(palette)
             .show_border(self.config.status_bar_border)
             .at_bottom(self.inputs.geometry.edge == Edge::Top)
             .width(width)
@@ -5060,6 +5066,13 @@ impl Shell {
                     stale,
                     values,
                 } => {
+                    // The unknown color words name themselves once per
+                    // segment per reply (styled-status-slot): the
+                    // painter renders them unstyled, the drain says
+                    // so — one line each, the shape's log culture.
+                    for line in status_bar::unknown_token_lines(&values) {
+                        println!("{line}");
+                    }
                     self.status_scripts.apply_reply(token, stale, values);
                     cx.notify();
                 }

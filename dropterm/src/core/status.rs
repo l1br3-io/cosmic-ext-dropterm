@@ -17,7 +17,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::core::config::{Edge, StatusToggles, TabPosition};
-use crate::core::slots::SlotContent;
+use crate::core::slots::{SlotColor, SlotContent};
 
 /// The band's height in logical pixels — one notch below the tab
 /// strip's 32 px, for callers that reserve room for it outside the
@@ -1466,11 +1466,13 @@ pub struct DiscVm {
 /// One painted run of a laid script-segment row
 /// (styled-status-slot): the span's text with its glyph prefix
 /// already composed (the builtin `"{icon} {value}"` idiom — the
-/// icon string verbatim, the band's sigil shape). The painter
-/// mounts one child per run; ST2 adds the resolved colors.
+/// icon string verbatim, the band's sigil shape), and the span's
+/// color word riding whole — the painter resolves it (theme
+/// knowledge stays bin-side, the contract's own rule).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BandScriptRunVm {
     pub text: String,
+    pub color: Option<SlotColor>,
 }
 
 /// One laid script-segment row (status-segments spec) — the script
@@ -1522,9 +1524,14 @@ pub struct BandVm {
 /// nothing without (a glyph alone narrates a span with nothing to
 /// say). The icon string rides verbatim: it is a glyph string, not
 /// a name.
-fn script_runs(content: &SlotContent) -> Vec<BandScriptRunVm> {
+/// Public for the bin's painter: the bin composes a fixture's runs
+/// to pin the paint (styled-status-slot).
+pub fn script_runs(content: &SlotContent) -> Vec<BandScriptRunVm> {
     match content {
-        SlotContent::Text(text) => vec![BandScriptRunVm { text: text.clone() }],
+        SlotContent::Text(text) => vec![BandScriptRunVm {
+            text: text.clone(),
+            color: None,
+        }],
         SlotContent::Styled { spans } => spans
             .iter()
             .map(|span| BandScriptRunVm {
@@ -1532,6 +1539,7 @@ fn script_runs(content: &SlotContent) -> Vec<BandScriptRunVm> {
                     Some(icon) if !span.text.is_empty() => format!("{icon} {}", span.text),
                     _ => span.text.clone(),
                 },
+                color: span.color.clone(),
             })
             .collect(),
     }

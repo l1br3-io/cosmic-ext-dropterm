@@ -20,14 +20,227 @@
 //! config's resolved shell (no per-tab recorded shell on this
 //! frontend yet).
 
+use dropterm::core::slots::SlotColor;
 use dropterm::core::status::{
-    BAND_HEIGHT, BandVm, DIM_ALPHA, DISC_RING_WIDTH, DISC_SIZE, HALO_GAP, HOVER_ALPHA,
-    PasteRefusal, SEGMENT_FONT_SIZE, SELECTION_ALPHA, SEPARATOR_HEIGHT, SEPARATOR_WIDTH, SegmentId,
-    StatusSegments, band_vm, hover_segment, segment_at, selection_rects,
+    BAND_HEIGHT, BandScriptRunVm, BandVm, DIM_ALPHA, DISC_RING_WIDTH, DISC_SIZE, HALO_GAP,
+    HOVER_ALPHA, PasteRefusal, SEGMENT_FONT_SIZE, SELECTION_ALPHA, SEPARATOR_HEIGHT,
+    SEPARATOR_WIDTH, SegmentId, StatusSegments, band_vm, hover_segment, segment_at,
+    selection_rects,
 };
 
 use crate::tab_bar;
 use gpui::prelude::*;
+
+/// The styled runs' palette (styled-status-slot): the script-facing
+/// color words the band resolves — the scheme's ANSI words, `accent`
+/// riding the scheme's `BrightBlue` (`theme_gen`'s own accent mapping),
+/// and `fg` the pane-derived foreground the band already paints
+/// builtins with. One source, built once per render at the band's
+/// composition site; resolution never invents a second theme path.
+pub(crate) struct ScriptPalette {
+    /// The pane-derived foreground — the unstyled run's color.
+    pub fg: gpui::Hsla,
+    black: gpui::Hsla,
+    red: gpui::Hsla,
+    green: gpui::Hsla,
+    yellow: gpui::Hsla,
+    blue: gpui::Hsla,
+    magenta: gpui::Hsla,
+    cyan: gpui::Hsla,
+    white: gpui::Hsla,
+    bright_black: gpui::Hsla,
+    bright_red: gpui::Hsla,
+    bright_green: gpui::Hsla,
+    bright_yellow: gpui::Hsla,
+    bright_blue: gpui::Hsla,
+    bright_magenta: gpui::Hsla,
+    bright_cyan: gpui::Hsla,
+    bright_white: gpui::Hsla,
+}
+
+/// The palette's known words — the closed set the drain logs
+/// unknowns against. Additive: a new word joins here and in the
+/// docs row it rides.
+pub(crate) const SLOT_TOKENS: [&str; 18] = [
+    "accent",
+    "fg",
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright_black",
+    "bright_red",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_magenta",
+    "bright_cyan",
+    "bright_white",
+];
+
+impl ScriptPalette {
+    /// Resolve from the pane's effective scheme (the same `Colors`
+    /// the strip pair derives from) and the band's foreground. A
+    /// scheme slot standing empty resolves to the foreground — the
+    /// word is known, the scheme just has nothing for it.
+    pub fn resolve(colors: &alacritty_terminal::term::color::Colors, fg: gpui::Hsla) -> Self {
+        use alacritty_terminal::vte::ansi::NamedColor::{
+            Black, Blue, BrightBlack, BrightBlue, BrightCyan, BrightGreen, BrightMagenta,
+            BrightRed, BrightWhite, BrightYellow, Cyan, Green, Magenta, Red, White, Yellow,
+        };
+        let pick = |named: alacritty_terminal::vte::ansi::NamedColor| {
+            colors[named].map_or(fg, |rgb| tab_bar::hsla(rgb.r, rgb.g, rgb.b))
+        };
+        Self {
+            fg,
+            black: pick(Black),
+            red: pick(Red),
+            green: pick(Green),
+            yellow: pick(Yellow),
+            blue: pick(Blue),
+            magenta: pick(Magenta),
+            cyan: pick(Cyan),
+            white: pick(White),
+            bright_black: pick(BrightBlack),
+            bright_red: pick(BrightRed),
+            bright_green: pick(BrightGreen),
+            bright_yellow: pick(BrightYellow),
+            bright_blue: pick(BrightBlue),
+            bright_magenta: pick(BrightMagenta),
+            bright_cyan: pick(BrightCyan),
+            bright_white: pick(BrightWhite),
+        }
+    }
+
+    /// The palette's word → its color; an unknown word is `None`
+    /// (the caller renders the run unstyled).
+    pub fn color(&self, token: &str) -> Option<gpui::Hsla> {
+        let color = match token {
+            "accent" | "bright_blue" => self.bright_blue,
+            "fg" => self.fg,
+            "black" => self.black,
+            "red" => self.red,
+            "green" => self.green,
+            "yellow" => self.yellow,
+            "blue" => self.blue,
+            "magenta" => self.magenta,
+            "cyan" => self.cyan,
+            "white" => self.white,
+            "bright_black" => self.bright_black,
+            "bright_red" => self.bright_red,
+            "bright_green" => self.bright_green,
+            "bright_yellow" => self.bright_yellow,
+            "bright_magenta" => self.bright_magenta,
+            "bright_cyan" => self.bright_cyan,
+            "bright_white" => self.bright_white,
+            _ => return None,
+        };
+        Some(color)
+    }
+}
+
+/// One styled run the painter mounts: the run's composed text and
+/// its resolved color (styled-status-slot).
+pub(crate) struct StyledRun {
+    pub text: String,
+    pub color: gpui::Hsla,
+}
+
+/// Paint one script row's runs (styled-status-slot): the resolved
+/// color per run — an uncolored run is the row's fg, a token
+/// resolves through the palette, a hex parses direct, an unknown
+/// token renders unstyled (fg; the drain named it) — and the side's
+/// dim alpha applied to every run (the band's own rule, never the
+/// script's). No run ever drops for a color failure.
+pub(crate) fn paint_script_segment(
+    runs: &[BandScriptRunVm],
+    side: dropterm::core::status::ScriptSide,
+    palette: &ScriptPalette,
+) -> Vec<StyledRun> {
+    let dim = side == dropterm::core::status::ScriptSide::Right;
+    let shade = |color: gpui::Hsla| {
+        if dim {
+            gpui::Hsla {
+                a: DIM_ALPHA,
+                ..color
+            }
+        } else {
+            color
+        }
+    };
+    runs.iter()
+        .map(|run| {
+            let color = match run.color.as_ref() {
+                None => palette.fg,
+                Some(SlotColor::Token(token)) => palette.color(token).unwrap_or(palette.fg),
+                Some(SlotColor::Hex(hex)) => parse_hex(hex).unwrap_or(palette.fg),
+            };
+            StyledRun {
+                text: run.text.clone(),
+                color: shade(color),
+            }
+        })
+        .collect()
+}
+
+/// Parse the contract's `#rrggbb` form to the band's color. The
+/// port validated it; a hand-built bad literal falls back to
+/// unstyled at the paint (never a raise).
+fn parse_hex(hex: &str) -> Option<gpui::Hsla> {
+    let raw = hex.strip_prefix('#')?;
+    if raw.len() != 6 || !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channels = |range: std::ops::Range<usize>| u8::from_str_radix(&raw[range], 16).ok();
+    Some(tab_bar::hsla(
+        channels(0..2)?,
+        channels(2..4)?,
+        channels(4..6)?,
+    ))
+}
+
+/// The drain-side unknown-token lines (styled-status-slot): one per
+/// distinct unknown token per segment in one reply — the shape's
+/// one-log-line culture applied to color words. The drain prints
+/// them; the painter renders unstyled.
+pub(crate) fn unknown_token_lines(
+    answers: &[dropterm::core::status::SegmentAnswer],
+) -> Vec<String> {
+    use dropterm::core::slots::SlotContent;
+    use dropterm::core::status::SegmentAnswer;
+    let mut lines = Vec::new();
+    for answer in answers {
+        let SegmentAnswer::Shown {
+            id,
+            side: _,
+            content,
+        } = answer
+        else {
+            continue;
+        };
+        let SlotContent::Styled { spans } = content else {
+            continue;
+        };
+        let mut named = std::collections::HashSet::new();
+        for span in spans {
+            let Some(SlotColor::Token(token)) = span.color.as_ref() else {
+                continue;
+            };
+            if SLOT_TOKENS.contains(&token.as_str()) || !named.insert(token.clone()) {
+                continue;
+            }
+            lines.push(format!(
+                "dropterm: plugins: segment '{id}' colors with the unknown token \
+                 '{token}'; it renders unstyled"
+            ));
+        }
+    }
+    lines
+}
 
 /// One event the band's root surface reports to the shell's
 /// interaction machine, band-local coordinates and the press's
@@ -72,6 +285,9 @@ pub(crate) struct StatusBandView {
     /// luminance — `None` degrades the red seats to the foreground,
     /// the reference's monochrome floor.
     attention: Option<gpui::Hsla>,
+    /// The styled runs' palette (styled-status-slot) — the shell
+    /// resolves it beside the strip pair, same scheme, same render.
+    palette: ScriptPalette,
     /// The band's font — the terminal's own resolved family.
     font: gpui::Font,
     /// Whether the band renders its border hairline on its side
@@ -110,6 +326,10 @@ impl StatusBandView {
             segments,
             strip,
             fg,
+            palette: ScriptPalette::resolve(
+                &alacritty_terminal::term::color::Colors::default(),
+                fg,
+            ),
             attention: None,
             font: gpui::Font::default(),
             border: false,
@@ -125,6 +345,11 @@ impl StatusBandView {
 
     pub(crate) fn font(mut self, font: gpui::Font) -> Self {
         self.font = font;
+        self
+    }
+
+    pub(crate) fn palette(mut self, palette: ScriptPalette) -> Self {
+        self.palette = palette;
         self
     }
 
@@ -315,8 +540,9 @@ impl gpui::RenderOnce for StatusBandView {
         // like any row over their laid rects, but non-interactive in
         // v1 — the default cursor, no hover tint, no copy (the
         // interactions key on SegmentId and never see these). The
-        // row mounts one child per painted run (styled-status-slot):
-        // a string answer's single run paints exactly as before.
+        // painter resolves each run's color (styled-status-slot): a
+        // string answer's single run paints exactly as before — the
+        // row's fg — and the side's dim alpha rides every run.
         for row in &vm.script_rows {
             let mut text = gpui::div()
                 .absolute()
@@ -328,15 +554,14 @@ impl gpui::RenderOnce for StatusBandView {
                 .items_center()
                 .font(self.font.clone())
                 .text_size(gpui::px(SEGMENT_FONT_SIZE));
-            for run in &row.runs {
-                text = text.child(run.text.clone());
-            }
-            let color = if row.dimmed {
-                gpui::Hsla { a: DIM_ALPHA, ..fg }
+            let side = if row.dimmed {
+                dropterm::core::status::ScriptSide::Right
             } else {
-                fg
+                dropterm::core::status::ScriptSide::Left
             };
-            text = text.text_color(color);
+            for run in paint_script_segment(&row.runs, side, &self.palette) {
+                text = text.child(gpui::div().child(run.text).text_color(run.color));
+            }
             band = band.child(text);
         }
         // The separators: thin hairlines centered in the gaps.

@@ -1061,7 +1061,7 @@ fn ctx_for(word: &str) -> serde_json::Value {
 /// (the fit never sees styling, only painted text).
 #[test]
 fn script_seats_lay_painted_runs_from_the_typed_content() {
-    use crate::core::slots::{SlotContent, Span};
+    use crate::core::slots::{SlotColor, SlotContent, Span};
 
     // The string answer's seat: one run, the string's own measure —
     // the same-metrics pin.
@@ -1091,7 +1091,7 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
             spans: vec![
                 Span {
                     text: "▼".to_owned(),
-                    color: None,
+                    color: Some(SlotColor::Token("accent".to_owned())),
                     icon: None,
                 },
                 Span {
@@ -1114,6 +1114,13 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
         script_measure("▼") + script_measure(" 1.2 MB/s"),
         "the seat measures its painted runs"
     );
+    // The span's color word rides its run whole (the painter
+    // resolves it — the core stays theme-free).
+    assert_eq!(
+        vm.script_rows[0].runs[0].color,
+        Some(SlotColor::Token("accent".to_owned()))
+    );
+    assert_eq!(vm.script_rows[0].runs[1].color, None);
 
     // The glyph prefix rides the builtin idiom: `{icon} {value}`
     // when the span carries text, nothing when it does not (a glyph
