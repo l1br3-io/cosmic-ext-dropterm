@@ -319,6 +319,27 @@ impl PanelRail {
         }
     }
 
+    /// The press decision (panel-slot PS3): the row press's
+    /// slot-event, `None` when the view is not registered — a
+    /// reloaded-away view's press is the shell's one log line, the
+    /// registry the truth about who answers.
+    pub fn press_event(
+        &self,
+        view_id: &str,
+        row_id: &str,
+    ) -> Option<dropterm::core::slots::SlotEvent> {
+        let registered = self.views.iter().any(|view| view.id == view_id);
+        if !registered {
+            return None;
+        }
+        Some(dropterm::core::slots::SlotEvent {
+            surface: "panel".to_owned(),
+            slot: view_id.to_owned(),
+            element_id: row_id.to_owned(),
+            kind: "press".to_owned(),
+        })
+    }
+
     /// The laid sections, in registration order: only views standing
     /// in the registry, only sections with content, each row's runs
     /// composed and its press id resolved (the script-named `id`,
@@ -497,6 +518,35 @@ mod rail_tests {
         assert_eq!(laid[0].rows[0].0, "9", "the script-named id rides");
         assert_eq!(laid[0].rows[1].0, "1", "the positional index stands in");
         assert_eq!(laid[0].rows[0].1[0].text, "one");
+    }
+
+    /// The press routing: a registered view's row press yields the
+    /// exact slot-event payload; a reloaded-away view's press yields
+    /// nothing — the shell's one line.
+    #[test]
+    fn the_press_event_names_the_registered_view_and_drops_the_gone() {
+        let mut rail = PanelRail::default();
+        assert!(
+            rail.press_event("tasks", "0").is_none(),
+            "an unregistered view's press is None"
+        );
+        rail.note_views(vec![view("tasks")]);
+        let event = rail.press_event("tasks", "3").expect("registered");
+        assert_eq!(
+            event,
+            dropterm::core::slots::SlotEvent {
+                surface: "panel".to_owned(),
+                slot: "tasks".to_owned(),
+                element_id: "3".to_owned(),
+                kind: "press".to_owned(),
+            },
+            "the payload's four keys, exactly"
+        );
+        rail.note_views(vec![view("git")]);
+        assert!(
+            rail.press_event("tasks", "3").is_none(),
+            "the reload swept the seat — the press is the shell's line"
+        );
     }
 
     /// A vanished view's section sweeps at the sync; the survivors

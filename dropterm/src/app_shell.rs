@@ -1095,6 +1095,33 @@ impl Shell {
         }
     }
 
+    /// The rail row's press (panel-slot PS3): the registry is the
+    /// truth about who answers — a registered view's press routes
+    /// its slot-event, a reloaded-away view's press costs one line
+    /// and nothing else.
+    fn panel_row_pressed(&self, view_id: &str, row_id: &str) {
+        match self.panel_rail.press_event(view_id, row_id) {
+            Some(event) => self.emit_slot_event(&event),
+            None => println!(
+                "dropterm: plugins: panel press dropped: view '{view_id}' is not registered"
+            ),
+        }
+    }
+
+    /// The rail's one cadence (panel-slot): the requery decision
+    /// fires the ask at the tick's App-level point, the send itself
+    /// the shell's (never blocking).
+    fn panel_ask_tick(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(token) = self.panel_rail.requery_due(now) {
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::PanelAsk {
+                    token,
+                    views: self.panel_rail.due_views(),
+                });
+        }
+    }
+
     fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
         self.tick_mem_watch(cx);
         self.tick_system_mode();
@@ -1185,17 +1212,7 @@ impl Shell {
             cx.notify();
         }
         self.drain_lua_host(cx);
-        // The rail's one cadence (panel-slot): the requery decision
-        // fires the ask at the tick's App-level point, the send
-        // itself the shell's (never blocking).
-        let now = std::time::Instant::now();
-        if let Some(token) = self.panel_rail.requery_due(now) {
-            self.lua_host
-                .send(dropterm::core::lua_host::HostCommand::PanelAsk {
-                    token,
-                    views: self.panel_rail.due_views(),
-                });
-        }
+        self.panel_ask_tick();
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
             self.measured(output, &mut actions);
@@ -2797,18 +2814,12 @@ impl Shell {
     /// The slot-event's one emit (dialog-slot): the shell routes the
     /// dialog's press and dismissal over the bus — the SL3-proven
     /// path, the payload the contract's own type serializes.
-    fn emit_dialog_event(&self, element_id: &str, kind: &str, _cx: &mut Context<Self>) {
-        let event = dropterm::core::slots::SlotEvent {
-            surface: "dialog".to_owned(),
-            slot: "dialog".to_owned(),
-            element_id: element_id.to_owned(),
-            kind: kind.to_owned(),
-        };
+    fn emit_slot_event(&self, event: &dropterm::core::slots::SlotEvent) {
         let Some(bus) = self.lua_bus.as_ref() else {
             println!("dropterm: plugins: slot-event dropped: the plugins host is down");
             return;
         };
-        match serde_json::to_value(&event) {
+        match serde_json::to_value(event) {
             Ok(payload) => bus.emit(dropterm::core::slots::SLOT_EVENT, payload),
             Err(err) => println!("dropterm: plugins: slot-event would not serialize: {err}"),
         }
@@ -2856,7 +2867,12 @@ impl Shell {
             let shell = shell.clone();
             move |button_id, _window, cx| {
                 shell.update(cx, |shell, cx| {
-                    shell.emit_dialog_event(button_id, "press", cx);
+                    shell.emit_slot_event(&dropterm::core::slots::SlotEvent {
+                        surface: "dialog".to_owned(),
+                        slot: "dialog".to_owned(),
+                        element_id: button_id.to_owned(),
+                        kind: "press".to_owned(),
+                    });
                     shell.close_dialog(cx);
                 });
             }
@@ -2865,7 +2881,12 @@ impl Shell {
             let shell = shell.clone();
             move |_window, cx| {
                 shell.update(cx, |shell, cx| {
-                    shell.emit_dialog_event("", "dismiss", cx);
+                    shell.emit_slot_event(&dropterm::core::slots::SlotEvent {
+                        surface: "dialog".to_owned(),
+                        slot: "dialog".to_owned(),
+                        element_id: String::new(),
+                        kind: "dismiss".to_owned(),
+                    });
                     shell.close_dialog(cx);
                 });
             }
@@ -6032,9 +6053,28 @@ impl Shell {
                     .text_size(gpui::px(11.))
                     .text_color(theme.muted_foreground)
                     .child(section.title.clone());
+                let shell = cx.entity();
+                let view_id = section.id.clone();
                 let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
-                    section.rows.iter().map(|(_, runs)| {
+                    section.rows.iter().map(|(press_id, runs)| {
+                        // The row is the press target (panel-slot
+                        // PS3): the hand gets the pointer and the
+                        // hover, the press routes the slot-event
+                        // through the shell's one emit.
+                        let shell = shell.clone();
+                        let view_id = view_id.clone();
+                        let press_id = press_id.clone();
                         gpui::div()
+                            .id(gpui::ElementId::Name(
+                                format!("panel-row-{view_id}-{press_id}").into(),
+                            ))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.secondary))
+                            .on_click(move |_: &gpui::ClickEvent, _window, cx| {
+                                shell.update(cx, |shell, _cx| {
+                                    shell.panel_row_pressed(&view_id, &press_id);
+                                });
+                            })
                             .children(runs.iter().map(|run| gpui::div().child(run.text.clone())))
                     }),
                 );
