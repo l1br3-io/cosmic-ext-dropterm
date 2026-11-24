@@ -939,6 +939,21 @@ pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -
     }
 }
 
+/// The menu insert's trailing-space rule (suggest-depth spec, LG4 /
+/// depth finding 5): an explicit insert that ends the line gains one
+/// space — the next word is always wanted after a completed command
+/// or argument — withheld after a path separator (the slash invites
+/// the next segment), after an `=` (an assignment's value is not a
+/// word boundary), and when nothing was inserted at all. The ghost's
+/// own accepts keep their existing behavior: this is the menu's and
+/// Tab's explicit path only.
+pub fn with_trailing_space(mut suffix: String) -> String {
+    if !suffix.is_empty() && !suffix.ends_with('/') && !suffix.ends_with('=') {
+        suffix.push(' ');
+    }
+    suffix
+}
+
 /// The command-name provider's candidate function (command-catalog
 /// spec): complete the command word at the command position from the
 /// spawn-time PATH snapshot — among names with the typed word as a
@@ -1494,7 +1509,7 @@ fn extended_table(path: &Path) -> ExtendedTable {
 /// three covers every real chain the survey found. A chain past
 /// the cap terminates as unmapped, never a guess past the user's
 /// declaration.
-const ALIAS_DEPTH_CAP: usize = 3;
+const ALIAS_DEPTH_CAP: usize = 5;
 
 /// The alias map's resolution (suggest-aliases spec): the command
 /// word's ultimate expansion command — each hop follows the mapped
@@ -2392,7 +2407,9 @@ impl MenuState {
         if continuations.len() == 1 {
             self.close();
         }
-        MenuOutcome::Accepted { suffix: lcp }
+        MenuOutcome::Accepted {
+            suffix: with_trailing_space(lcp),
+        }
     }
 
     /// Whether the typed line already equals the selected row's
@@ -2415,7 +2432,7 @@ impl MenuState {
         let suffix = self
             .rows
             .get(self.selected)
-            .map(|row| row.suffix.clone())
+            .map(|row| with_trailing_space(row.suffix.clone()))
             .unwrap_or_default();
         self.close();
         MenuOutcome::Accepted { suffix }

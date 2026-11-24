@@ -164,7 +164,7 @@ pub(crate) fn tab_while_closed(rows: &[suggest::MenuCandidate], typed: &str) -> 
             .filter(|continuation| !continuation.is_empty())
         {
             return Some(TabAction::Insert {
-                suffix: suffix.to_string(),
+                suffix: suggest::with_trailing_space(suffix.to_string()),
             });
         }
         // Rows exist with nothing to insert: the menu opens, never a
@@ -178,7 +178,7 @@ pub(crate) fn tab_while_closed(rows: &[suggest::MenuCandidate], typed: &str) -> 
     let lcp = suggest::longest_common_prefix(&continuations);
     if !lcp.is_empty() {
         return Some(TabAction::InsertOpen {
-            suffix: lcp.to_string(),
+            suffix: suggest::with_trailing_space(lcp.to_string()),
         });
     }
     if rows.is_empty() || matching.is_empty() {
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(
             tab_while_closed(&rows, "gi"),
             Some(TabAction::Insert {
-                suffix: "tk".to_string()
+                suffix: "tk ".to_string()
             })
         );
     }
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(
             tab_while_closed(&rows, "gi"),
             Some(TabAction::InsertOpen {
-                suffix: "t".to_string()
+                suffix: "t ".to_string()
             })
         );
     }
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(
             tab_while_closed(&rows, "~/Doc"),
             Some(TabAction::InsertOpen {
-                suffix: "ument".to_string()
+                suffix: "ument ".to_string()
             })
         );
     }

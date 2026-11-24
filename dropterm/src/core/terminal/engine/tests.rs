@@ -1454,12 +1454,17 @@ fn the_accept_echo_does_not_reopen_and_the_next_keystroke_does() {
         "the accept's echo never re-opens the menu"
     );
     // The next genuine keystroke re-collects: the flag was
-    // consumed, not stuck.
-    terminal.input_no_scroll(&b"\x7f"[..]);
+    // consumed, not stuck. Two backspaces: the accept's trailing
+    // space (suggest-depth spec) leaves `sleepy `, and one press
+    // only reaches the exact line — whose lone exact row carries
+    // nothing to insert and never pops the menu (the qualifying
+    // floor) — so the second press walks back into prefix country
+    // where the re-collection has rows to show.
+    terminal.input_no_scroll(&b"\x7f\x7f"[..]);
     poll_update_until(
         &mut terminal,
         Terminal::menu_is_open,
-        "the backspace's echo re-collects",
+        "the backspaces' echo re-collects",
     );
     terminal.input_no_scroll(&b"\x03"[..]);
     terminal.input_no_scroll(&b"exit\r"[..]);

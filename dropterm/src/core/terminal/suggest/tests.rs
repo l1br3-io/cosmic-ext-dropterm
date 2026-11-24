@@ -1724,6 +1724,108 @@ fn an_unmapped_alias_behaves_exactly_as_today() {
     assert_eq!(step_typed("gc che", &mut suggest), None);
 }
 
+// --- the insert polish (suggest-depth, SP-D7) ---
+
+#[test]
+fn menu_accepts_append_the_trailing_space() {
+    // Depth finding 5: an explicit insert that ends the line gains
+    // one space — the next word is always wanted after a completed
+    // command or argument.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![MenuCandidate {
+        label: "cargo test".to_string(),
+        suffix: "est".to_string(),
+        description: None,
+        source: SuggestionSource::History,
+    }]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "cargo t"),
+        MenuOutcome::Accepted {
+            suffix: "est ".to_string()
+        }
+    );
+}
+
+#[test]
+fn the_trailing_space_withholds_after_separators_and_assignments() {
+    // A path separator invites the next path segment; an `=` ends an
+    // assignment — neither wants the space.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![MenuCandidate {
+        label: "src/".to_string(),
+        suffix: "rc/".to_string(),
+        description: None,
+        source: SuggestionSource::Path,
+    }]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "s"),
+        MenuOutcome::Accepted {
+            suffix: "rc/".to_string()
+        }
+    );
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![MenuCandidate {
+        label: "FOO=".to_string(),
+        suffix: "OO=".to_string(),
+        description: None,
+        source: SuggestionSource::History,
+    }]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "F"),
+        MenuOutcome::Accepted {
+            suffix: "OO=".to_string()
+        },
+        "the completed text ends in `=` — an assignment awaits its value, not a space"
+    );
+}
+
+#[test]
+fn the_trailing_space_withholds_on_an_empty_insert() {
+    // A row that writes nothing (the ladder's exact-ci shape) never
+    // degrades into a lone space; the exact-cs twin is the
+    // two-stage Enter's Execute, not an insert at all.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![MenuCandidate {
+        label: "Cargo T".to_string(),
+        suffix: String::new(),
+        description: None,
+        source: SuggestionSource::History,
+    }]));
+    assert_eq!(
+        menu.press(MenuKey::Accept, "cargo t"),
+        MenuOutcome::Accepted {
+            suffix: String::new()
+        }
+    );
+}
+
+#[test]
+fn the_fill_appends_its_space_too() {
+    // The LCP fill is as explicit an insert as an accept — its
+    // completed prefix ends the line the same way.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![
+        MenuCandidate {
+            label: "git".to_string(),
+            suffix: "t".to_string(),
+            description: None,
+            source: SuggestionSource::Catalog,
+        },
+        MenuCandidate {
+            label: "gitk".to_string(),
+            suffix: "tk".to_string(),
+            description: None,
+            source: SuggestionSource::Catalog,
+        },
+    ]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "gi"),
+        MenuOutcome::Accepted {
+            suffix: "t ".to_string()
+        }
+    );
+}
+
 #[test]
 fn resolve_alias_returns_the_input_unmapped() {
     let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
@@ -1756,16 +1858,28 @@ fn resolve_alias_terminates_a_cycle_unmapped() {
 }
 
 #[test]
-fn resolve_alias_stops_at_three_expansions() {
-    // Depth 4 stops at 3 (OQ-2, locked): `a1→a2→a3→a4→git` resolves
-    // a1 to a4, never following the fourth expansion to git.
-    let aliases = HashMap::from([
+fn resolve_alias_stops_at_five_expansions() {
+    // The cap is Warp's own limit now (suggest-depth spec, LG4 /
+    // OQ default): five hops followed, the sixth never —
+    // `a1→…→a6→git` resolves a1 to a6, and a five-hop chain whose
+    // end maps to `git` resolves git whole.
+    let six = HashMap::from([
         ("a1".to_string(), "a2".to_string()),
         ("a2".to_string(), "a3".to_string()),
         ("a3".to_string(), "a4".to_string()),
-        ("a4".to_string(), "git".to_string()),
+        ("a4".to_string(), "a5".to_string()),
+        ("a5".to_string(), "a6".to_string()),
+        ("a6".to_string(), "git".to_string()),
     ]);
-    assert_eq!(resolve_alias("a1", &aliases), "a4");
+    assert_eq!(resolve_alias("a1", &six), "a6");
+    let five = HashMap::from([
+        ("b1".to_string(), "b2".to_string()),
+        ("b2".to_string(), "b3".to_string()),
+        ("b3".to_string(), "b4".to_string()),
+        ("b4".to_string(), "b5".to_string()),
+        ("b5".to_string(), "git status".to_string()),
+    ]);
+    assert_eq!(resolve_alias("b1", &five), "git");
 }
 
 #[test]
@@ -2810,7 +2924,7 @@ fn fuzzy_rows_never_fill_or_insert_through_tab() {
     assert_eq!(
         menu.press(MenuKey::Tab, "cargo t"),
         MenuOutcome::Accepted {
-            suffix: "est".to_string()
+            suffix: "est ".to_string()
         },
         "the fuzzy row contributes nothing to the fill"
     );
@@ -3484,7 +3598,7 @@ fn accept_returns_only_the_selected_suffix_then_closes() {
     assert_eq!(
         menu.press(MenuKey::Accept, "git st"),
         MenuOutcome::Accepted {
-            suffix: "ash".to_string()
+            suffix: "ash ".to_string()
         }
     );
     assert!(!menu.is_open());
@@ -3519,7 +3633,7 @@ fn tab_fills_the_common_prefix_and_keeps_the_menu() {
     assert_eq!(
         menu.press(MenuKey::Tab, "gi"),
         MenuOutcome::Accepted {
-            suffix: "t".to_string()
+            suffix: "t ".to_string()
         }
     );
     assert!(menu.is_open(), "the fill keeps the menu");
@@ -3536,7 +3650,7 @@ fn tab_over_a_single_row_fills_it_and_closes() {
     assert_eq!(
         menu.press(MenuKey::Tab, "gi"),
         MenuOutcome::Accepted {
-            suffix: "tk".to_string()
+            suffix: "tk ".to_string()
         }
     );
     assert!(!menu.is_open(), "the single remaining row closes the menu");
@@ -3568,7 +3682,7 @@ fn tab_over_an_already_filled_line_cycles_instead_of_growing() {
     assert_eq!(
         menu.press(MenuKey::Tab, "cd"),
         MenuOutcome::Accepted {
-            suffix: " cd".to_string()
+            suffix: " cd ".to_string()
         }
     );
     assert_eq!(
@@ -3600,7 +3714,7 @@ fn a_multi_word_line_fills_the_word_it_extends() {
     assert_eq!(
         menu.press(MenuKey::Tab, "git che"),
         MenuOutcome::Accepted {
-            suffix: "ckout".to_string()
+            suffix: "ckout ".to_string()
         }
     );
     assert!(menu.is_open());
@@ -3623,7 +3737,7 @@ fn tab_fills_a_path_rows_shared_component() {
     assert_eq!(
         menu.press(MenuKey::Tab, "~/Doc"),
         MenuOutcome::Accepted {
-            suffix: "ument".to_string()
+            suffix: "ument ".to_string()
         }
     );
     assert!(menu.is_open());
