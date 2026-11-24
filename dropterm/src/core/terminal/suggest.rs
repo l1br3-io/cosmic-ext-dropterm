@@ -18,6 +18,8 @@ use alacritty_terminal::{
     term::color::Colors,
     vte::ansi::{NamedColor, Rgb},
 };
+use fuzzy_matcher::FuzzyMatcher as _;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -254,6 +256,11 @@ pub(crate) struct Observation<'a> {
     /// exactly — no cwd capture, no persistence cue — a live flip
     /// applying at the next commit.
     pub(crate) history_context: bool,
+    /// The menu's fuzzy rung gate (suggest-depth spec, OQ-5):
+    /// resolved engine-side (default on). `false` removes the fuzzy
+    /// rung from the ladder — exact and prefix rows stay, recency
+    /// and coalesce order untouched.
+    pub(crate) menu_fuzzy: bool,
 }
 
 /// The engine-owned autosuggest state (autosuggest spec): the adopted
@@ -575,6 +582,78 @@ fn source_rank(source: SuggestionSource) -> usize {
         SuggestionSource::Catalog => 3,
         SuggestionSource::Generator => 4,
     }
+}
+
+/// One rung of the menu's match ladder (suggest-depth spec, LG1 /
+/// depth record findings 1-2): the bucket a candidate lands in
+/// decides its display tier — exact case-sensitive, exact
+/// case-insensitive, prefix (each tier's own coalesce order), then
+/// fuzzy by descending score. The ghost never climbs it: its
+/// completer pass stays case-sensitive (the record's explicit
+/// strategy).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchLadder {
+    ExactCs,
+    ExactCi,
+    Prefix,
+    Fuzzy,
+}
+
+/// The non-fuzzy rung a candidate lands in for a query, if any:
+/// equality, case-insensitive equality, then a case-insensitive
+/// prefix (the Fuzzy strategy's ci prefix, depth finding 2). A
+/// candidate that lands nowhere here reaches for the fuzzy rung.
+fn exact_rung(query: &str, candidate: &str) -> Option<MatchLadder> {
+    if candidate == query {
+        Some(MatchLadder::ExactCs)
+    } else if candidate.eq_ignore_ascii_case(query) {
+        Some(MatchLadder::ExactCi)
+    } else if candidate
+        .get(..query.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(query))
+    {
+        Some(MatchLadder::Prefix)
+    } else {
+        None
+    }
+}
+
+/// Whether a query may enter the fuzzy rung (depth finding 2): at
+/// least one alphanumeric character — "Fuzzy matches on punctuation
+/// produce poor results".
+fn fuzzy_eligible(query: &str) -> bool {
+    query.chars().any(char::is_alphanumeric)
+}
+
+/// The fuzzy rung's score (depth finding 2): the pinned upstream
+/// wiring — `SkimMatcherV2::default().ignore_case()` — so the
+/// scoring is the record's table by construction (base 16/char,
+/// word-head 8, camel 6, gap −3/−1, case-mismatch −2, ties resolve
+/// rightmost upstream; our ties stay in insertion order).
+fn fuzzy_score(candidate: &str, query: &str) -> Option<i64> {
+    if !fuzzy_eligible(query) {
+        return None;
+    }
+    SkimMatcherV2::default()
+        .ignore_case()
+        .fuzzy_match(candidate, query)
+}
+
+/// The ladder's ordering pass over one tier's staged rows: rung
+/// first — a stable sort, so each tier's coalesce order survives
+/// within a rung — then the fuzzy rung alone by descending score,
+/// ties stable in arrival order (Warp's `.rev()`-of-stable quirk
+/// deliberately not copied; the record flags it as a quirk, not a
+/// feature).
+fn ladder_order(mut rows: Vec<(MenuCandidate, MatchLadder, Option<i64>)>) -> Vec<MenuCandidate> {
+    rows.sort_by_key(|(_, rung, _)| *rung);
+    if let Some(start) = rows
+        .iter()
+        .position(|(_, rung, _)| *rung == MatchLadder::Fuzzy)
+    {
+        rows[start..].sort_by_key(|(_, _, score)| std::cmp::Reverse(*score));
+    }
+    rows.into_iter().map(|(row, _, _)| row).collect()
 }
 
 /// The context-first ranking key (suggest-depth spec, OQ-3): an
@@ -1720,9 +1799,13 @@ fn source_candidates(
     // history row and the ghost's single choice agree.
     let ranking_cwd = obs.history_context.then_some(obs.working_cwd).flatten();
     match source {
-        SuggestionSource::History => {
-            history_candidates(typed, &suggest.ring, &suggest.cwd_by_command, ranking_cwd)
-        }
+        SuggestionSource::History => history_candidates(
+            typed,
+            &suggest.ring,
+            &suggest.cwd_by_command,
+            ranking_cwd,
+            obs.menu_fuzzy,
+        ),
         SuggestionSource::Path => path_candidates(typed, obs),
         SuggestionSource::Specs => specs_candidates(typed, obs),
         SuggestionSource::Catalog => catalog_candidates(typed, obs),
@@ -1740,22 +1823,55 @@ fn history_candidates(
     ring: &VecDeque<String>,
     cwd_by_command: &HashMap<String, String>,
     current: Option<&str>,
+    fuzzy: bool,
 ) -> Vec<MenuCandidate> {
-    let (matching, rest): (Vec<&String>, Vec<&String>) = ring
-        .iter()
-        .rev()
-        .filter(|entry| entry.starts_with(typed) && entry.len() > typed.len())
-        .partition(|entry| context_matches(entry, cwd_by_command, current));
-    matching
+    let row = |entry: &String, rung: MatchLadder, score: Option<i64>| {
+        (
+            MenuCandidate {
+                suffix: entry.strip_prefix(typed).unwrap_or_default().to_string(),
+                label: entry.clone(),
+                description: None,
+                source: SuggestionSource::History,
+            },
+            rung,
+            score,
+        )
+    };
+    let mut staged: Vec<(MenuCandidate, MatchLadder, Option<i64>)> = Vec::new();
+    let mut prefix: Vec<&String> = Vec::new();
+    let mut fuzzy_pool: Vec<(&String, i64)> = Vec::new();
+    for entry in ring.iter().rev() {
+        match exact_rung(typed, entry) {
+            Some(exact @ (MatchLadder::ExactCs | MatchLadder::ExactCi)) => {
+                staged.push(row(entry, exact, None));
+            }
+            Some(MatchLadder::Prefix) => prefix.push(entry),
+            // `exact_rung` never answers Fuzzy; the rest is the
+            // fuzzy reach.
+            _ => {
+                if fuzzy && let Some(score) = fuzzy_score(entry, typed) {
+                    fuzzy_pool.push((entry, score));
+                }
+            }
+        }
+    }
+    // The prefix rung's context partition (SP-D3's ordering rides
+    // within its rung): cwd matches first, recency among equals.
+    let (matching, rest): (Vec<&String>, Vec<&String>) = prefix
         .into_iter()
-        .chain(rest)
-        .map(|entry| MenuCandidate {
-            label: entry.clone(),
-            suffix: entry[typed.len()..].to_string(),
-            description: None,
-            source: SuggestionSource::History,
-        })
-        .collect()
+        .partition(|entry| context_matches(entry, cwd_by_command, current));
+    staged.extend(
+        matching
+            .into_iter()
+            .chain(rest)
+            .map(|entry| row(entry, MatchLadder::Prefix, None)),
+    );
+    staged.extend(
+        fuzzy_pool
+            .into_iter()
+            .map(|(entry, score)| row(entry, MatchLadder::Fuzzy, Some(score))),
+    );
+    ladder_order(staged)
 }
 
 /// The path provider's whole set (suggest-menu spec): every listing
@@ -1782,31 +1898,71 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
         Some(idx) => &token[idx + 1..],
         None => "",
     };
-    listing
-        .iter()
-        .filter(|(name, is_dir)| {
-            name.starts_with(component)
-                && (*is_dir || name.len() > component.len())
-                && (component.starts_with('.') || !name.starts_with('.'))
-        })
-        .filter_map(|(name, is_dir)| {
-            let mut remainder = name[component.len()..].to_string();
-            if *is_dir {
-                remainder.push('/');
+    let mut staged: Vec<(MenuCandidate, MatchLadder, Option<i64>)> = Vec::new();
+    for (name, is_dir) in listing {
+        // The dotfile convention gates matching itself, every rung
+        // alike (the ghost's own rule): a dotfile shows only for a
+        // dot-prefixed component.
+        if !component.starts_with('.') && name.starts_with('.') {
+            continue;
+        }
+        let label = if *is_dir {
+            format!("{name}/")
+        } else {
+            name.clone()
+        };
+        // The append-only suffix exists only where the entry
+        // case-sensitively extends the component (the honest-write
+        // rule): the escaped remainder, directories suffixed `/` — a
+        // directory equal to the component still appends its slash;
+        // an unwritable remainder drops the row alone. A ci or fuzzy
+        // row lists with no suffix: it informs, never inserts.
+        let suffix = match name
+            .strip_prefix(component)
+            .filter(|rest| *is_dir || !rest.is_empty())
+        {
+            Some(rest) => {
+                let mut remainder = rest.to_string();
+                if *is_dir {
+                    remainder.push('/');
+                }
+                match escape_for_shell(&remainder) {
+                    Some(escaped) => escaped,
+                    None => continue,
+                }
             }
-            let suffix = escape_for_shell(&remainder)?;
-            Some(MenuCandidate {
-                label: if *is_dir {
-                    format!("{name}/")
-                } else {
-                    name.clone()
+            None => String::new(),
+        };
+        match exact_rung(component, name) {
+            Some(rung) => staged.push((
+                MenuCandidate {
+                    label,
+                    suffix,
+                    description: None,
+                    source: SuggestionSource::Path,
                 },
-                suffix,
-                description: None,
-                source: SuggestionSource::Path,
-            })
-        })
-        .collect()
+                rung,
+                None,
+            )),
+            None => {
+                if obs.menu_fuzzy
+                    && let Some(score) = fuzzy_score(name, component)
+                {
+                    staged.push((
+                        MenuCandidate {
+                            label,
+                            suffix,
+                            description: None,
+                            source: SuggestionSource::Path,
+                        },
+                        MatchLadder::Fuzzy,
+                        Some(score),
+                    ));
+                }
+            }
+        }
+    }
+    ladder_order(staged)
 }
 
 /// The curated-specs provider's whole set, walker era (suggest-menu +
@@ -1858,19 +2014,49 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
     if word.is_empty() || is_path_shaped(word) {
         return Vec::new();
     }
-    obs.command_catalog
-        .iter()
-        .filter(|name| name.starts_with(word) && name.len() > word.len())
-        .filter_map(|name| {
-            let suffix = escape_for_shell(&name[word.len()..])?;
-            Some(MenuCandidate {
-                label: name.clone(),
-                suffix,
-                description: None,
-                source: SuggestionSource::Catalog,
-            })
-        })
-        .collect()
+    let mut staged: Vec<(MenuCandidate, MatchLadder, Option<i64>)> = Vec::new();
+    for name in obs.command_catalog {
+        // The same honest-write rule the path tier rides: only a
+        // case-sensitive extension carries an append-only suffix, an
+        // unwritable remainder drops the row alone, and a ci or
+        // fuzzy row lists with no suffix.
+        let suffix = match name.strip_prefix(word).filter(|rest| !rest.is_empty()) {
+            Some(rest) => match escape_for_shell(rest) {
+                Some(escaped) => escaped,
+                None => continue,
+            },
+            None => String::new(),
+        };
+        match exact_rung(word, name) {
+            Some(rung) => staged.push((
+                MenuCandidate {
+                    label: name.clone(),
+                    suffix,
+                    description: None,
+                    source: SuggestionSource::Catalog,
+                },
+                rung,
+                None,
+            )),
+            None => {
+                if obs.menu_fuzzy
+                    && let Some(score) = fuzzy_score(name, word)
+                {
+                    staged.push((
+                        MenuCandidate {
+                            label: name.clone(),
+                            suffix,
+                            description: None,
+                            source: SuggestionSource::Catalog,
+                        },
+                        MatchLadder::Fuzzy,
+                        Some(score),
+                    ));
+                }
+            }
+        }
+    }
+    ladder_order(staged)
 }
 
 /// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
@@ -2055,6 +2241,12 @@ impl MenuState {
     /// otherwise the selection cycles down.
     fn fill_or_cycle(&mut self, typed: &str) -> MenuOutcome {
         let token = trailing_token(typed);
+        // A row with no cs-extension contributes nothing at all (the
+        // honest-write rule: the ladder's exact-ci and fuzzy rows
+        // never fill), but a line-equal row's empty continuation
+        // DOES participate — it poisons the common prefix on
+        // purpose, so Tab over an already-filled line cycles rather
+        // than grows (the owner's multi-word-fill report).
         let continuations: Vec<&str> = self
             .rows
             .iter()

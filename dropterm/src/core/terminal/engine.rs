@@ -192,6 +192,10 @@ pub struct TerminalOptions {
     /// suites never read or write the real seat. Construction truth,
     /// never rewritten by `set_config`.
     pub history_state_path: Option<PathBuf>,
+    /// Whether the menu's match ladder carries its fuzzy rung
+    /// (suggest-depth spec, OQ-5): engine-default `true`; a flip
+    /// applies at the next collection.
+    pub autosuggestions_menu_fuzzy: bool,
 }
 
 impl Default for TerminalOptions {
@@ -220,6 +224,7 @@ impl Default for TerminalOptions {
             autosuggestions_specs_loading: false,
             autosuggestions_history_context: true,
             history_state_path: None,
+            autosuggestions_menu_fuzzy: true,
         }
     }
 }
@@ -612,6 +617,10 @@ pub struct Terminal {
     /// the options' explicit path or the state seat's default,
     /// fixed at construction — every later read and write keys on it.
     history_state_path: PathBuf,
+    /// Whether the menu's match ladder carries its fuzzy rung
+    /// (suggest-depth spec, OQ-5) — the resolved options flag,
+    /// re-read at every `set_config`.
+    autosuggestions_menu_fuzzy: bool,
     /// Whether the completion menu computes (suggest-menu spec) —
     /// the resolved options flag, re-read at every `set_config`;
     /// an off flip closes a showing menu on the spot.
@@ -1591,6 +1600,7 @@ impl Terminal {
             autosuggestions_specs_loading: options.autosuggestions_specs_loading,
             autosuggestions_history_context: options.autosuggestions_history_context,
             history_state_path: history_state_path.clone(),
+            autosuggestions_menu_fuzzy: options.autosuggestions_menu_fuzzy,
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             menu_auto_opened: false,
@@ -2836,6 +2846,7 @@ impl Terminal {
             typed_idle_ms: 0,
             working_cwd: working_directory.as_deref().and_then(Path::to_str),
             history_context: self.autosuggestions_history_context,
+            menu_fuzzy: self.autosuggestions_menu_fuzzy,
         };
         let mut rows = suggest::candidates(typed, &self.suggest, &observation);
         // The loading row (async-completions): while the completion
@@ -3224,6 +3235,11 @@ impl Terminal {
             update = true;
         }
 
+        if self.autosuggestions_menu_fuzzy != options.autosuggestions_menu_fuzzy {
+            self.autosuggestions_menu_fuzzy = options.autosuggestions_menu_fuzzy;
+            update = true;
+        }
+
         if self.autosuggestions_delay_ms != options.autosuggestions_delay_ms {
             self.autosuggestions_delay_ms = options.autosuggestions_delay_ms;
             update = true;
@@ -3515,6 +3531,7 @@ impl Terminal {
                         typed_idle_ms,
                         working_cwd: working_directory.as_deref().and_then(Path::to_str),
                         history_context: self.autosuggestions_history_context,
+                        menu_fuzzy: self.autosuggestions_menu_fuzzy,
                     };
                     suggest::step(&observation, &mut self.suggest);
                     // The store's write side (suggest-depth spec,
@@ -3583,7 +3600,14 @@ impl Terminal {
                         && !std::mem::take(&mut self.menu_accept_echo)
                     {
                         let collected = suggest::candidates(typed, &self.suggest, &observation);
-                        if collected.is_empty() {
+                        // The qualifying floor (suggest-depth spec):
+                        // a row with no suffix carries nothing to
+                        // insert — the ladder's exact and fuzzy rows
+                        // inform an open menu but never pop one
+                        // alone, so a fully-typed command stays
+                        // quiet.
+                        let qualifying = collected.iter().any(|row| !row.suffix.is_empty());
+                        if !qualifying {
                             if self.menu.is_open() && self.menu_auto_opened {
                                 self.menu.close();
                             }

@@ -45,6 +45,9 @@ fn obs() -> Observation<'static> {
         // today's ring behavior bit-for-bit.
         working_cwd: None,
         history_context: true,
+        // The fuzzy rung's clear case (suggest-depth spec): on, the
+        // full ladder.
+        menu_fuzzy: true,
     }
 }
 
@@ -2671,6 +2674,187 @@ fn the_ghosts_history_choice_agrees_with_the_menus_first_row() {
         rows.first().map(String::as_str),
         Some("git push"),
         "the ghost's single choice is the menu's first history row"
+    );
+}
+
+// --- the match ladder (suggest-depth, SP-D4) ---
+
+/// The menu's history rows for a typed segment, labels only.
+fn ladder_history_rows(suggest: &Suggest, o: &Observation<'_>, typed: &str) -> Vec<String> {
+    candidates(typed, suggest, o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::History)
+        .map(|row| row.label)
+        .collect()
+}
+
+#[test]
+fn the_ladder_orders_exact_cs_exact_ci_prefix_then_fuzzy() {
+    let mut suggest = Suggest::new();
+    // Oldest first: a fuzzy-only shape, an exact-ci twin, a prefix
+    // extension, and the exact-cs entry itself.
+    suggest.seed_history([
+        "cargo".to_string(),
+        "CrGO".to_string(),
+        "crgo-test".to_string(),
+        "crgo".to_string(),
+    ]);
+    let o = Observation {
+        before_cursor: "$ crgo",
+        cursor_column: 6,
+        ..obs()
+    };
+    let rows = candidates("crgo", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::History)
+        .map(|row| (row.label, row.suffix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("crgo".to_string(), String::new()),
+            ("CrGO".to_string(), String::new()),
+            ("crgo-test".to_string(), "-test".to_string()),
+            ("cargo".to_string(), String::new()),
+        ],
+        "exact-cs leads exact-ci leads prefix, fuzzy last — and a row that does not cs-extend the line carries no suffix (the honest-write rule)"
+    );
+}
+
+#[test]
+fn fuzzy_rows_order_by_descending_score_not_recency() {
+    let mut suggest = Suggest::new();
+    // Recency answers clock first; the scorer's contiguous `lk` in
+    // slack beats the gapped one in clock (the record's consecutive-
+    // run bonus and gap penalties), so score order must win.
+    suggest.seed_history(["hat".to_string(), "cart".to_string()]);
+    let o = Observation {
+        before_cursor: "$ at",
+        cursor_column: 4,
+        ..obs()
+    };
+    assert_eq!(
+        ladder_history_rows(&suggest, &o, "at"),
+        vec!["hat".to_string(), "cart".to_string()]
+    );
+}
+
+#[test]
+fn punctuation_only_queries_never_fuzz() {
+    let mut suggest = Suggest::new();
+    suggest.seed_history(["rm -rf /tmp".to_string(), "--flag x".to_string()]);
+    let o = Observation {
+        before_cursor: "$ -",
+        cursor_column: 3,
+        ..obs()
+    };
+    assert_eq!(
+        ladder_history_rows(&suggest, &o, "-"),
+        vec!["--flag x".to_string()],
+        "the punctuation gate keeps rm -rf out of the fuzzy rung (a subsequence of one dash is noise)"
+    );
+}
+
+#[test]
+fn the_fuzzy_toggle_restores_the_prefix_ladder() {
+    let mut suggest = Suggest::new();
+    suggest.seed_history(["hat".to_string(), "atlas".to_string(), "cart".to_string()]);
+    let on = Observation {
+        before_cursor: "$ at",
+        cursor_column: 4,
+        ..obs()
+    };
+    assert_eq!(
+        ladder_history_rows(&suggest, &on, "at"),
+        vec!["atlas".to_string(), "hat".to_string(), "cart".to_string()],
+        "the prefix rung stays ahead of the fuzzy rows while the toggle is on"
+    );
+    let off = Observation {
+        before_cursor: "$ at",
+        cursor_column: 4,
+        menu_fuzzy: false,
+        ..obs()
+    };
+    assert_eq!(
+        ladder_history_rows(&suggest, &off, "at"),
+        vec!["atlas".to_string()],
+        "off removes the fuzzy rung alone — exact and prefix rows stay"
+    );
+}
+
+#[test]
+fn fuzzy_rows_never_fill_or_insert_through_tab() {
+    // A prefix row beside a fuzzy one: the LCP fills over the prefix
+    // row's continuation alone, and the single remaining continuation
+    // closes the menu after its fill.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![
+        MenuCandidate {
+            label: "cargo test".to_string(),
+            suffix: "est".to_string(),
+            description: None,
+            source: SuggestionSource::History,
+        },
+        MenuCandidate {
+            label: "crgo test".to_string(),
+            suffix: String::new(),
+            description: None,
+            source: SuggestionSource::History,
+        },
+    ]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "cargo t"),
+        MenuOutcome::Accepted {
+            suffix: "est".to_string()
+        },
+        "the fuzzy row contributes nothing to the fill"
+    );
+    // Fuzzy-only rows: nothing extends the line, so Tab cycles
+    // instead of filling.
+    let mut menu = MenuState::new();
+    assert!(menu.open(vec![
+        MenuCandidate {
+            label: "slack".to_string(),
+            suffix: String::new(),
+            description: None,
+            source: SuggestionSource::History,
+        },
+        MenuCandidate {
+            label: "clock".to_string(),
+            suffix: String::new(),
+            description: None,
+            source: SuggestionSource::History,
+        },
+    ]));
+    assert_eq!(
+        menu.press(MenuKey::Tab, "lk"),
+        MenuOutcome::Noop,
+        "no fuzzy row ever fills through Tab"
+    );
+}
+
+#[test]
+fn the_path_tier_widens_ci_and_fuzzy() {
+    let entries = listing(&[("slt-old", false), ("slack.txt", false)]);
+    let suggest = adopted();
+    let o = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/slt",
+        cursor_column: 7,
+        ..obs()
+    };
+    let rows = candidates("~/slt", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Path)
+        .map(|row| (row.label, row.suffix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("slt-old".to_string(), "-old".to_string()),
+            ("slack.txt".to_string(), String::new()),
+        ],
+        "the path tier rides the same ladder — the fuzzy entry lists but never carries a suffix"
     );
 }
 

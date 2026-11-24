@@ -204,6 +204,7 @@ mlua = { version = "0.12", default-features = false, features = ["lua54", "vendo
 # + `Normalization::Smart` ride the pattern module, both behind the
 # crate's default features.
 nucleo-matcher = "0.3.1"
+fuzzy-matcher = "=0.3.7"
 
 [features]
 # Re-identifies the binary as `io.github.l1br3_io.dropterm.Dev` —

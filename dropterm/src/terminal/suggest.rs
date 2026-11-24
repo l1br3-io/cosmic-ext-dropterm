@@ -148,14 +148,28 @@ pub(crate) enum TabAction {
 /// every press).
 pub(crate) fn tab_while_closed(rows: &[suggest::MenuCandidate], typed: &str) -> Option<TabAction> {
     let token = suggest::trailing_token(typed);
+    // A row with no cs-extension never qualifies (the honest-write
+    // rule, suggest-depth spec): the ladder's exact-ci and fuzzy
+    // rows carry no continuation at all. A line-equal row's empty
+    // continuation DOES qualify — it blocks the single-insert and
+    // poisons the common prefix, so Tab over an already-filled line
+    // opens or forwards rather than grows (the owner's multi-word
+    // report's own rule).
     let matching: Vec<&suggest::MenuCandidate> = rows
         .iter()
         .filter(|row| suggest::fill_continuation(row, typed, token).is_some())
         .collect();
-    if matching.len() == 1 {
-        return Some(TabAction::Insert {
-            suffix: matching[0].suffix.clone(),
-        });
+    if let [only] = &matching[..] {
+        if let Some(suffix) = suggest::fill_continuation(only, typed, token)
+            .filter(|continuation| !continuation.is_empty())
+        {
+            return Some(TabAction::Insert {
+                suffix: suffix.to_string(),
+            });
+        }
+        // Rows exist with nothing to insert: the menu opens, never a
+        // zero-byte Insert that swallows the Tab.
+        return Some(TabAction::Open);
     }
     let continuations: Vec<&str> = matching
         .iter()
@@ -525,6 +539,22 @@ mod tests {
         assert_eq!(tab_while_closed(&[], "gi"), None);
         let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
         assert_eq!(tab_while_closed(&rows, "zz"), None, "no prefix row");
+    }
+
+    #[test]
+    fn rows_with_only_empty_continuations_open() {
+        // The ladder's exact and fuzzy rows (suggest-depth spec): a
+        // row that does not cs-extend the line carries no
+        // continuation, so a menu of only such rows inserts nothing —
+        // rows exist with nothing to insert, and the menu opens
+        // (never a zero-byte Insert that swallows the Tab).
+        let rows = vec![suggest::MenuCandidate {
+            label: "cargo t".to_string(),
+            suffix: String::new(),
+            description: None,
+            source: suggest::SuggestionSource::History,
+        }];
+        assert_eq!(tab_while_closed(&rows, "cargo t"), Some(TabAction::Open));
     }
 
     #[test]
