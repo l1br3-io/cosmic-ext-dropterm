@@ -5128,6 +5128,219 @@ name = "zzz-cached"
     );
 }
 
+// --- the corpus audit (suggest-depth, SP-D8) ---
+
+/// Warp's command-signatures coverage list, the audit's yardstick
+/// (suggest-depth spec, LG3): the pinned rev's 496 top-level command
+/// names, vendored offline with attribution.
+const WARP_CORPUS: &str = include_str!("../../../../../scripts/warp-corpus-coverage.txt");
+
+/// The audit's name view of a tier: the loader's own parse, so the
+/// audit and the runtime agree on what a command is.
+fn tier_names(text: &str) -> Vec<String> {
+    parse_completions(text)
+        .expect("the tier parses under the schema")
+        .into_iter()
+        .map(|command| command.name)
+        .collect()
+}
+
+/// The yardstick's names: the vendored list's non-comment lines.
+fn warp_corpus_names() -> Vec<String> {
+    WARP_CORPUS
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_corpus_audit_names_its_gaps_against_warp() {
+    // The audit (suggest-depth spec, LG3 / SP-D8): DropTerm's merged
+    // corpus — the core floor plus the extended tier, unique names —
+    // diffed against Warp's pinned corpus offline. The merged count,
+    // the coverage count, and the gap list itself are pinned: any
+    // corpus regeneration or yardstick drift names exactly what
+    // moved. The 98 gaps are shell builtins with nothing static to
+    // extract (cd, export, while …) and generator-only specs (php,
+    // composer …) — filling them wants generator support, recorded
+    // as the follow-up, never guessed here.
+    let mut merged: Vec<String> = tier_names(CORE_TIER);
+    merged.extend(tier_names(EXTENDED_TIER));
+    merged.sort();
+    merged.dedup();
+    // The extended tier ships duplicate top-level tables today
+    // (autojump, broot, ns — thrice — and swagger-typescript-api):
+    // 92 + 532 tables, 619 unique names. The extractor now dedupes
+    // at the source; the data collapses at the next regeneration
+    // (ask-first, the spec's own boundary) and this pin follows.
+    assert_eq!(merged.len(), 619, "the merged corpus's unique commands");
+
+    let warp = warp_corpus_names();
+    assert_eq!(warp.len(), 496, "the yardstick's commands");
+    let merged_set: std::collections::HashSet<&str> = merged.iter().map(String::as_str).collect();
+    let covered: Vec<&String> = warp
+        .iter()
+        .filter(|name| merged_set.contains(name.as_str()))
+        .collect();
+    assert_eq!(
+        covered.len(),
+        398,
+        "Warp's commands the merged corpus covers"
+    );
+    let gaps: Vec<String> = warp
+        .into_iter()
+        .filter(|name| !merged_set.contains(name.as_str()))
+        .collect();
+    assert_eq!(
+        gaps,
+        vec![
+            "ack",
+            "apt-get",
+            "aptitude",
+            "atlas",
+            "awk",
+            "az",
+            "cd",
+            "claude",
+            "cloudflared",
+            "codex",
+            "composer",
+            "copilot",
+            "cosign",
+            "create-video",
+            "dd",
+            "dirname",
+            "django-admin",
+            "dnf",
+            "do",
+            "doppler",
+            "dotslash",
+            "drush",
+            "elif",
+            "else",
+            "exec",
+            "expo",
+            "expo-cli",
+            "export",
+            "fastly",
+            "fig-teams@latest",
+            "flutter",
+            "fly",
+            "flyctl",
+            "for",
+            "fvm",
+            "gsutil",
+            "hasura",
+            "heroku",
+            "hub",
+            "hugo",
+            "if",
+            "index",
+            "ip",
+            "j",
+            "journalctl",
+            "kubecolor",
+            "mask",
+            "meteor",
+            "mise",
+            "mongocli",
+            "mpv",
+            "nano",
+            "nativescript",
+            "nocorrect",
+            "noglob",
+            "nylas",
+            "oc",
+            "okteto",
+            "openssl",
+            "pacman",
+            "paru",
+            "pass",
+            "php",
+            "pipenv",
+            "pprof",
+            "pscale",
+            "pulumi",
+            "pushd",
+            "rails",
+            "repeat",
+            "ros2",
+            "ruff",
+            "sdk",
+            "sfdx",
+            "shopify",
+            "source",
+            "st2",
+            "stripe",
+            "task",
+            "tcpdump",
+            "terragrunt",
+            "then",
+            "time",
+            "timedatectl",
+            "tns",
+            "tsh",
+            "twilio",
+            "until",
+            "vagrant",
+            "valet",
+            "vault",
+            "watch",
+            "webpack",
+            "while",
+            "wp",
+            "yay",
+            "yc",
+            "z",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>(),
+        "the audit names its gaps — builtins and generator-only specs, never a guess"
+    );
+}
+
+#[test]
+fn curated_entries_win_conflicts() {
+    // The overlay's conflict rule (suggest-depth spec, LG3): the
+    // user's curated entry replaces the extended tier's same-named
+    // command, and the embedded floor beats the extended tier —
+    // curation always wins over bulk.
+    let mut extended = parse_completions(EXTENDED_TIER).expect("the tier parses");
+    extended.truncate(3);
+    let sample = extended[0].name.clone();
+    let user = vec![SpecCommand {
+        name: sample.clone(),
+        ..extended[0].clone()
+    }];
+    // Distinct-by-construction: give the curated entry a sentinel
+    // description the tier's own entry does not carry.
+    let mut user = user;
+    user[0].description = Some("the curated verdict".to_string());
+    let merged = merge_tiers(&extended, user);
+    let winner = merged
+        .iter()
+        .find(|command| command.name == sample)
+        .expect("the conflicted name survives the merge");
+    assert_eq!(
+        winner.description.as_deref(),
+        Some("the curated verdict"),
+        "the user's curated entry replaced the tier's"
+    );
+    // The embedded floor's own names never yield to the tier either.
+    for builtin in builtin_specs() {
+        let still = merged
+            .iter()
+            .find(|command| command.name == builtin.name)
+            .expect("the floor's name survives");
+        assert_eq!(
+            still.description, builtin.description,
+            "the floor beats the tier"
+        );
+    }
+}
+
 #[test]
 fn the_command_counter_counts_only_top_level_tables() {
     // The caption's count (suggest-embed spec): one line opening a

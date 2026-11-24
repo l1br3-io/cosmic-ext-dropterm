@@ -694,7 +694,7 @@ const emit = async () => {
         );
         return;
       }
-      reduced.set(name, { name, text });
+      reduced.set(name, { name: command.name, text });
       process.stderr.write(`reduced ${name}\n`);
     } catch (error) {
       if (error instanceof OversizeError) {
@@ -715,7 +715,21 @@ const emit = async () => {
   }
 
   const byTier = (names) =>
-    names.map((name) => reduced.get(name)).sort((a, b) => byName(a.name, b.name));
+    names
+      .map((name) => reduced.get(name))
+      .sort((a, b) => byName(a.name, b.name))
+      // A spec file may declare a name its filename does not carry
+      // (`ns.js` beside a sibling both declaring `ns`), and the tier
+      // seats by DECLARED name — so the sorted stream dedupes here,
+      // first declaration winning, the drop logged (the audit's
+      // found defect: duplicate [[commands]] tables).
+      .filter((entry, index, all) => {
+        if (index === 0 || all[index - 1].name !== entry.name) return true;
+        process.stderr.write(
+          `note: duplicate declared name '${entry.name}' (from ${entry.name}) — first declaration wins\n`,
+        );
+        return false;
+      });
   const core = byTier(coreNames);
   const seated = (name) => {
     const outcome = reduced.get(name);
