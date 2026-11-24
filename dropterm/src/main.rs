@@ -33,6 +33,7 @@ mod kit_check;
 mod notify;
 mod onboarding;
 mod palette;
+mod panels;
 mod pickers;
 mod settings;
 mod startup;

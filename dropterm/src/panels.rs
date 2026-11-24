@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The host-owned panel containers (panel-containers spec): named
+//! regions the shell declares and positions — the fixed-workbench
+//! moment. Two kinds: an edge rail per side (the dormant seam
+//! `panel-slot` docks into, config-gated off until a tenant lands)
+//! and overlay panels (the images panel's genus). Pure state: the
+//! shell owns the transitions, this module pins them headless. No
+//! plugin surface lives here — `panel-slot` registers views into
+//! these once the containers stand.
+
+/// The edge an edge-rail container rides.
+// PC1 ships the model whole, unwired (the chunk's own task law);
+// PC2's re-parent and PC3's rail consume these.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailEdge {
+    Right,
+}
+
+/// The rail's width floor — a rail the user cannot shrink into
+/// nothing.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+pub const MIN_RAIL_WIDTH: u32 = 160;
+
+/// The open state's focus-return claim: an opaque token the shell
+/// maps to the real handle that held the keyboard at open. The
+/// model carries it back at close — the shell hands the keyboard
+/// there (the modal repairs' own shape, one abstraction up).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+pub struct FocusClaim(pub String);
+
+/// One edge-rail container: declared, sized by the shared per-edge
+/// memory (the stood default — one memory per edge, not per
+/// consumer), dormant until `panel-slot` fills it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+pub struct EdgeRail {
+    pub edge: RailEdge,
+    /// The rail's width in px — the edge's size memory, surviving
+    /// open/close whole.
+    pub width: u32,
+}
+
+/// One overlay panel's state (the images panel's genus): the open
+/// door, the armed delete row (the single-arm seat — an armed pair
+/// never survives a close), and the focus claim taken at open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+pub struct OverlayPanel {
+    pub open: bool,
+    pub armed: Option<std::path::PathBuf>,
+    pub focus_claim: Option<FocusClaim>,
+}
+
+/// A host-owned panel container. Declared by the shell, never by a
+/// script; `panel-slot` registers views into these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+pub enum PanelContainer {
+    Edge(EdgeRail),
+    Overlay(OverlayPanel),
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+impl PanelContainer {
+    /// The container's open door: an open overlay takes the keyboard
+    /// and records where it sat; an edge rail's door is the config
+    /// gate (never this transition). Closing is a no-op on an
+    /// already-closed container.
+    pub fn open(&mut self, claim: FocusClaim) {
+        if let PanelContainer::Overlay(overlay) = self
+            && !overlay.open
+        {
+            overlay.open = true;
+            overlay.focus_claim = Some(claim);
+        }
+    }
+
+    /// The container's close door: the open drops, the armed pair
+    /// dies with it (an armed pair never survives the close), and
+    /// the focus claim comes back for the shell's handback. Closing
+    /// a closed container returns nothing.
+    pub fn close(&mut self) -> Option<FocusClaim> {
+        match self {
+            PanelContainer::Overlay(overlay) => {
+                if !overlay.open {
+                    return None;
+                }
+                overlay.open = false;
+                overlay.armed = None;
+                overlay.focus_claim.take()
+            }
+            PanelContainer::Edge(_) => None,
+        }
+    }
+
+    /// Whether the container stands open (an overlay's door; an edge
+    /// rail stands by its gate — never this model's).
+    pub fn is_open(&self) -> bool {
+        match self {
+            PanelContainer::Overlay(overlay) => overlay.open,
+            PanelContainer::Edge(_) => false,
+        }
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the model lands before its consumers")
+)]
+impl EdgeRail {
+    /// Resize the rail: the edge's memory, clamped to the floor.
+    /// The memory survives open/close whole — there is no close for
+    /// a rail, only the gate.
+    pub fn resize(&mut self, width: u32) {
+        self.width = width.max(MIN_RAIL_WIDTH);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The overlay's open→close round trip: the claim comes back,
+    /// the armed pair dies with the close (the images panel's own
+    /// rule), and the door shuts.
+    #[test]
+    fn an_overlay_close_returns_the_claim_and_kills_the_armed_pair() {
+        let mut panel = PanelContainer::Overlay(OverlayPanel::default());
+        panel.open(FocusClaim("pane-42".to_owned()));
+        assert!(panel.is_open());
+        if let PanelContainer::Overlay(overlay) = &mut panel {
+            overlay.armed = Some(std::path::PathBuf::from("/tmp/a.png"));
+        }
+        let claim = panel.close().expect("an open panel closes");
+        assert_eq!(claim, FocusClaim("pane-42".to_owned()));
+        assert!(!panel.is_open());
+        if let PanelContainer::Overlay(overlay) = &panel {
+            assert!(overlay.armed.is_none(), "the armed pair never survives");
+            assert!(overlay.focus_claim.is_none(), "the claim is spent");
+        }
+    }
+
+    /// Closing a closed container returns nothing and changes
+    /// nothing — the idempotent door.
+    #[test]
+    fn closing_a_closed_container_is_a_no_op() {
+        let mut panel = PanelContainer::Overlay(OverlayPanel::default());
+        assert!(panel.close().is_none());
+        assert!(!panel.is_open());
+    }
+
+    /// Opening an open panel keeps the first claim — a re-open does
+    /// not steal the keyboard's origin.
+    #[test]
+    fn reopening_keeps_the_first_claim() {
+        let mut panel = PanelContainer::Overlay(OverlayPanel::default());
+        panel.open(FocusClaim("first".to_owned()));
+        panel.open(FocusClaim("second".to_owned()));
+        let claim = panel.close().expect("still open");
+        assert_eq!(claim, FocusClaim("first".to_owned()));
+    }
+
+    /// The rail's size memory: clamped to the floor, surviving
+    /// whole — there is no close for a rail.
+    #[test]
+    fn the_rails_memory_clamps_and_survives() {
+        let mut rail = PanelContainer::Edge(EdgeRail {
+            edge: RailEdge::Right,
+            width: 320,
+        });
+        assert!(!rail.is_open(), "a rail stands by its gate");
+        if let PanelContainer::Edge(edge) = &mut rail {
+            edge.resize(480);
+        }
+        if let PanelContainer::Edge(edge) = &rail {
+            assert_eq!(edge.width, 480);
+        }
+        if let PanelContainer::Edge(edge) = &mut rail {
+            edge.resize(10);
+        }
+        if let PanelContainer::Edge(edge) = &rail {
+            assert_eq!(edge.width, MIN_RAIL_WIDTH, "the floor holds");
+        }
+        assert!(rail.close().is_none(), "a rail has no close door");
+        if let PanelContainer::Edge(edge) = &rail {
+            assert_eq!(edge.width, MIN_RAIL_WIDTH, "the memory survives");
+        }
+    }
+}
