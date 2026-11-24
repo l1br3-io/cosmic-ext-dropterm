@@ -142,10 +142,57 @@ Interactive slots report back over the bus under one event name,
 | `element_id` | the element inside the slot's content the interaction hit |
 | `kind` | the interaction kind - each surface grows its own closed set |
 
-No surface produces one yet; the dialog module arrives with its own
-page. The shape is pinned by test on both sides: the Rust payload
-serializes exactly these four keys, and a registered handler receives
-exactly these four - nothing more.
+The dialog surface produces them today (its own section above); the
+panel surfaces follow. The shape is pinned by test on both sides: the
+Rust payload serializes exactly these four keys, and a registered
+handler receives exactly these four - nothing more.
+
+## Dialogs
+
+A script can open a modal dialog - the command palette's shape: a
+full-surface scrim, a top-centered panel, the keyboard held while it
+stands. One dialog at a time, one live seat: a second open replaces
+the first, logged. An interpreter reload closes the standing dialog
+on the next drain (its script died with its interpreter).
+
+```lua
+dropterm.dialog({
+  title = 'Build finished',
+  body  = { { text = 'release build done in 12.4s', color = 'green' } },
+  buttons = {
+    { id = 'restart', label = 'Restart', accent = true },
+    { id = 'dismiss', label = 'Dismiss' },
+  },
+})
+dropterm.on('slot-event', function(p)
+  if p.slot == 'dialog' and p.element_id == 'restart' then ... end
+end)
+```
+
+The spec is closed - every key it declares:
+
+| Key | Where | Meaning |
+|---|---|---|
+| `title` | the dialog table | the panel's title bar text |
+| `body` | the dialog table | optional; the message, styled spans under the typed-answers rules |
+| `buttons` | the dialog table | one to three, unique non-empty ids; a dialog with zero or four opens nothing |
+| `id` | inside each button | the press event's `element_id` |
+| `label` | inside each button | the visible label |
+| `accent` | inside each button | optional; the primary action's flag, absent parses false |
+
+A wrong shape costs the call one `dropterm:` log line and opens
+nothing. A button press emits `slot-event` with
+`{ surface = 'dialog', slot = 'dialog', element_id = <the button's
+id>, kind = 'press' }`; Escape, the scrim's press, and a focus escape
+each emit `kind = 'dismiss'` with no element id. The dialog holds the
+keyboard while it stands - Tab cycles the buttons, Enter presses the
+focused one.
+
+The trust model, stated as plainly as the plugins page's first: a
+plugin dialog mimics app UI by design - read before binding. A
+script's dialog can look exactly like DropTerm's own prompts, so read
+what asks before you answer, the same way you read a shell rc before
+you paste into it.
 
 ## Timeouts and reloads
 

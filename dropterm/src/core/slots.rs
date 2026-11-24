@@ -1070,11 +1070,12 @@ end)";
     // pattern, slot-contract SL4) ---
 
     /// The contract's documented vocabulary: every key the Rust
-    /// types declare, both `SlotColor` forms, and the `slot-event`
-    /// name — a key added without its docs row fails the pin until
-    /// the row follows. The backticked form is required, so a bare
-    /// word elsewhere in the prose cannot satisfy the check.
-    const DOCUMENTED_KEYS: [&str; 12] = [
+    /// types declare, both `SlotColor` forms, the `slot-event` name,
+    /// and the dialog's keys — a key added without its docs row
+    /// fails the pin until the row follows. The backticked form is
+    /// required, so a bare word elsewhere in the prose cannot
+    /// satisfy the check.
+    const DOCUMENTED_KEYS: [&str; 18] = [
         // the answer table's words
         "kind",
         "spans",
@@ -1091,6 +1092,13 @@ end)";
         "surface",
         "slot",
         "element_id",
+        // the dialog's words (dialog-slot)
+        "title",
+        "body",
+        "buttons",
+        "id",
+        "label",
+        "accent",
     ];
 
     /// The typed-answers section of docs/plugins.md, split to its own
@@ -1101,8 +1109,7 @@ end)";
         let (_, rest) = docs
             .split_once("## Typed answers")
             .expect("docs/plugins.md carries the typed-answers section");
-        rest.split_once("\n## ")
-            .map_or(rest, |(section, _)| section)
+        rest
     }
 
     /// The first documented key the section lacks, if any.
@@ -1137,6 +1144,25 @@ end)";
         assert!(
             typed_answers_section().contains(SPEC_EXAMPLE),
             "the spec's Lua example must appear verbatim in the typed-answers section"
+        );
+    }
+
+    /// The dialog spec's Lua example, verbatim — the dialog-slot
+    /// spec's own shape, the docs teaching what the port parses.
+    const DIALOG_EXAMPLE: &str = "dropterm.dialog({
+  title = 'Build finished',
+  body  = { { text = 'release build done in 12.4s', color = 'green' } },
+  buttons = {
+    { id = 'restart', label = 'Restart', accent = true },
+    { id = 'dismiss', label = 'Dismiss' },
+  },
+})";
+
+    #[test]
+    fn the_docs_carry_the_dialog_example_verbatim() {
+        assert!(
+            typed_answers_section().contains(DIALOG_EXAMPLE),
+            "the dialog spec's Lua example must appear verbatim in the docs"
         );
     }
 
