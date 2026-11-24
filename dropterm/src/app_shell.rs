@@ -5076,6 +5076,11 @@ impl Shell {
                     self.status_scripts.apply_reply(token, stale, values);
                     cx.notify();
                 }
+                dropterm::core::lua_host::HostEvent::OpenDialog { .. } => {
+                    // DS2 (dialog-slot) mounts the modal here; until
+                    // then the validated spec lands inert — the
+                    // channel carried it, nothing shows.
+                }
                 dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
                     self.tab_titles.note_provider(present);
                 }

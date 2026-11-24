@@ -234,6 +234,15 @@ pub enum HostEvent {
         /// The exact bytes the script asked for, verbatim.
         text: String,
     },
+    /// One `dropterm.dialog` request (dialog-slot spec): the script
+    /// opens a modal — fire-and-forget the other way, the drain
+    /// mounts it and presses return over [`SLOT_EVENT`]. The spec
+    /// validated at the port; a second request replaces (the shell's
+    /// one-live-seat rule), a bad shape never reaches this arm.
+    OpenDialog {
+        /// The validated spec, whole.
+        spec: crate::core::slots::DialogSpec,
+    },
 }
 
 /// The pre-spawn halves of both channels, waiting inside the gate
@@ -1025,6 +1034,29 @@ fn install_port(
         Ok(())
     })?;
 
+    let dialog_events = events.clone();
+    let dialog = lua.create_function(move |lua, spec: Value| {
+        // Validate at the port (dialog-slot DS1): the whole table
+        // crosses via mlua's serde path into the contract's parser;
+        // a bad shape costs one log line and opens nothing.
+        let parsed = match lua.from_value::<serde_json::Value>(spec) {
+            Ok(json) => crate::core::slots::parse_dialog(&json),
+            Err(err) => {
+                log(&dialog_events, format!("dialog would not convert: {err}"));
+                return Ok(());
+            }
+        };
+        match parsed {
+            Ok(spec) => {
+                let _ = dialog_events.send(HostEvent::OpenDialog { spec });
+            }
+            Err(err) => {
+                log(&dialog_events, format!("dialog rejected: {err}"));
+            }
+        }
+        Ok(())
+    })?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
@@ -1032,6 +1064,7 @@ fn install_port(
     module.set("tab_title", tab_title)?;
     module.set("command", command)?;
     module.set("send_text", send_text)?;
+    module.set("dialog", dialog)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
@@ -2689,6 +2722,92 @@ mod tests {
             ],
             "the reply's values render: the left group before the right, per side in slot order; the styled answer lays its runs, the glyph prefixed"
         );
+    }
+
+    #[test]
+    fn the_dialog_port_opens_one_dialog_with_its_parsed_spec() {
+        use crate::core::slots::{DialogSpec, SlotColor};
+        let dir = TempDir::new("dialog");
+        script(
+            &dir,
+            "dialog.lua",
+            &format!(
+                "{PORT}\n\
+                 d.dialog {{ title = 'Build finished', body = {{ {{ text = 'done', color = 'green' }} }}, buttons = {{ {{ id = 'restart', label = 'Restart', accent = true }}, {{ id = 'dismiss', label = 'Dismiss' }} }} }}\n\
+                 d.dialog {{ title = 'Minimal', buttons = {{ {{ id = 'ok', label = 'OK' }} }} }}"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let events = events_until_quiet(&host);
+        let specs: Vec<DialogSpec> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::OpenDialog { spec } => Some(spec.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            specs.len(),
+            2,
+            "each good call opens one dialog, nothing else on the channel: {events:?}"
+        );
+        assert_eq!(specs[0].title, "Build finished");
+        assert_eq!(specs[0].buttons.len(), 2);
+        assert!(specs[0].buttons[0].accent);
+        assert_eq!(
+            specs[0].body[0].color,
+            Some(SlotColor::Token("green".to_owned())),
+            "the body's span parses whole"
+        );
+        assert!(specs[1].body.is_empty(), "an absent body parses empty");
+    }
+
+    #[test]
+    fn each_bad_dialog_shape_costs_one_line_and_opens_nothing() {
+        let dir = TempDir::new("dialog-bad");
+        script(
+            &dir,
+            "dialog-bad.lua",
+            &format!(
+                "{PORT}\n\
+                 d.dialog {{ title = 'zero', buttons = {{}} }}\n\
+                 d.dialog {{ title = 'unknown', bogus = 1, buttons = {{ {{ id = 'a', label = 'A' }} }} }}\n\
+                 d.dialog {{ title = 'label', buttons = {{ {{ id = 'a', label = 3 }} }} }}\n\
+                 d.dialog {{ title = 'dup', buttons = {{ {{ id = 'a', label = 'A' }}, {{ id = 'a', label = 'B' }} }} }}\n\
+                 d.dialog {{}}\n\
+                 d.dialog {{ title = 'good', buttons = {{ {{ id = 'ok', label = 'OK' }} }} }}"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let events = events_until_quiet(&host);
+        let opened = events
+            .iter()
+            .filter(|event| matches!(event, HostEvent::OpenDialog { .. }))
+            .count();
+        assert_eq!(opened, 1, "only the good shape opens: {events:?}");
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            "0 buttons",
+            "unknown key 'bogus'",
+            "the 'label' key",
+            "share the id 'a'",
+            "the 'title' key",
+        ];
+        for shape in expected {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(shape)).count(),
+                1,
+                "'{shape}' costs exactly one line: {lines:?}"
+            );
+        }
     }
 
     #[test]

@@ -206,19 +206,33 @@ pub fn parse_content(value: &serde_json::Value) -> Result<SlotContent, SlotError
             let Some(spans) = map.get("spans") else {
                 return Err(SlotError::MissingSpans);
             };
-            let Some(spans) = spans.as_array() else {
-                return Err(SlotError::WrongType("spans"));
-            };
-            let mut parsed = Vec::with_capacity(spans.len().min(MAX_SPANS_PER_ANSWER));
-            for span in spans {
-                parsed.push(parse_span(span)?);
-            }
-            let content = SlotContent::Styled { spans: parsed };
+            let spans = parse_spans(spans)?;
+            let content = SlotContent::Styled { spans };
             validate(&content)?;
             Ok(content)
         }
         _ => Err(SlotError::WrongType("content")),
     }
+}
+
+/// Parse one spans array against the closed keyset — the styled
+/// answer's list and the dialog body's shared rule.
+pub fn parse_spans(value: &serde_json::Value) -> Result<Vec<Span>, SlotError> {
+    // Lua's empty table serializes as an empty object — the only
+    // empty list a script can write — so both empty forms parse as
+    // the empty list, and a non-empty object stays a shape error.
+    let spans = match value {
+        serde_json::Value::Array(spans) => spans,
+        serde_json::Value::Object(map) if map.is_empty() => {
+            return Ok(Vec::new());
+        }
+        _ => return Err(SlotError::WrongType("spans")),
+    };
+    let mut parsed = Vec::with_capacity(spans.len().min(MAX_SPANS_PER_ANSWER));
+    for span in spans {
+        parsed.push(parse_span(span)?);
+    }
+    Ok(parsed)
 }
 
 /// Parse one span object against the closed keyset: `text` required
@@ -284,6 +298,149 @@ pub fn validate(content: &SlotContent) -> Result<(), SlotError> {
 /// interaction. The payload's four keys are closed — a handler
 /// receives exactly these and nothing else (the headless proof is
 /// this module's event-path test).
+/// One plugin-opened dialog (dialog-slot spec): a title, a message
+/// of spans, and one to three buttons. Closed keyset — new keys join
+/// as additive releases, existing keys never change meaning (the
+/// contract's evolution rule, one more tenant).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogSpec {
+    /// The modal's title bar text.
+    pub title: String,
+    /// The message: spans, the slot contract's own styled runs.
+    pub body: Vec<Span>,
+    /// The buttons, one to three, unique non-empty ids — a press
+    /// carries the id back over [`SLOT_EVENT`].
+    pub buttons: Vec<DialogButton>,
+}
+
+/// One dialog button. `accent` marks the primary action (the
+/// palette's accent key, one word).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogButton {
+    /// The press event's `element_id` — the handler's address.
+    pub id: String,
+    /// The visible label.
+    pub label: String,
+    /// The primary action's flag; absent parses false.
+    #[serde(default)]
+    pub accent: bool,
+}
+
+/// One dialog spec's failure, typed — the script's bug, one log
+/// line, nothing opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogError {
+    /// A key outside the closed vocabulary — on the dialog or a
+    /// button.
+    UnknownKey(String),
+    /// A known key held the wrong shape. The payload is the key's
+    /// name (`dialog` itself for a non-object).
+    WrongType(&'static str),
+    /// The buttons list stood outside one to three.
+    BadButtonCount(usize),
+    /// Two buttons shared an id — presses would be ambiguous.
+    DuplicateButton(String),
+    /// A button id stood empty.
+    EmptyButtonId,
+    /// A body span failed the slot contract's own rules.
+    Body(SlotError),
+}
+
+impl std::fmt::Display for DialogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DialogError::UnknownKey(key) => write!(f, "unknown key '{key}'"),
+            DialogError::WrongType(key) => write!(f, "the '{key}' key has the wrong type"),
+            DialogError::BadButtonCount(count) => {
+                write!(f, "{count} buttons — a dialog carries one to three")
+            }
+            DialogError::DuplicateButton(id) => {
+                write!(f, "two buttons share the id '{id}'")
+            }
+            DialogError::EmptyButtonId => write!(f, "a button id is empty"),
+            DialogError::Body(error) => write!(f, "the body: {error}"),
+        }
+    }
+}
+
+/// Parse one dialog spec from its serde form (dialog-slot, DS1):
+/// the closed keyset, the one-to-three button rule, unique non-empty
+/// ids, the body's spans under the slot contract's own rules.
+pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError> {
+    const DIALOG_KEYS: [&str; 3] = ["title", "body", "buttons"];
+    const BUTTON_KEYS: [&str; 3] = ["id", "label", "accent"];
+    let map = value.as_object().ok_or(DialogError::WrongType("dialog"))?;
+    for key in map.keys() {
+        if !DIALOG_KEYS.contains(&key.as_str()) {
+            return Err(DialogError::UnknownKey(key.clone()));
+        }
+    }
+    let title = map
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DialogError::WrongType("title"))?;
+    if title.is_empty() {
+        return Err(DialogError::WrongType("title"));
+    }
+    let body = match map.get("body") {
+        Some(raw) => parse_spans(raw).map_err(DialogError::Body)?,
+        None => Vec::new(),
+    };
+    let Some(buttons) = map.get("buttons") else {
+        return Err(DialogError::WrongType("buttons"));
+    };
+    // Lua's empty table rides as an empty object (see
+    // [`parse_spans`]) — zero buttons, the count rule's own error.
+    let buttons = match buttons {
+        serde_json::Value::Array(buttons) => buttons,
+        serde_json::Value::Object(map) if map.is_empty() => {
+            return Err(DialogError::BadButtonCount(0));
+        }
+        _ => return Err(DialogError::WrongType("buttons")),
+    };
+    if buttons.is_empty() || buttons.len() > 3 {
+        return Err(DialogError::BadButtonCount(buttons.len()));
+    }
+    let mut parsed = Vec::with_capacity(buttons.len());
+    let mut seen = std::collections::HashSet::new();
+    for button in buttons {
+        let map = button.as_object().ok_or(DialogError::WrongType("button"))?;
+        for key in map.keys() {
+            if !BUTTON_KEYS.contains(&key.as_str()) {
+                return Err(DialogError::UnknownKey(key.clone()));
+            }
+        }
+        let id = map
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DialogError::WrongType("id"))?;
+        if id.is_empty() {
+            return Err(DialogError::EmptyButtonId);
+        }
+        if !seen.insert(id.to_owned()) {
+            return Err(DialogError::DuplicateButton(id.to_owned()));
+        }
+        let label = map
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DialogError::WrongType("label"))?;
+        let accent = match map.get("accent") {
+            Some(raw) => raw.as_bool().ok_or(DialogError::WrongType("accent"))?,
+            None => false,
+        };
+        parsed.push(DialogButton {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            accent,
+        });
+    }
+    Ok(DialogSpec {
+        title: title.to_owned(),
+        body,
+        buttons: parsed,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotEvent {
     /// The slot surface that produced the event (`"status"`,
@@ -571,6 +728,11 @@ end)";
         assert_eq!(error, SlotError::EmptySpans);
         let error = parse_content(&json!({ "spans": [] })).expect_err("and at the parse");
         assert_eq!(error, SlotError::EmptySpans);
+        // Lua's empty table serializes as an empty object — the only
+        // empty list a script can write — so it parses as the empty
+        // list and lands on the same rule.
+        let error = parse_content(&json!({ "spans": {} })).expect_err("the Lua empty table");
+        assert_eq!(error, SlotError::EmptySpans);
     }
 
     #[test]
@@ -718,6 +880,138 @@ end)";
                 .any(|line| line.contains("slot-event payload exact")),
             "the handler must receive exactly the four documented keys with their values: {lines:?}"
         );
+    }
+
+    // --- the dialog vocabulary (dialog-slot, DS1) ---
+
+    #[test]
+    fn a_dialog_spec_parses_with_its_defaults() {
+        let spec = parse_dialog(&json!({
+            "title": "Build finished",
+            "body": [{ "text": "done in 12.4s", "color": "green" }],
+            "buttons": [
+                { "id": "restart", "label": "Restart", "accent": true },
+                { "id": "dismiss", "label": "Dismiss" },
+            ],
+        }))
+        .expect("the spec's example parses");
+        assert_eq!(spec.title, "Build finished");
+        assert_eq!(spec.body.len(), 1);
+        assert_eq!(spec.body[0].text, "done in 12.4s");
+        assert_eq!(
+            spec.body[0].color,
+            Some(SlotColor::Token("green".to_owned()))
+        );
+        assert_eq!(spec.buttons.len(), 2);
+        assert!(spec.buttons[0].accent, "the accent flag parses");
+        assert!(!spec.buttons[1].accent, "an absent accent defaults false");
+    }
+
+    #[test]
+    fn a_dialog_without_a_body_parses_empty() {
+        // The minimal dialog: a title and one button. The body key is
+        // optional; absent parses empty.
+        let spec = parse_dialog(&json!({
+            "title": "Ping",
+            "buttons": [{ "id": "ok", "label": "OK" }],
+        }))
+        .expect("parses");
+        assert!(spec.body.is_empty());
+        assert_eq!(spec.buttons.len(), 1);
+    }
+
+    #[test]
+    fn every_dialog_bad_shape_yields_its_typed_error() {
+        // 0 buttons and 4 buttons.
+        let error = parse_dialog(&json!({
+            "title": "t", "buttons": [],
+        }))
+        .expect_err("zero buttons");
+        assert_eq!(error, DialogError::BadButtonCount(0));
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "buttons": [
+                { "id": "a", "label": "A" }, { "id": "b", "label": "B" },
+                { "id": "c", "label": "C" }, { "id": "d", "label": "D" },
+            ],
+        }))
+        .expect_err("four buttons");
+        assert_eq!(error, DialogError::BadButtonCount(4));
+
+        // An unknown key on the dialog table and on a button.
+        let error = parse_dialog(&json!({
+            "title": "t", "bogus": 1,
+            "buttons": [{ "id": "a", "label": "A" }],
+        }))
+        .expect_err("unknown dialog key");
+        assert_eq!(error, DialogError::UnknownKey("bogus".to_owned()));
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "buttons": [{ "id": "a", "label": "A", "bogus": 1 }],
+        }))
+        .expect_err("unknown button key");
+        assert_eq!(error, DialogError::UnknownKey("bogus".to_owned()));
+
+        // A non-string label and a missing title.
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "buttons": [{ "id": "a", "label": 3 }],
+        }))
+        .expect_err("non-string label");
+        assert_eq!(error, DialogError::WrongType("label"));
+
+        // Duplicate and empty button ids.
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "buttons": [
+                { "id": "a", "label": "A" }, { "id": "a", "label": "B" },
+            ],
+        }))
+        .expect_err("duplicate ids");
+        assert_eq!(error, DialogError::DuplicateButton("a".to_owned()));
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "buttons": [{ "id": "", "label": "A" }],
+        }))
+        .expect_err("empty id");
+        assert_eq!(error, DialogError::EmptyButtonId);
+
+        // A body span failing the slot contract's own rules.
+        let error = parse_dialog(&json!({
+            "title": "t",
+            "body": [{ "text": "x", "bogus": 1 }],
+            "buttons": [{ "id": "a", "label": "A" }],
+        }))
+        .expect_err("bad body span");
+        assert_eq!(
+            error,
+            DialogError::Body(SlotError::UnknownKey("bogus".to_owned()))
+        );
+
+        // A non-object and a missing title.
+        assert_eq!(
+            parse_dialog(&json!(42)).expect_err("non-object"),
+            DialogError::WrongType("dialog")
+        );
+        assert_eq!(
+            parse_dialog(&json!({ "buttons": [{ "id": "a", "label": "A" }] }))
+                .expect_err("missing title"),
+            DialogError::WrongType("title")
+        );
+    }
+
+    #[test]
+    fn a_dialog_spec_round_trips_through_serde() {
+        let spec = parse_dialog(&json!({
+            "title": "t",
+            "body": [{ "text": "b", "icon": "↓" }],
+            "buttons": [{ "id": "ok", "label": "OK", "accent": true }],
+        }))
+        .expect("parses");
+        let back: DialogSpec =
+            serde_json::from_slice(&serde_json::to_vec(&spec).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(back, spec);
     }
 
     // --- the render's flatten (the band's byte-compat pin) ---
