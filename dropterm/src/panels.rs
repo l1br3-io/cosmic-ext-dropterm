@@ -218,3 +218,313 @@ mod tests {
         }
     }
 }
+
+// --- the rail's ask/drain state (panel-slot, PS2) ---
+
+use dropterm::core::lua_host::{PanelAnswerRow, PanelViewRow};
+use dropterm::core::slots::PanelContent;
+use std::collections::HashMap;
+
+/// One laid section of the rail's view (panel-slot): the view's id,
+/// its title, and its rows — each row's painted runs with the
+/// element id its press carries (the script-named `id`, else the
+/// positional index as a string).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelSectionVm {
+    pub id: String,
+    pub title: String,
+    pub rows: Vec<(String, Vec<dropterm::core::status::BandScriptRunVm>)>,
+}
+
+/// The right rail's live state (panel-slot): the registry's sync rows
+/// (the titled sections' truth), each view's last painted content
+/// (the stale-degrade keeps priors), and the one cadence's
+/// bookkeeping — the boot ask, the status-refresh pull, and the
+/// interval, the stood default's triggers. Pure state: the shell
+/// owns the sends, this pins the decisions headless.
+#[derive(Debug, Default)]
+pub struct PanelRail {
+    views: Vec<PanelViewRow>,
+    sections: HashMap<String, PanelContent>,
+    token: u64,
+    queried_at: Option<std::time::Instant>,
+    dirty: bool,
+    boot_armed: bool,
+}
+
+impl PanelRail {
+    /// Apply a registry sync: the titled sections' truth. Vanished
+    /// views' sections sweep; the sync arms the boot ask (the
+    /// registry's first report is the rail's first reason to ask —
+    /// the no-views report never fires).
+    pub fn note_views(&mut self, views: Vec<PanelViewRow>) {
+        let fresh = views != self.views;
+        self.views = views;
+        let ids: std::collections::HashSet<&str> =
+            self.views.iter().map(|row| row.id.as_str()).collect();
+        self.sections.retain(|id, _| ids.contains(id.as_str()));
+        if fresh {
+            self.boot_armed = true;
+        }
+    }
+
+    /// The status-refresh pull's mark (the stood default's second
+    /// trigger — one cadence with the segments').
+    pub fn note_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// The requery decision: an empty registry never fires; the boot
+    /// ask, a drained dirty pull, or the interval past the last
+    /// dispatch fires one ask — the token bumps and the clock
+    /// stamps. Returns the dispatch's token for the send.
+    pub fn requery_due(&mut self, now: std::time::Instant) -> Option<u64> {
+        if self.views.is_empty() {
+            return None;
+        }
+        let interval = dropterm::core::status::SCRIPT_QUERY_INTERVAL;
+        let interval_due = self.queried_at.is_none_or(|at| now >= at + interval);
+        if !self.boot_armed && !self.dirty && !interval_due {
+            return None;
+        }
+        self.boot_armed = false;
+        self.dirty = false;
+        self.queried_at = Some(now);
+        self.token += 1;
+        Some(self.token)
+    }
+
+    /// The ask's view ids, in registration order.
+    pub fn due_views(&self) -> Vec<String> {
+        self.views.iter().map(|row| row.id.clone()).collect()
+    }
+
+    /// Apply a reply: a stale flag or a superseded token drops it
+    /// whole; a nil clears that view's content this round (a fresh
+    /// hide — the section renders nothing); an omitted id keeps its
+    /// prior (the stale-degrade).
+    pub fn apply_reply(&mut self, token: u64, stale: bool, rows: Vec<PanelAnswerRow>) {
+        if stale || token != self.token {
+            return;
+        }
+        for row in rows {
+            match row.content {
+                Some(content) => {
+                    self.sections.insert(row.id, content);
+                }
+                None => {
+                    self.sections.remove(&row.id);
+                }
+            }
+        }
+    }
+
+    /// The laid sections, in registration order: only views standing
+    /// in the registry, only sections with content, each row's runs
+    /// composed and its press id resolved (the script-named `id`,
+    /// else the positional index).
+    pub fn sections_laid(&self) -> Vec<PanelSectionVm> {
+        self.views
+            .iter()
+            .filter_map(|view| {
+                let content = self.sections.get(&view.id)?;
+                let rows = match content {
+                    PanelContent::Rows { rows } => rows,
+                    PanelContent::Slot(slot) => {
+                        // A Slot-shaped answer paints one section of
+                        // its own text — one row.
+                        let runs = dropterm::core::status::script_runs(slot);
+                        return Some(PanelSectionVm {
+                            id: view.id.clone(),
+                            title: view.title.clone(),
+                            rows: vec![(String::new(), runs)],
+                        });
+                    }
+                };
+                let laid = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        let press_id = row
+                            .id
+                            .map_or_else(|| index.to_string(), |id| id.to_string());
+                        let runs = dropterm::core::status::script_runs(
+                            &dropterm::core::slots::SlotContent::Styled {
+                                spans: row.spans.clone(),
+                            },
+                        );
+                        (press_id, runs)
+                    })
+                    .collect();
+                Some(PanelSectionVm {
+                    id: view.id.clone(),
+                    title: view.title.clone(),
+                    rows: laid,
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+
+    fn view(id: &str) -> PanelViewRow {
+        PanelViewRow {
+            id: id.to_owned(),
+            title: id.to_owned(),
+        }
+    }
+
+    /// The sync arms the boot ask; the ask's token bumps once; an
+    /// empty registry never fires.
+    #[test]
+    fn the_boot_ask_fires_once_and_an_empty_registry_never() {
+        let mut rail = PanelRail::default();
+        assert!(
+            rail.requery_due(std::time::Instant::now()).is_none(),
+            "no views, no ask"
+        );
+        rail.note_views(vec![view("tasks")]);
+        let token = rail
+            .requery_due(std::time::Instant::now())
+            .expect("the boot ask fires");
+        assert_eq!(token, 1);
+        assert!(
+            rail.requery_due(std::time::Instant::now()).is_none(),
+            "the boot ask is spent; the interval has not elapsed"
+        );
+        assert_eq!(rail.due_views(), vec!["tasks".to_owned()]);
+    }
+
+    /// The stale-degrade: a fresh answer replaces, a nil hides this
+    /// round, an omitted id keeps its prior, and a stale or
+    /// superseded reply drops whole.
+    #[test]
+    fn replies_apply_under_token_and_stale_guards() {
+        use dropterm::core::slots::{SlotContent, Span};
+        let mut rail = PanelRail::default();
+        rail.note_views(vec![view("tasks")]);
+        let token = rail
+            .requery_due(std::time::Instant::now())
+            .expect("the boot ask");
+        // A stale reply drops whole — nothing stored.
+        rail.apply_reply(
+            token,
+            true,
+            vec![PanelAnswerRow {
+                id: "tasks".to_owned(),
+                content: Some(PanelContent::Slot(SlotContent::Text("stale".to_owned()))),
+            }],
+        );
+        assert!(rail.sections_laid().is_empty());
+        // A superseded token drops too.
+        rail.apply_reply(
+            token + 7,
+            false,
+            vec![PanelAnswerRow {
+                id: "tasks".to_owned(),
+                content: Some(PanelContent::Slot(SlotContent::Text(
+                    "superseded".to_owned(),
+                ))),
+            }],
+        );
+        assert!(rail.sections_laid().is_empty());
+        // The matching fresh reply lands.
+        rail.apply_reply(
+            token,
+            false,
+            vec![PanelAnswerRow {
+                id: "tasks".to_owned(),
+                content: Some(PanelContent::Slot(SlotContent::Text(
+                    "three tasks".to_owned(),
+                ))),
+            }],
+        );
+        let laid = rail.sections_laid();
+        assert_eq!(laid.len(), 1);
+        assert_eq!(laid[0].id, "tasks");
+        assert_eq!(laid[0].rows.len(), 1);
+        assert_eq!(laid[0].rows[0].1[0].text, "three tasks");
+        // The next trip hides it (nil): the section renders nothing.
+        let next = rail
+            .requery_due(std::time::Instant::now() + dropterm::core::status::SCRIPT_QUERY_INTERVAL);
+        assert!(next.is_some(), "the interval fires");
+        rail.apply_reply(
+            next.expect("the token"),
+            false,
+            vec![PanelAnswerRow {
+                id: "tasks".to_owned(),
+                content: None,
+            }],
+        );
+        assert!(rail.sections_laid().is_empty(), "a nil hides this round");
+        // A fresh styled answer lays one row per spans row, with the
+        // positional press ids.
+        let again = rail.requery_due(
+            std::time::Instant::now() + 2 * dropterm::core::status::SCRIPT_QUERY_INTERVAL,
+        );
+        rail.apply_reply(
+            again.expect("the token"),
+            false,
+            vec![PanelAnswerRow {
+                id: "tasks".to_owned(),
+                content: Some(PanelContent::Rows {
+                    rows: vec![
+                        dropterm::core::slots::PanelRow {
+                            spans: vec![Span {
+                                text: "one".to_owned(),
+                                color: None,
+                                icon: None,
+                            }],
+                            id: Some(9),
+                        },
+                        dropterm::core::slots::PanelRow {
+                            spans: vec![Span {
+                                text: "two".to_owned(),
+                                color: None,
+                                icon: None,
+                            }],
+                            id: None,
+                        },
+                    ],
+                }),
+            }],
+        );
+        let laid = rail.sections_laid();
+        assert_eq!(laid[0].rows.len(), 2);
+        assert_eq!(laid[0].rows[0].0, "9", "the script-named id rides");
+        assert_eq!(laid[0].rows[1].0, "1", "the positional index stands in");
+        assert_eq!(laid[0].rows[0].1[0].text, "one");
+    }
+
+    /// A vanished view's section sweeps at the sync; the survivors
+    /// keep their priors across the gap.
+    #[test]
+    fn a_vanished_view_sweeps_and_survivors_keep_their_priors() {
+        use dropterm::core::slots::{PanelContent, SlotContent};
+        let mut rail = PanelRail::default();
+        rail.note_views(vec![view("a"), view("b")]);
+        let token = rail.requery_due(std::time::Instant::now()).expect("asks");
+        rail.apply_reply(
+            token,
+            false,
+            vec![
+                PanelAnswerRow {
+                    id: "a".to_owned(),
+                    content: Some(PanelContent::Slot(SlotContent::Text("a's".to_owned()))),
+                },
+                PanelAnswerRow {
+                    id: "b".to_owned(),
+                    content: Some(PanelContent::Slot(SlotContent::Text("b's".to_owned()))),
+                },
+            ],
+        );
+        rail.note_views(vec![view("a")]);
+        let laid = rail.sections_laid();
+        assert_eq!(laid.len(), 1, "b's section swept with its seat");
+        assert_eq!(laid[0].id, "a");
+        assert_eq!(laid[0].rows[0].1[0].text, "a's", "the survivor keeps");
+    }
+}

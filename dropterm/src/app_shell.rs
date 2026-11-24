@@ -48,7 +48,7 @@ use notify::Watcher as _;
 
 use crate::cli;
 use crate::executor::{Action, GpuiExecutor};
-use crate::panels::{DEFAULT_RAIL_WIDTH, OverlayPanel, PanelContainer};
+use crate::panels::{DEFAULT_RAIL_WIDTH, OverlayPanel, PanelContainer, PanelRail};
 use crate::status_bar;
 use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
@@ -352,6 +352,9 @@ pub(crate) struct Shell {
     /// The live panel views' sync rows (panel-slot): the registry's
     /// truth, the rail's titled sections' input.
     panel_views: Vec<dropterm::core::lua_host::PanelViewRow>,
+    /// The right rail's ask/drain state (panel-slot): the sections'
+    /// store and the one cadence's bookkeeping.
+    panel_rail: PanelRail,
     images_thumbs: HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
     /// The fleet's size, published for the dbus mirror's `TabCount`
     /// (py-5): written at every fleet change, mirrored by the served
@@ -789,12 +792,40 @@ struct StatusMenu {
     _subscription: Subscription,
 }
 
+/// The plugin rail's surface pair (panel-containers PC3 + panel-slot):
+/// the declared right rail at the shared memory's default, and the
+/// state fresh.
+/// The plugin surfaces' construction (panel-containers PC2/PC3 +
+/// panel-slot): the images panel behind its container, the declared
+/// right rail at the shared memory's default, and the rail state
+/// fresh.
+fn plugin_surfaces() -> (PanelContainer, PanelContainer, PanelRail) {
+    (
+        PanelContainer::Overlay(OverlayPanel::default()),
+        PanelContainer::right_rail(DEFAULT_RAIL_WIDTH),
+        PanelRail::default(),
+    )
+}
+
 impl Shell {
+    /// The plain strategy's one inputs patch (gnome-window's
+    /// plain-mode ceiling): a toplevel cannot slide itself
+    /// off-screen, so an armed slide would animate content inside a
+    /// static rectangle — the flag dies here, the decision layer's
+    /// own gates doing the work. The config-echo refresh re-applies
+    /// it — `from_config` reads the user's toggle, moot in this mode.
+    fn plain_mode_inputs(mode: Verdict, mut inputs: SurfaceInputs) -> SurfaceInputs {
+        if mode == Verdict::PlainWindow {
+            inputs.slide_animation_enabled = false;
+        }
+        inputs
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         boot: Instant,
         mode: Verdict,
-        mut inputs: SurfaceInputs,
+        inputs: SurfaceInputs,
         phase: Arc<Mutex<SurfacePhase>>,
         tab_count: Arc<Mutex<u32>>,
         verbs: Receiver<cli::Action>,
@@ -816,7 +847,6 @@ impl Shell {
         tray_actions: Receiver<crate::tray::TrayAction>,
         lua_host: dropterm::core::lua_host::LuaHost,
     ) -> Self {
-        let applied_title_mode = config.tab_title_mode;
         // The plain strategy's one inputs patch: no slide. A toplevel
         // cannot slide itself off-screen (xdg-toplevel has no position
         // API — the spec's plain-mode ceiling), so an armed slide
@@ -827,9 +857,7 @@ impl Shell {
         // destroy-now. The config-echo refresh re-applies it —
         // `from_config` reads the user's toggle, which stays moot in
         // this mode.
-        if mode == Verdict::PlainWindow {
-            inputs.slide_animation_enabled = false;
-        }
+        let inputs = Self::plain_mode_inputs(mode, inputs);
         // The booted fleet baked this opacity into its skins (the
         // live-opacity fix's baseline).
         let rendered_opacity = config.opacity;
@@ -846,6 +874,7 @@ impl Shell {
         // watcher's own rule) — `None` means no pane ever holds an
         // inlet, and a no-plugins session stays byte-identical.
         let (lua_bus, status_scripts, tab_titles) = Self::plugins_boot_state(&lua_host);
+        let (images_panel, rail, panel_rail) = plugin_surfaces();
         Self {
             boot,
             show_open: boot,
@@ -858,9 +887,9 @@ impl Shell {
             inputs,
             tabs,
             panes,
+            applied_title_mode: config.tab_title_mode,
             config,
             signals_tx,
-            applied_title_mode,
             pane_signals,
             theme,
             user_schemes,
@@ -877,9 +906,10 @@ impl Shell {
             last_active: None,
             focus_lost: false,
             phase,
-            images_panel: PanelContainer::Overlay(OverlayPanel::default()),
-            rail: PanelContainer::right_rail(DEFAULT_RAIL_WIDTH),
+            images_panel,
+            rail,
             panel_views: Vec::new(),
+            panel_rail,
             images_thumbs: HashMap::new(),
             tab_count,
             verbs,
@@ -1034,6 +1064,37 @@ impl Shell {
     /// draws its root synchronously, and drawing the Shell while this
     /// entity is mid-update panics ("already being updated" — the
     /// first walk's lesson, made structural).
+    /// The activation loss's focus-loss decision (the config gate
+    /// plus the machine's focus latch — only a `LayerFocused`-class
+    /// GAINED ever armed it), then the hide funnel when it fires.
+    fn focus_loss_tick(&mut self, actions: &mut Vec<Action>) {
+        if !self.focus_lost {
+            return;
+        }
+        self.focus_lost = false;
+        if let SurfaceState::Shown(handle) = self.machine.state
+            && dropterm::core::surface_lifecycle::layer_unfocused_acts_on(
+                &self.machine.state,
+                handle,
+            )
+        {
+            let (report_unfocus, hide) = self.machine.decide_focus_loss(self.inputs);
+            println!(
+                "dropterm: activation lost while shown -> focus-loss decision \
+                 (report_unfocus={report_unfocus}, hide={hide}) at +{}ms",
+                self.boot.elapsed().as_millis()
+            );
+            if hide {
+                // Stamped for the tray-click fix: the tray Toggle
+                // that can follow this hide within the same click
+                // consults the timestamp ([`tray_toggle_swallowed`]).
+                self.focus_loss_hide_at = Some(Instant::now());
+                let intents = self.machine.decide_hide(self.inputs);
+                self.execute_into(intents, actions);
+            }
+        }
+    }
+
     fn pump(&mut self, cx: &mut Context<Self>) -> Pumped {
         self.tick_mem_watch(cx);
         self.tick_system_mode();
@@ -1124,38 +1185,25 @@ impl Shell {
             cx.notify();
         }
         self.drain_lua_host(cx);
+        // The rail's one cadence (panel-slot): the requery decision
+        // fires the ask at the tick's App-level point, the send
+        // itself the shell's (never blocking).
+        let now = std::time::Instant::now();
+        if let Some(token) = self.panel_rail.requery_due(now) {
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::PanelAsk {
+                    token,
+                    views: self.panel_rail.due_views(),
+                });
+        }
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
             self.measured(output, &mut actions);
         }
         // An activation loss while shown: the focus-loss decision
-        // (the config gate plus the machine's focus latch — only a
-        // `LayerFocused`-class GAINED ever armed it), then the hide
+        // (the config gate plus the machine's focus latch), the hide
         // funnel when it fires.
-        if self.focus_lost {
-            self.focus_lost = false;
-            if let SurfaceState::Shown(handle) = self.machine.state
-                && dropterm::core::surface_lifecycle::layer_unfocused_acts_on(
-                    &self.machine.state,
-                    handle,
-                )
-            {
-                let (report_unfocus, hide) = self.machine.decide_focus_loss(self.inputs);
-                println!(
-                    "dropterm: activation lost while shown -> focus-loss decision \
-                     (report_unfocus={report_unfocus}, hide={hide}) at +{}ms",
-                    self.boot.elapsed().as_millis()
-                );
-                if hide {
-                    // Stamped for the tray-click fix: the tray Toggle
-                    // that can follow this hide within the same click
-                    // consults the timestamp ([`tray_toggle_swallowed`]).
-                    self.focus_loss_hide_at = Some(Instant::now());
-                    let intents = self.machine.decide_hide(self.inputs);
-                    self.execute_into(intents, &mut actions);
-                }
-            }
-        }
+        self.focus_loss_tick(&mut actions);
         // The slide clock: parking finished slides is the machine's
         // own truth (an `In` slide rides every shown surface until it
         // parks, and an unparked slide would block reshapes and drags
@@ -5237,7 +5285,32 @@ impl Shell {
             "dropterm: plugins: panel views {ids:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
-        self.panel_views = views;
+        self.panel_views.clone_from(&views);
+        self.panel_rail.note_views(views);
+        self.close_dialog(cx);
+        cx.notify();
+    }
+
+    /// The commands registry's sync (script-commands spec): the
+    /// keybind editor's runtime rows, the reload-close riding the
+    /// dialog's rule.
+    fn note_script_commands(
+        &mut self,
+        commands: Vec<dropterm::core::keybinds::CommandRow>,
+        cx: &mut Context<Self>,
+    ) {
+        if commands == self.script_commands {
+            return;
+        }
+        let names: Vec<&str> = commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect();
+        println!(
+            "dropterm: plugins: commands registry {names:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.script_commands = commands;
         self.close_dialog(cx);
         cx.notify();
     }
@@ -5276,6 +5349,9 @@ impl Shell {
                 }
                 dropterm::core::lua_host::HostEvent::SegmentsDirty => {
                     self.status_scripts.note_dirty();
+                    // The pull is the one cadence's second trigger
+                    // (panel-slot): the rail re-asks with it.
+                    self.panel_rail.note_dirty();
                 }
                 dropterm::core::lua_host::HostEvent::SegmentValues {
                     token,
@@ -5299,24 +5375,20 @@ impl Shell {
                 dropterm::core::lua_host::HostEvent::PanelViewsSync { views } => {
                     self.note_panel_views(views, cx);
                 }
+                dropterm::core::lua_host::HostEvent::PanelAnswer {
+                    token,
+                    stale,
+                    values,
+                } => {
+                    self.panel_rail.apply_reply(token, stale, values);
+                    cx.notify();
+                }
                 dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
                     self.tab_titles.note_provider(present);
                     self.close_dialog(cx);
                 }
                 dropterm::core::lua_host::HostEvent::CommandsSync { commands } => {
-                    if commands != self.script_commands {
-                        let names: Vec<&str> = commands
-                            .iter()
-                            .map(|command| command.name.as_str())
-                            .collect();
-                        println!(
-                            "dropterm: plugins: commands registry {names:?} at +{}ms",
-                            self.boot.elapsed().as_millis()
-                        );
-                        self.script_commands = commands;
-                        self.close_dialog(cx);
-                        cx.notify();
-                    }
+                    self.note_script_commands(commands, cx);
                 }
                 dropterm::core::lua_host::HostEvent::SendText { tab, text } => {
                     // Fire-and-forget the other way (script-commands
@@ -5941,21 +6013,44 @@ impl Shell {
             return column.into_any_element();
         };
         let theme = cx.theme();
+        let rail = div()
+            .id("panel-rail")
+            .h_full()
+            .overflow_y_scroll()
+            .w(gpui::px(rail.width_px()))
+            .border_l_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .text_size(gpui::px(13.))
+            .p(gpui::px(8.))
+            .flex()
+            .flex_col()
+            .gap(gpui::px(8.))
+            .children(self.panel_rail.sections_laid().iter().map(|section| {
+                let title = gpui::div()
+                    .text_size(gpui::px(11.))
+                    .text_color(theme.muted_foreground)
+                    .child(section.title.clone());
+                let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
+                    section.rows.iter().map(|(_, runs)| {
+                        gpui::div()
+                            .children(runs.iter().map(|run| gpui::div().child(run.text.clone())))
+                    }),
+                );
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap(gpui::px(4.))
+                    .child(title)
+                    .child(rows)
+            }));
         div()
             .size_full()
             .flex()
             .flex_row()
             .child(column.into_any_element())
-            .child(
-                div()
-                    .id("panel-rail")
-                    .h_full()
-                    .w(gpui::px(rail.width_px()))
-                    .border_l_1()
-                    .border_color(theme.border)
-                    .bg(theme.background)
-                    .text_color(theme.foreground),
-            )
+            .child(rail)
             .into_any_element()
     }
 

@@ -149,6 +149,18 @@ pub enum HostCommand {
         /// provider derives from.
         tabs: Vec<TabTitleAsk>,
     },
+    /// Ask every registered panel view for its content, one
+    /// interpreter trip (panel-slot spec). The reply lands as
+    /// [`HostEvent::PanelAnswer`] matched by token; a view the
+    /// handler raised on omits from the reply — the rail keeps its
+    /// prior content — and a trip past the soft bound replies stale,
+    /// dropped whole at the drain.
+    PanelAsk {
+        /// The drain-side match key; the reply carries it back.
+        token: u64,
+        /// The due views' ids, in registration order.
+        views: Vec<String>,
+    },
     /// Run one registered command's handler (script-commands spec) —
     /// fire-and-forget: no reply arm exists to wait on. The handler
     /// receives `{ tab }` (the pane the chord landed in); the
@@ -173,6 +185,16 @@ pub enum HostCommand {
 pub struct PanelViewRow {
     pub id: String,
     pub title: String,
+}
+
+/// One panel view's answer off the host (panel-slot spec): the
+/// asked view's id and its parsed content — `None` is a nil, the
+/// hide-this-round decision. A raising or unusable answer omits its
+/// id — the rail keeps that view's prior content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelAnswerRow {
+    pub id: String,
+    pub content: Option<crate::core::slots::PanelContent>,
 }
 
 #[derive(Debug)]
@@ -247,6 +269,18 @@ pub enum HostEvent {
     /// view, id + title, in registration order; empty after a reload
     /// into an empty dir (the rail clears with it).
     PanelViewsSync { views: Vec<PanelViewRow> },
+    /// Every due view's answers to one [`HostCommand::PanelAsk`],
+    /// matched by token (panel-slot spec): `Some` is the parsed
+    /// content — `None` a nil, the hide-this-round decision. A view
+    /// the handler raised on is absent (its prior content keeps
+    /// rendering), a raising trip costs one line, and `stale` marks
+    /// a trip that outlived the soft bound — the drain drops the
+    /// whole reply.
+    PanelAnswer {
+        token: u64,
+        stale: bool,
+        values: Vec<PanelAnswerRow>,
+    },
     /// One `dropterm.dialog` request (dialog-slot spec): the script
     /// opens a modal — fire-and-forget the other way, the drain
     /// mounts it and presses return over [`SLOT_EVENT`]. The spec
@@ -640,6 +674,28 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         break;
                     }
                 }
+                HostCommand::PanelAsk { token, views } => {
+                    if !scanned {
+                        load_scripts(
+                            &generation.lua,
+                            &generation.segments,
+                            &generation.tab_title,
+                            &generation.commands,
+                            &generation.panel_views,
+                            plugins_dir,
+                            events,
+                            &frame,
+                        );
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    }
+                    query_panel_views(&generation, token, &views, events, &frame);
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                }
                 HostCommand::RunCommand { name, tab } => {
                     if !scanned {
                         load_scripts(
@@ -680,7 +736,8 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             }
                             Ok(
                                 query @ (HostCommand::QuerySegments { .. }
-                                | HostCommand::QueryTabTitles { .. }),
+                                | HostCommand::QueryTabTitles { .. }
+                                | HostCommand::PanelAsk { .. }),
                             ) => {
                                 held = Some(query);
                                 break;
@@ -1477,6 +1534,87 @@ fn query_tab_titles(
     }
     let stale = frame.started.get().elapsed() >= SOFT_BOUND;
     let _ = events.send(HostEvent::TabTitles {
+        token,
+        stale,
+        values,
+    });
+}
+
+/// Ask the registered panel views for their content, one
+/// interpreter trip (panel-slot spec): each view's handler runs with
+/// an empty ctx (v1's carry — the ask is the content's own trip),
+/// the answer validating through the contract's parser before it
+/// crosses. A raise or an unusable answer omits its id — the prior
+/// content keeps; a nil is carried as `None`, the fresh hide.
+fn query_panel_views(
+    generation: &Generation,
+    token: u64,
+    views: &[String],
+    events: &Sender<HostEvent>,
+    frame: &Rc<TimeoutFrame>,
+) {
+    frame.begin(true, format_args!("the panel ask"));
+    let mut values = Vec::new();
+    let mut raise_logged = false;
+    for id in views {
+        let Ok(entry) = generation.panel_views.get::<Table>(id.clone()) else {
+            continue;
+        };
+        let Ok(handler) = entry.get::<Function>("handler") else {
+            continue;
+        };
+        let ctx = generation
+            .lua
+            .to_value(&serde_json::json!({}))
+            .unwrap_or(mlua::Value::Nil);
+        let answer = match handler.call::<Option<Table>>(ctx) {
+            Ok(answer) => answer,
+            Err(err) => {
+                if frame.hard_tripped.get() {
+                    // The hook logged the reload line; the abort
+                    // unwinds — no reply, the views keep their priors.
+                    return;
+                }
+                if !raise_logged {
+                    log(events, format!("a panel view raised: {err}"));
+                    raise_logged = true;
+                }
+                continue;
+            }
+        };
+        let Some(answer) = answer else {
+            values.push(PanelAnswerRow {
+                id: id.clone(),
+                content: None,
+            });
+            continue;
+        };
+        match generation
+            .lua
+            .from_value::<serde_json::Value>(mlua::Value::Table(answer))
+        {
+            Ok(json) => match crate::core::slots::parse_panel_content(&json) {
+                Ok(content) => values.push(PanelAnswerRow {
+                    id: id.clone(),
+                    content: Some(content),
+                }),
+                Err(err) => {
+                    log(
+                        events,
+                        format!("panel view '{id}' answered without a usable value: {err}"),
+                    );
+                }
+            },
+            Err(err) => {
+                log(
+                    events,
+                    format!("panel view '{id}' would not convert: {err}"),
+                );
+            }
+        }
+    }
+    let stale = frame.started.get().elapsed() >= SOFT_BOUND;
+    let _ = events.send(HostEvent::PanelAnswer {
         token,
         stale,
         values,
@@ -3959,6 +4097,7 @@ mod tests {
                         | HostEvent::RegistrySync { .. }
                         | HostEvent::TabTitleProvider { .. }
                         | HostEvent::PanelViewsSync { .. }
+                        | HostEvent::PanelAnswer { .. }
                 ),
                 "a command dispatch has no reply arm: {event:?}"
             );
