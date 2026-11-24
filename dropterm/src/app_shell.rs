@@ -48,6 +48,7 @@ use notify::Watcher as _;
 
 use crate::cli;
 use crate::executor::{Action, GpuiExecutor};
+use crate::panels::{OverlayPanel, PanelContainer};
 use crate::status_bar;
 use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
@@ -340,8 +341,10 @@ pub(crate) struct Shell {
     /// The pasted-images panel (py-6): the open door, the armed
     /// delete row (the single-arm seat), and the decoded thumbnails
     /// by path — the drawer's own state shape.
-    images_open: bool,
-    images_armed: Option<std::path::PathBuf>,
+    /// The images panel behind its container (panel-containers PC2):
+    /// the open door, the armed delete row — the model's state, the
+    /// shell's transitions.
+    images_panel: PanelContainer,
     images_thumbs: HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
     /// The fleet's size, published for the dbus mirror's `TabCount`
     /// (py-5): written at every fleet change, mirrored by the served
@@ -867,8 +870,7 @@ impl Shell {
             last_active: None,
             focus_lost: false,
             phase,
-            images_open: false,
-            images_armed: None,
+            images_panel: PanelContainer::Overlay(OverlayPanel::default()),
             images_thumbs: HashMap::new(),
             tab_count,
             verbs,
@@ -4841,7 +4843,9 @@ impl Shell {
     /// tab's ledger, its missing thumbnails decoding off the UI
     /// thread's clock — the reference panel's batch-open arm.
     fn open_images_panel(&mut self, cx: &mut Context<Self>) {
-        self.images_open = true;
+        // No focus claim: the panel never holds the keyboard — the
+        // pane keeps it under the veil (the paste-cover rule).
+        self.images_panel.open(None);
         println!(
             "dropterm: images panel open at +{}ms",
             self.boot.elapsed().as_millis()
@@ -4892,8 +4896,7 @@ impl Shell {
     /// The panel's close door: the open drops with the armed pair
     /// (an armed pair never survives the close).
     fn close_images_panel(&mut self, cx: &mut Context<Self>) {
-        self.images_open = false;
-        self.images_armed = None;
+        let _claim = self.images_panel.close();
         println!(
             "dropterm: images panel closed at +{}ms",
             self.boot.elapsed().as_millis()
@@ -4936,7 +4939,7 @@ impl Shell {
     /// 50% backdrop) drops first: the armed pair dies with the close
     /// and a standing refusal verdict retires as stale news.
     fn paste_landed(&mut self, cx: &mut Context<Self>) {
-        if self.images_open {
+        if self.images_panel.is_open() {
             println!("dropterm: paste closes the standing images panel");
             self.close_images_panel(cx);
         }
@@ -5039,17 +5042,23 @@ impl Shell {
                 // The pair swaps to the pressed row: the single-arm
                 // seat both disarms any other armed row and never
                 // leaves two pairs standing.
-                self.images_armed = Some(path);
+                if let PanelContainer::Overlay(overlay) = &mut self.images_panel {
+                    overlay.armed = Some(path);
+                }
                 cx.notify();
             }
             PanelVerb::KeepDelete => {
-                self.images_armed = None;
+                if let PanelContainer::Overlay(overlay) = &mut self.images_panel {
+                    overlay.armed = None;
+                }
                 cx.notify();
             }
             PanelVerb::ConfirmDelete(path) => {
                 let id = self.tabs.active_id();
                 let dropped = id.is_some_and(|id| self.tabs.forget_pasted_image(id, &path));
-                self.images_armed = None;
+                if let PanelContainer::Overlay(overlay) = &mut self.images_panel {
+                    overlay.armed = None;
+                }
                 self.images_thumbs.remove(&path);
                 if dropped {
                     println!(
@@ -6144,7 +6153,7 @@ impl gpui::Render for Shell {
         }
         if self.palette.is_some() {
             band = self.palette_overlay(band);
-        } else if self.images_open {
+        } else if self.images_panel.is_open() {
             band = self.images_overlay(band, cx);
         } else if self.status_menu.is_some() {
             band = self.band_menu_overlay(band);
@@ -6488,7 +6497,7 @@ impl Shell {
             std::rc::Rc::new(move |verb, window: &mut Window, cx: &mut App| {
                 shell.update(cx, |shell, cx| shell.images_verb(verb, window, cx));
             });
-        let armed = self.images_armed.clone();
+        let armed = self.images_panel.armed().map(std::path::Path::to_path_buf);
         let rows: Vec<crate::images_panel::PanelRow<'_>> = self
             .tabs
             .active_id()
@@ -7259,8 +7268,11 @@ mod tests {
         let bytes = b"png-bytes".to_vec();
         cx.update(|_, cx| {
             shell.update(cx, |shell, _| {
-                shell.images_open = true;
-                shell.images_armed = Some(path.clone());
+                shell.images_panel = PanelContainer::Overlay(OverlayPanel {
+                    open: true,
+                    armed: Some(path.clone()),
+                    ..OverlayPanel::default()
+                });
                 shell.status_paste_refusal = Some((
                     dropterm::core::status::PasteRefusal::OverCap,
                     Instant::now(),
@@ -7275,11 +7287,12 @@ mod tests {
         cx.update(|_, cx| {
             let shell = shell.read(cx);
             assert!(
-                !shell.images_open,
+                !shell.images_panel.is_open(),
                 "the paste must close the standing panel"
             );
             assert_eq!(
-                shell.images_armed, None,
+                shell.images_panel.armed(),
+                None,
                 "the armed pair dies with the close"
             );
             assert_eq!(
@@ -7305,7 +7318,7 @@ mod tests {
         });
         cx.update(|_, cx| {
             let shell = shell.read(cx);
-            assert!(!shell.images_open, "a closed panel stays closed");
+            assert!(!shell.images_panel.is_open(), "a closed panel stays closed");
             assert_eq!(
                 shell
                     .tabs
@@ -7383,10 +7396,13 @@ mod tests {
         });
         cx.update(|_window, cx| {
             shell.update(cx, |shell, _| {
-                shell.images_open = true;
-                shell.images_armed = Some(std::path::PathBuf::from(
-                    "/cache/paste/paste-20261119-101010-1.png",
-                ));
+                shell.images_panel = PanelContainer::Overlay(OverlayPanel {
+                    open: true,
+                    armed: Some(std::path::PathBuf::from(
+                        "/cache/paste/paste-20261119-101010-1.png",
+                    )),
+                    ..OverlayPanel::default()
+                });
                 shell.status_paste_refusal = Some((
                     dropterm::core::status::PasteRefusal::OverCap,
                     Instant::now(),
@@ -7415,11 +7431,12 @@ mod tests {
         cx.update(|_window, cx| {
             let shell = shell.read(cx);
             assert!(
-                !shell.images_open,
+                !shell.images_panel.is_open(),
                 "the text paste must close the standing panel"
             );
             assert_eq!(
-                shell.images_armed, None,
+                shell.images_panel.armed(),
+                None,
                 "the armed pair dies with the close"
             );
             assert_eq!(
@@ -7480,11 +7497,12 @@ mod tests {
         cx.update(|_window, cx| {
             let shell = shell.read(cx);
             assert!(
-                !shell.images_open,
+                !shell.images_panel.is_open(),
                 "the re-paste must not paste under its own panel"
             );
             assert_eq!(
-                shell.images_armed, None,
+                shell.images_panel.armed(),
+                None,
                 "the armed pair dies with the close"
             );
             assert!(
@@ -7631,11 +7649,12 @@ mod tests {
         cx.update(|_window, cx| {
             let shell = shell.read(cx);
             assert!(
-                !shell.images_open,
+                !shell.images_panel.is_open(),
                 "the landed launch must close the standing panel"
             );
             assert_eq!(
-                shell.images_armed, None,
+                shell.images_panel.armed(),
+                None,
                 "the armed pair dies with the close"
             );
         });

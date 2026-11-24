@@ -34,20 +34,12 @@ pub const MIN_RAIL_WIDTH: u32 = 160;
 /// model carries it back at close — the shell hands the keyboard
 /// there (the modal repairs' own shape, one abstraction up).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 pub struct FocusClaim(pub String);
 
 /// One edge-rail container: declared, sized by the shared per-edge
 /// memory (the stood default — one memory per edge, not per
 /// consumer), dormant until `panel-slot` fills it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 pub struct EdgeRail {
     pub edge: RailEdge,
     /// The rail's width in px — the edge's size memory, surviving
@@ -59,10 +51,6 @@ pub struct EdgeRail {
 /// door, the armed delete row (the single-arm seat — an armed pair
 /// never survives a close), and the focus claim taken at open.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 pub struct OverlayPanel {
     pub open: bool,
     pub armed: Option<std::path::PathBuf>,
@@ -72,30 +60,34 @@ pub struct OverlayPanel {
 /// A host-owned panel container. Declared by the shell, never by a
 /// script; `panel-slot` registers views into these.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 pub enum PanelContainer {
+    // The Edge variant constructs at PC3's dormant rail; the expect
+    // comes off there.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Edge constructs at PC3's rail"))]
     Edge(EdgeRail),
     Overlay(OverlayPanel),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 impl PanelContainer {
-    /// The container's open door: an open overlay takes the keyboard
-    /// and records where it sat; an edge rail's door is the config
-    /// gate (never this transition). Closing is a no-op on an
-    /// already-closed container.
-    pub fn open(&mut self, claim: FocusClaim) {
+    /// The overlay's armed delete row, read-only (the render's
+    /// cluster choice). `None` for a rail — no delete seat there.
+    pub fn armed(&self) -> Option<&std::path::Path> {
+        match self {
+            PanelContainer::Overlay(overlay) => overlay.armed.as_deref(),
+            PanelContainer::Edge(_) => None,
+        }
+    }
+
+    /// The container's open door: an overlay that takes the keyboard
+    /// records where it sat (`Some`); the images panel's genus never
+    /// does (`None` — the pane keeps the keyboard under its veil). An
+    /// edge rail's door is the config gate, never this transition.
+    pub fn open(&mut self, claim: Option<FocusClaim>) {
         if let PanelContainer::Overlay(overlay) = self
             && !overlay.open
         {
             overlay.open = true;
-            overlay.focus_claim = Some(claim);
+            overlay.focus_claim = claim;
         }
     }
 
@@ -150,7 +142,7 @@ mod tests {
     #[test]
     fn an_overlay_close_returns_the_claim_and_kills_the_armed_pair() {
         let mut panel = PanelContainer::Overlay(OverlayPanel::default());
-        panel.open(FocusClaim("pane-42".to_owned()));
+        panel.open(Some(FocusClaim("pane-42".to_owned())));
         assert!(panel.is_open());
         if let PanelContainer::Overlay(overlay) = &mut panel {
             overlay.armed = Some(std::path::PathBuf::from("/tmp/a.png"));
@@ -178,8 +170,8 @@ mod tests {
     #[test]
     fn reopening_keeps_the_first_claim() {
         let mut panel = PanelContainer::Overlay(OverlayPanel::default());
-        panel.open(FocusClaim("first".to_owned()));
-        panel.open(FocusClaim("second".to_owned()));
+        panel.open(Some(FocusClaim("first".to_owned())));
+        panel.open(Some(FocusClaim("second".to_owned())));
         let claim = panel.close().expect("still open");
         assert_eq!(claim, FocusClaim("first".to_owned()));
     }
