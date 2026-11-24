@@ -1329,7 +1329,7 @@ end)";
     /// fails the pin until the row follows. The backticked form is
     /// required, so a bare word elsewhere in the prose cannot
     /// satisfy the check.
-    const DOCUMENTED_KEYS: [&str; 18] = [
+    const DOCUMENTED_KEYS: [&str; 22] = [
         // the answer table's words
         "kind",
         "spans",
@@ -1353,6 +1353,11 @@ end)";
         "id",
         "label",
         "accent",
+        // the panel's words (panel-slot)
+        "panel_view",
+        "container",
+        "right-rail",
+        "rows",
     ];
 
     /// The typed-answers section of docs/plugins.md, split to its own
@@ -1411,6 +1416,26 @@ end)";
     { id = 'dismiss', label = 'Dismiss' },
   },
 })";
+
+    /// The panel spec's Lua example, verbatim — the panel-slot
+    /// spec's own shape, the docs teaching what the port parses.
+    const PANEL_EXAMPLE: &str = "dropterm.panel_view('tasks', {
+  container = 'right-rail',
+  title = 'Tasks',
+}, function(ctx)
+  return { kind = 'panel', rows = {
+    { icon = '◯', text = 'ship the spec review' },
+    { icon = '◉', text = 'walk the dialog', color = 'green' },
+  } }
+end)";
+
+    #[test]
+    fn the_docs_carry_the_panel_example_verbatim() {
+        assert!(
+            typed_answers_section().contains(PANEL_EXAMPLE),
+            "the panel spec's Lua example must appear verbatim in the docs"
+        );
+    }
 
     #[test]
     fn the_docs_carry_the_dialog_example_verbatim() {

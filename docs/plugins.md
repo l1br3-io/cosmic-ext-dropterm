@@ -194,6 +194,52 @@ script's dialog can look exactly like DropTerm's own prompts, so read
 what asks before you answer, the same way you read a shell rc before
 you paste into it.
 
+## Panel views
+
+`dropterm.panel_view(view_id, config, handler)` docks a view into
+the host-owned right rail - `panel_view` is the registration verb,
+the `panel_rail_enabled` config key's container the target, the
+`container` word naming it (`right-rail`, v1's one declared rail -
+[the panel containers' page](panel-containers.md) covers the shell
+side). The host asks:
+opening the rail (and the standing cadence - the segments' interval,
+plus a script's status-refresh pull) runs every registered view's
+handler once, batched in one interpreter trip, and the answer paints
+as the view's titled section. One seat per view id: a replacement
+takes it, logged. An interpreter reload clears the seats; the rail
+keeps its last painted content across the gap (the stale-degrade
+story, now for panels).
+
+```lua
+dropterm.panel_view('tasks', {
+  container = 'right-rail',
+  title = 'Tasks',
+}, function(ctx)
+  return { kind = 'panel', rows = {
+    { icon = '◯', text = 'ship the spec review' },
+    { icon = '◉', text = 'walk the dialog', color = 'green' },
+  } }
+end)
+dropterm.on('slot-event', function(p)
+  if p.slot == 'tasks' and p.element_id == '0' then ... end
+end)
+```
+
+The answer's shapes are the typed-answers contract's, additive: a
+flat answer (a string or styled spans) paints as one row; the `rows`
+shape paints one row per entry - either the spec example's span keys
+directly on the row, or a `spans` array for many. Rows may carry an
+optional numeric `id` key; presses carry it as the event's
+`element_id`, the positional index (`0`, the first row) standing in
+when it is absent.
+
+A wrong shape costs the answer one `dropterm:` log line and the view
+keeps its prior content - never a raise into the terminal. A `nil`
+hides the view this round. The rail scrolls its own content; a long
+view scrolls within it (no per-view scroll machinery in v1). The
+rail is display + click only: the terminal keeps the keyboard while
+the rail stands.
+
 ## Timeouts and reloads
 
 Every unit of Lua work runs under a soft bound (100 ms) and a hard cap

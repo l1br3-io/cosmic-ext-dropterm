@@ -87,7 +87,7 @@ The details live in the `docs/` directory:
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
 - [The D-Bus contract](docs/dbus.md) - the V1 surface for integrators: the address, both interfaces' members, the CLI verbs' wire encoding, and the stability promise
-- [Configuration](docs/configuration.md) - all 53 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 54 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Command palette](docs/command-palette.md) - `Ctrl+Shift+P` over every app verb: fuzzy search, every action one keystroke away
 - [Settings window](docs/settings.md) - the nine pages and when each edit applies
@@ -98,6 +98,7 @@ The details live in the `docs/` directory:
 - [Script status segments](docs/status-segments.md) - plugins' own band segments: `dropterm.status_segment`, the ctx table it receives, the refresh triggers, and the `status_script_segments` ordering key
 - [Script tab titles](docs/tab-titles.md) - plugins deriving the tabs' names: `dropterm.tab_title`, the `{ tab, title }` ctx, the change-gated asks, and the stale ladder; a manual rename still wins in every mode
 - [Script commands](docs/script-commands.md) - plugins registering keybindable commands: `dropterm.command` rows beside the built-ins in the Keybindings editor, fire-and-forget dispatch with `{ tab }`, and `dropterm.send_text` as v1's one host verb
+- [Script dialogs and panel views](docs/plugins.md) - the typed-slots surfaces: `dropterm.dialog` opens a host-owned modal and presses return as `slot-event`s, `dropterm.panel_view` docks a titled view into the right rail (`panel_rail_enabled`), and [the panel containers](docs/panel-containers.md) are the shell side
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
 - [Autosuggestions](docs/autosuggestions.md) - fish-style ghost text from the tab's own history; Right accepts, Alt+Right takes a word
