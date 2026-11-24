@@ -1842,8 +1842,10 @@ impl Shell {
                 match self.machine.state {
                     SurfaceState::Hidden => {
                         // The supersede rides ahead of the show, the
-                        // same batch rule `show_intent` runs (SW4).
-                        if self.settings_window.is_some() {
+                        // same batch rule `show_intent` runs (SW4);
+                        // coexist skips it — the summon leaves the
+                        // window standing.
+                        if self.settings_window.is_some() && !self.config.settings_coexist {
                             actions.push(Action::CloseSettingsWindow);
                         }
                         let intents = self.machine.decide_show(self.inputs);
@@ -1851,8 +1853,9 @@ impl Shell {
                     }
                     SurfaceState::Hiding(handle) => {
                         // Mid-slide reversal: the supersede rides
-                        // ahead, the same batch rule (SW4).
-                        if self.settings_window.is_some() {
+                        // ahead, the same batch rule (SW4); the
+                        // coexist skip is `show_intent`'s.
+                        if self.settings_window.is_some() && !self.config.settings_coexist {
                             actions.push(Action::CloseSettingsWindow);
                         }
                         let intents = self.machine.decide_reverse_show(handle, self.inputs);
@@ -1966,8 +1969,9 @@ impl Shell {
         // The exclusive pair's other half (settings-window SW4): a
         // show request while the window stands supersedes it — the
         // close rides ahead of the surface's own actions in the same
-        // batch, and the superseded close queues no return.
-        if self.settings_window.is_some() {
+        // batch, and the superseded close queues no return. Coexist
+        // skips the supersede: both windows stand together.
+        if self.settings_window.is_some() && !self.config.settings_coexist {
             actions.push(Action::CloseSettingsWindow);
         }
         match self.machine.state {
@@ -4193,16 +4197,28 @@ impl Shell {
             shell.commit_open_rename(cx);
             shell.settings.open = true;
             shell.settings.page = page;
-            // The explicit hide rides the pane-signal funnel in both
-            // `hide_on_focus_loss` modes (plan amendment 2): idempotent
-            // where the focus handoff also fires, decisive where it
-            // never does.
-            if let Err(err) = shell.signals_tx.send(view::PaneSignal::Hide) {
+            // The exclusive pair's open half (settings-window SW4,
+            // the coexist sever): the explicit hide rides the
+            // pane-signal funnel in both `hide_on_focus_loss` modes
+            // (plan amendment 2) — idempotent where the focus handoff
+            // also fires, decisive where it never does. `settings_coexist`
+            // skips it: the window opens over whatever the drop-down
+            // is doing, and the flag records what this open did, so
+            // the close restores only what it hid (the flip can land
+            // mid-open through this very window).
+            let coexist = shell.config.settings_coexist;
+            shell.settings.hid_terminal = !coexist;
+            if !coexist && let Err(err) = shell.signals_tx.send(view::PaneSignal::Hide) {
                 println!("dropterm: settings hide signal failed: {err}");
             }
             println!(
-                "dropterm: settings window opening at {page:?} at +{}ms (the surface hides)",
-                shell.boot.elapsed().as_millis()
+                "dropterm: settings window opening at {page:?} at +{}ms{}",
+                shell.boot.elapsed().as_millis(),
+                if coexist {
+                    " (coexist: the surface stands)"
+                } else {
+                    " (the surface hides)"
+                },
             );
             cx.notify();
         });
@@ -4270,6 +4286,7 @@ impl Shell {
                 eprintln!("dropterm: settings window open failed: {err:?}");
                 shell.update(cx, |shell, cx| {
                     shell.settings.open = false;
+                    shell.settings.hid_terminal = false;
                     cx.notify();
                 });
             }
@@ -4306,7 +4323,9 @@ impl Shell {
     /// here. The handle clears, the open flag drops, the buffer and
     /// the per-open page state reset (the reopen-fresh rule), and a
     /// user close queues the drop-down's return through the
-    /// pane-signal funnel (a supersede queues nothing — SW2's
+    /// pane-signal funnel — but only when this open hid it
+    /// ([`Self::settings_hid_terminal`], the coexist sever: an open
+    /// that never hid restores nothing — SW2's
     /// [`dropterm::core::settings::terminal_effect`], the cause the
     /// remover set, unset meaning the compositor's ✕: a user close).
     pub(crate) fn settings_window_closed(&mut self, cx: &mut Context<Self>) {
@@ -4314,6 +4333,7 @@ impl Shell {
             .settings_close_cause
             .take()
             .unwrap_or(dropterm::core::settings::CloseCause::User);
+        let hid = std::mem::take(&mut self.settings.hid_terminal);
         self.settings_window = None;
         self.settings.open = false;
         self.settings.buffer.clear();
@@ -4324,8 +4344,9 @@ impl Shell {
         self.settings.profile_selection = None;
         self.settings.profile_draft = None;
         self.settings.profile_delete_armed = None;
-        if dropterm::core::settings::terminal_effect(cause)
-            == dropterm::core::settings::TerminalEffect::Return
+        if hid
+            && dropterm::core::settings::terminal_effect(cause)
+                == dropterm::core::settings::TerminalEffect::Return
             && let Err(err) = self.signals_tx.send(view::PaneSignal::Show)
         {
             println!("dropterm: settings return signal failed: {err}");
@@ -9153,6 +9174,150 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the sever's whole contract — the show's no-supersede, the open's no-hide, the close's no-return — in one narrative"
+    )]
+    #[gpui::test]
+    fn settings_coexist_leaves_the_pair_independent(cx: &mut gpui::TestAppContext) {
+        // The coexist sever (`settings_coexist`, the exclusive pair's
+        // opt-out): with the flag on, the window and the drop-down
+        // ignore each other — the summon supersedes no window, the
+        // open hides no surface, and the close returns nothing.
+        // Three observations in one narrative: the show side (a
+        // summon with the window standing leaves both standing), the
+        // open side (a reopen over a standing surface leaves it
+        // standing, where the default pairing would explicitly hide
+        // it), and the close side (a user close over a hidden surface
+        // leaves it hidden, where the default pairing would return
+        // it).
+        let ((shell, verbs, _signals, phase), cx) = shell_with_signal_wire(cx);
+        cx.update(|_, cx| register_settings_close_watcher(cx, &shell));
+        // Absorb the scaffold's startup action: the surface stands
+        // hidden, the debounce armed.
+        cx.update(|_window, cx| shell.update(cx, Shell::pump));
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| shell.config.settings_coexist = true);
+        });
+
+        // The show side: the window opens first, then the summon —
+        // past the debounce — must leave the window standing while
+        // the surface shows.
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Dropdown,
+                cx,
+            );
+        });
+        pump_and_apply(&shell, cx);
+        std::thread::sleep(
+            dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE
+                + std::time::Duration::from_millis(10),
+        );
+        verbs.send(cli::Action::Toggle).expect("the summon queues");
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(
+                read.settings_window.is_some() && read.settings.open,
+                "the summon left the window standing"
+            );
+            assert!(
+                matches!(read.machine.state, SurfaceState::Measuring(_)),
+                "the summon showed the surface"
+            );
+            assert_eq!(
+                *phase.lock().expect("the phase lock"),
+                SurfacePhase::Measuring,
+                "the summon's phase published"
+            );
+        });
+
+        // The open side: the window closes (a user close), and a
+        // reopen while the surface stands must not hide it.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.settings_close_cause = Some(dropterm::core::settings::CloseCause::User);
+            });
+            let handle = shell.read(cx).settings_window.expect("the window stands");
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(
+                read.settings_window.is_none(),
+                "the close cleared the handle"
+            );
+            assert!(
+                matches!(read.machine.state, SurfaceState::Measuring(_)),
+                "the close queued no return — the standing surface stands"
+            );
+        });
+        cx.update(|_, cx| {
+            Shell::open_settings_window(
+                &shell,
+                dropterm::core::settings::SettingsPage::Dropdown,
+                cx,
+            );
+        });
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(read.settings_window.is_some(), "the window stands again");
+            assert!(
+                matches!(read.machine.state, SurfaceState::Measuring(_)),
+                "the reopen left the standing surface alone (no explicit hide)"
+            );
+        });
+
+        // The close side: hide the surface (a real toggle, past the
+        // debounce — the window stays standing through it), then a
+        // user close must leave it hidden.
+        std::thread::sleep(
+            dropterm::core::surface_lifecycle::TOGGLE_DEBOUNCE
+                + std::time::Duration::from_millis(10),
+        );
+        verbs.send(cli::Action::Toggle).expect("the hide queues");
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(
+                matches!(read.machine.state, SurfaceState::Hidden),
+                "the toggle hid the surface"
+            );
+            assert!(
+                read.settings_window.is_some(),
+                "the hide left the window standing"
+            );
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                shell.settings_close_cause = Some(dropterm::core::settings::CloseCause::User);
+            });
+            let handle = shell.read(cx).settings_window.expect("the window stands");
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
+        cx.run_until_parked();
+        pump_and_apply(&shell, cx);
+        cx.update(|_, cx| {
+            let read = shell.read(cx);
+            assert!(
+                read.settings_window.is_none(),
+                "the close cleared the handle"
+            );
+            assert!(
+                matches!(read.machine.state, SurfaceState::Hidden),
+                "the coexist close returned nothing — the surface stays hidden"
+            );
+            assert!(
+                !read.settings.hid_terminal,
+                "the hid-at-open flag was consumed at the close"
+            );
+        });
     }
 
     #[gpui::test]

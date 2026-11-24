@@ -56,6 +56,7 @@ A fresh install has no files here at all - each appears the first time something
 | `opacity` | `100` |
 | `scrollback_lines` | `10000` |
 | `hide_on_focus_loss` | `true` |
+| `settings_coexist` | `false` |
 | `session_persistence_enabled` | `true` |
 | `slide_animation_enabled` | `true` |
 | `bell_notification_enabled` | `true` |
@@ -226,6 +227,7 @@ A shell exiting on its own never confirms. The key is read at request time, so a
 | Key | Default | What it does |
 |---|---|---|
 | `hide_on_focus_loss` | `true` | Hide the terminal when it loses keyboard focus. The opposite of Yakuake, Guake, and Ghostty's quick terminal - for a hotkey-driven drop-down, focus is the whole interaction model. Write `false` to keep the overlay open; it then shares keyboard focus like a normal window - click away to type elsewhere, click the terminal to take focus back - instead of holding an exclusive grab. Applies live: a shown drop-down's keyboard grab downgrades (or returns to the configured mode) in place; a hidden one resolves on its next show. A stay-open surface also follows the images panel's launches out on its own (Open / Open folder hand it a hide), so a launched viewer is never left sitting behind the mapped drop-down. |
+| `settings_coexist` | `false` | Run the [Settings window](settings.md) and the drop-down as independent windows instead of the exclusive pair ([settings](settings.md)). The default `false` keeps the shipped pairing: opening Settings hides the drop-down, summoning the drop-down closes Settings, and closing Settings brings the drop-down back. `true` severs all three: Settings opens over whatever the drop-down is doing, a summon leaves Settings standing, and closing Settings returns nothing (the drop-down never left - the return fires only when the open itself hid it, so a flip mid-open is honored correctly). To watch an edit live - drag the opacity slider with the drop-down on screen - pair this with `hide_on_focus_loss: false`; with the focus-loss hide on (the default), focusing the Settings window still retracts the shown drop-down, that rule being its own key. Applies at the next trigger: the next Settings open, drop-down show, or close. |
 | `session_persistence_enabled` | `true` | Save the session on change and restore it on launch ([sessions](sessions.md)). `false` stops saves and skips restore; the saved file is never deleted, so re-enabling resumes over it. |
 | `slide_animation_enabled` | `true` | Animate show/hide with the 150 ms slide ([animation](animation.md)). `false` restores instant transitions. |
 | `bell_notification_enabled` | `true` | Post a desktop notification when a bell rings while the terminal is hidden ([bell](bell.md)). |
