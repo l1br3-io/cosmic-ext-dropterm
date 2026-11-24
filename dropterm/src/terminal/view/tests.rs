@@ -299,15 +299,29 @@ fn a_dispatched_tab_reaches_the_pane_under_the_kit_root(cx: &mut gpui::TestAppCo
     // must land (the clauses that already work); the tab bytes must
     // land with them (the fix's claim: the boot's registration, the
     // pane's key context, and the forwarding action).
+    //
+    // The pin is live I/O — a real PTY, a real child, the engine's own
+    // threads — and the test scheduler's thread-affinity gate fails
+    // the test on any task a thread other than the test's own
+    // schedules. The gate was dodged piecemeal below (echo off, the
+    // leaked engine, the two flags) and one source slipped through:
+    // every boot pre-warms the git generators (`Terminal::new`'s
+    // eligibility onset, gated by neither autosuggestions flag), and
+    // a landed worker wakes the pane's pump from its own thread. Under
+    // suite load that landing beat this test's teardown and the
+    // harness failed the pin at `end_test` — its assertions already
+    // passed. `allow_parking` is gpui's own switch for a test that
+    // does real I/O: the gate stands down for the rest of this test,
+    // so a wake from the reader thread or a generator worker is an
+    // ordinary queued task.
+    cx.update(|cx| cx.background_executor().allow_parking());
     cx.update(gpui_component::init);
     cx.update(bind_pane_keys);
     let mut config = request_config();
-    // The suggest machinery stays out of the pin: a typed letter in
-    // the repo cwd fires the git generators, whose unnamed waiter
-    // threads nudge the pane's pump off-thread — legal in the app,
-    // fatal under the gpui test scheduler's determinism gate (the
-    // generator cache is global, so the nudge can even land on
-    // another pane's test mid-suite).
+    // The ghost and the menu stay off, as the pin was written. Neither
+    // flag reaches the generators' boot-time pre-warm — every pane
+    // boots with it, whatever these say — so these lines never kept a
+    // worker's wake out; `allow_parking` above does.
     config.autosuggestions_enabled = false;
     config.autosuggestions_menu_enabled = false;
     let sink = std::env::temp_dir().join(format!("dropterm-tab-pin-{}.txt", std::process::id()));
