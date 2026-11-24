@@ -2932,6 +2932,79 @@ fn env_rows_stay_silent_over_ssh() {
     );
 }
 
+// --- the dot chain (suggest-depth, SP-D6) ---
+
+/// A listing as the engine now builds one: `.` and `..` always
+/// chained ahead of the directory's own entries (std never yields
+/// them).
+fn chained_listing(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
+    let mut chained = vec![(".".to_string(), true), ("..".to_string(), true)];
+    chained.extend(listing(entries));
+    chained
+}
+
+#[test]
+fn the_menu_path_tier_inherits_the_dot_chain() {
+    let entries = chained_listing(&[("src", true)]);
+    let suggest = adopted();
+    let o = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/",
+        cursor_column: 4,
+        ..obs()
+    };
+    let rows = candidates("~/", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Path)
+        .map(|row| (row.label, row.suffix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            ("./".to_string(), "./".to_string()),
+            ("../".to_string(), "../".to_string()),
+            ("src/".to_string(), "src/".to_string()),
+        ],
+        "the chain leads every listing — `.` and `..` bypass the dotfile rule (Warp chains always); an empty component's suffix is the whole entry"
+    );
+}
+
+#[test]
+fn the_ghost_path_tier_inherits_the_dot_chain() {
+    let entries = chained_listing(&[]);
+    let mut suggest = adopted();
+    let o = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/..",
+        cursor_column: 6,
+        ..obs()
+    };
+    let showing = step(&o, &mut suggest).expect("the ghost answers the chained `..`");
+    assert_eq!(showing.suffix, "/", "`~/..` ghosts its directory slash");
+}
+
+#[test]
+fn the_dotfile_rule_stands_for_ordinary_dotfiles() {
+    let entries = chained_listing(&[(".hidden", false), ("readme", false)]);
+    let suggest = adopted();
+    let o = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/r",
+        cursor_column: 5,
+        ..obs()
+    };
+    let rows = candidates("~/r", &suggest, &o)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Path)
+        .map(|row| row.label)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec!["readme".to_string()],
+        "an ordinary dotfile still hides behind a non-dot component — the chain is the only bypass"
+    );
+}
+
 #[test]
 fn the_path_tier_widens_ci_and_fuzzy() {
     let entries = listing(&[("slt-old", false), ("slack.txt", false)]);

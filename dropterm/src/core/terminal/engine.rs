@@ -941,6 +941,11 @@ fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
         })
         .collect::<Option<Vec<(String, bool)>>>()
         .unwrap_or_default();
+    // The chain (suggest-depth spec, LG4 / depth finding 6): std's
+    // readdir never yields them, so `.` and `..` prepend themselves
+    // — always, every listing, both tiers inheriting.
+    entries.push((".".to_string(), true));
+    entries.push(("..".to_string(), true));
     entries.sort_unstable();
     entries
 }

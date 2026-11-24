@@ -2032,8 +2032,10 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     for (name, is_dir) in listing {
         // The dotfile convention gates matching itself, every rung
         // alike (the ghost's own rule): a dotfile shows only for a
-        // dot-prefixed component.
-        if !component.starts_with('.') && name.starts_with('.') {
+        // dot-prefixed component — except the chain, which Warp
+        // always carries (depth finding 6): `.` and `..` bypass the
+        // rule.
+        if !component.starts_with('.') && name.starts_with('.') && name != "." && name != ".." {
             continue;
         }
         let label = if *is_dir {

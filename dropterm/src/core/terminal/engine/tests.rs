@@ -114,6 +114,37 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
 }
 
 #[test]
+fn read_sorted_entries_chains_dot_and_dotdot() {
+    // The chain's source (suggest-depth spec, LG4 / depth finding 6):
+    // std's readdir never yields `.` or `..`, so the listing
+    // prepends them itself — always, every directory, both menu and
+    // ghost inheriting. The root's synthetic `/` stays out of scope.
+    let dir = std::env::temp_dir().join(format!("dropterm-chain-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create the chain test dir");
+    fs::write(dir.join("a-file"), b"x").expect("seed one entry");
+    let entries = read_sorted_entries(&dir);
+    assert_eq!(
+        entries
+            .first()
+            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
+        Some((".", true)),
+        "`.` chains first"
+    );
+    assert_eq!(
+        entries
+            .get(1)
+            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
+        Some(("..", true)),
+        "`..` chains second"
+    );
+    assert!(
+        entries.iter().any(|(name, _)| name == "a-file"),
+        "the directory's own entries follow"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn env_names_are_spawn_truth_never_rewritten_by_set_config() {
     // The env tier's name set (suggest-depth spec, LG4): copied
     // once at construction — the `spawn_path` contract — so a
@@ -1805,8 +1836,13 @@ fn the_listing_cache_reads_once_per_parent_not_per_keystroke() {
         .to_vec();
     assert_eq!(
         first,
-        &[("a.txt".to_string(), false), ("sub".to_string(), true)],
-        "entries sorted by name, directories flagged"
+        &[
+            (".".to_string(), true),
+            ("..".to_string(), true),
+            ("a.txt".to_string(), false),
+            ("sub".to_string(), true),
+        ],
+        "the chain leads, then entries sorted by name, directories flagged"
     );
     // A file created between two tokens in the SAME parent stays
     // invisible: the second call is not a re-read.
@@ -1842,7 +1878,14 @@ fn an_unreadable_directory_yields_an_empty_listing_never_a_stale_one() {
         .listing_for(true, Some(&format!("{prefix}/h")), None, None)
         .expect("the readable parent lists")
         .to_vec();
-    assert_eq!(good, &[("here.txt".to_string(), false)]);
+    assert_eq!(
+        good,
+        &[
+            (".".to_string(), true),
+            ("..".to_string(), true),
+            ("here.txt".to_string(), false),
+        ]
+    );
     // Unreadable now: a later visit — the key changed away and back —
     // reads silence, never the stale list.
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000))
@@ -1868,7 +1911,14 @@ fn tilde_rooted_tokens_resolve_against_the_spawn_time_home() {
         .listing_for(true, Some("~/no"), Some(&home_str), None)
         .expect("~ expands through the spawn HOME")
         .to_vec();
-    assert_eq!(listing, &[("notes.md".to_string(), false)]);
+    assert_eq!(
+        listing,
+        &[
+            (".".to_string(), true),
+            ("..".to_string(), true),
+            ("notes.md".to_string(), false),
+        ]
+    );
     // The bare HOME root is the same parent — the cached listing.
     let root = cache
         .listing_for(true, Some("~"), Some(&home_str), None)
@@ -1889,7 +1939,14 @@ fn relative_parents_resolve_against_the_tab_cwd() {
     let listing = cache
         .listing_for(true, Some("src/ma"), None, Some(&base))
         .expect("a relative parent joins the cwd");
-    assert_eq!(listing, &[("main.rs".to_string(), false)]);
+    assert_eq!(
+        listing,
+        &[
+            (".".to_string(), true),
+            ("..".to_string(), true),
+            ("main.rs".to_string(), false),
+        ]
+    );
     // No cwd: a relative parent is unresolvable — silence.
     let mut no_cwd = PathListingCache::default();
     assert_eq!(no_cwd.listing_for(true, Some("src/ma"), None, None), None);
