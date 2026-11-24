@@ -82,6 +82,7 @@ A fresh install has no files here at all - each appears the first time something
 | `tab_bar_border` | `true` |
 | `status_bar_border` | `true` |
 | `status_bar_activity_mark` | `true` |
+| `panel_rail_enabled` | `false` |
 | `autosuggestions_enabled` | `true` |
 | `autosuggestions_paths_enabled` | `true` |
 | `autosuggestions_commands_enabled` | `true` |
@@ -183,6 +184,15 @@ All live. A hidden segment is never computed - hiding the branch stops the `.git
 |---|---|---|
 | `tab_bar_border` | `true` | A 1 px hairline on the tab strip's terminal-facing edge (it moves with `tab_position`). |
 | `status_bar_border` | `true` | The same hairline on the status band's side away from the grab bar. |
+
+## Panel rail
+
+`panel_rail_enabled` (default `false`) stands the host-owned right
+edge rail - the container plugin views dock into (the panel-slot
+seam). Off, nothing in the composition changes; on, an empty rail
+stands beside the drawer's column at the rail's remembered width
+(280 px, nothing resizes it until a tenant needs to). No plugin
+surface exists yet: the rail is the declared, dormant container.
 
 The color follows the active scheme, so a scheme flip recolors both lines. Where the strips adjoin, only one line renders - no doubled seam. Pure display: no bar changes height, and both keys are independent. Toggle them on the Behavior tab.
 

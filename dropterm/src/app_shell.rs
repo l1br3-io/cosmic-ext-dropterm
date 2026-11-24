@@ -48,7 +48,7 @@ use notify::Watcher as _;
 
 use crate::cli;
 use crate::executor::{Action, GpuiExecutor};
-use crate::panels::{OverlayPanel, PanelContainer};
+use crate::panels::{DEFAULT_RAIL_WIDTH, OverlayPanel, PanelContainer};
 use crate::status_bar;
 use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
@@ -345,6 +345,10 @@ pub(crate) struct Shell {
     /// the open door, the armed delete row — the model's state, the
     /// shell's transitions.
     images_panel: PanelContainer,
+    /// The right edge rail (panel-containers PC3): the declared,
+    /// dormant container `panel-slot` docks into — sized by the
+    /// shared per-edge memory, standing only behind the config gate.
+    rail: PanelContainer,
     images_thumbs: HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
     /// The fleet's size, published for the dbus mirror's `TabCount`
     /// (py-5): written at every fleet change, mirrored by the served
@@ -871,6 +875,7 @@ impl Shell {
             focus_lost: false,
             phase,
             images_panel: PanelContainer::Overlay(OverlayPanel::default()),
+            rail: PanelContainer::right_rail(DEFAULT_RAIL_WIDTH),
             images_thumbs: HashMap::new(),
             tab_count,
             verbs,
@@ -5895,7 +5900,38 @@ impl Shell {
         }
     }
 
-    fn sliding_band(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The rail's mount decision (panel-containers PC3): gate-off
+    /// passes the column through byte-identically (the composition
+    /// pin's law); gate-on lays the column beside the empty rail at
+    /// the rail's remembered width. The rail is shell chrome — the
+    /// hairline the column already carries stays on the column.
+    fn rail_column(&self, column: impl gpui::IntoElement, cx: &Context<Self>) -> gpui::AnyElement {
+        if !self.config.panel_rail_enabled {
+            return column.into_any_element();
+        }
+        let PanelContainer::Edge(rail) = &self.rail else {
+            return column.into_any_element();
+        };
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .child(column.into_any_element())
+            .child(
+                div()
+                    .id("panel-rail")
+                    .h_full()
+                    .w(gpui::px(rail.width_px()))
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .text_color(theme.foreground),
+            )
+            .into_any_element()
+    }
+
+    fn sliding_band(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         // The drawer's content is the strip plus the active pane
         // (gpui-tabs Task 1): the strip at the config's side of the
         // surface, the pane yielding the strip's height — and the
@@ -5905,7 +5941,7 @@ impl Shell {
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let (strip, fg) = tab_bar::strip_pair(pane_background);
         let Some(pane) = self.active_pane() else {
-            return div().size_full();
+            return div().size_full().into_any_element();
         };
         let bar = self.tab_strip(cx, at_bottom, strip, fg).into_any_element();
         let pane_area = self.pane_area(pane, cx);
@@ -5973,8 +6009,13 @@ impl Shell {
                     .border_1()
                     .border_color(cx.theme().border),
             );
+        // The dormant rail's mount (panel-containers PC3): gate-off
+        // is this exact element, gate-on wraps the column beside an
+        // empty rail at the rail's remembered width — the seam
+        // `panel-slot` docks into, no tenant.
+        let column = self.rail_column(column, cx);
         let Some(playing) = self.machine.slide else {
-            return column;
+            return column.into_any_element();
         };
         let (active, started) = (playing.active, playing.started);
         // The animation id keys on the slide's epoch: GPUI's animation
@@ -5992,35 +6033,38 @@ impl Shell {
         // ride side by side so a clock divergence shows, and the offset
         // exposes any non-monotone pose. The bounce walk reads this.
         let (epoch, direction, boot) = (playing.epoch, playing.active.direction, self.boot);
-        div().size_full().child(
-            div()
-                .absolute()
-                .size_full()
-                .with_animation(
-                    slide_id,
-                    Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
-                    move |band, progress| {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
-                        )]
-                        let ms = started.elapsed().as_millis() as u64;
-                        let offset = slide::offset(&active, ms);
-                        if std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some() {
-                            println!(
-                                "dropterm: slide e{epoch} {} +{}ms el={progress:.2} m={ms}ms off={offset:.1}",
-                                match direction {
-                                    slide::Direction::In => "show",
-                                    slide::Direction::Out => "hide",
-                                },
-                                boot.elapsed().as_millis(),
-                            );
-                        }
-                        band.top(px(Self::slide_top_offset(edge, offset)))
-                    },
-                )
-                .child(column),
-        )
+        div()
+            .size_full()
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .with_animation(
+                        slide_id,
+                        Animation::new(std::time::Duration::from_millis(SLIDE_DURATION_MS)),
+                        move |band, progress| {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "elapsed ms of one slide; u64 range is exhausted after 58M years"
+                            )]
+                            let ms = started.elapsed().as_millis() as u64;
+                            let offset = slide::offset(&active, ms);
+                            if std::env::var_os("DROPTERM_SLIDE_DEBUG").is_some() {
+                                println!(
+                                    "dropterm: slide e{epoch} {} +{}ms el={progress:.2} m={ms}ms off={offset:.1}",
+                                    match direction {
+                                        slide::Direction::In => "show",
+                                        slide::Direction::Out => "hide",
+                                    },
+                                    boot.elapsed().as_millis(),
+                                );
+                            }
+                            band.top(px(Self::slide_top_offset(edge, offset)))
+                        },
+                    )
+                    .child(column),
+            )
+            .into_any_element()
     }
 }
 

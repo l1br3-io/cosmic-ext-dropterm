@@ -12,10 +12,6 @@
 /// The edge an edge-rail container rides.
 // PC1 ships the model whole, unwired (the chunk's own task law);
 // PC2's re-parent and PC3's rail consume these.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailEdge {
     Right,
@@ -23,11 +19,12 @@ pub enum RailEdge {
 
 /// The rail's width floor — a rail the user cannot shrink into
 /// nothing.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 pub const MIN_RAIL_WIDTH: u32 = 160;
+
+/// The rail's declared width — the shared per-edge memory's birth
+/// value (panel-containers PC3); nothing resizes it until a tenant
+/// needs to.
+pub const DEFAULT_RAIL_WIDTH: u32 = 280;
 
 /// The open state's focus-return claim: an opaque token the shell
 /// maps to the real handle that held the keyboard at open. The
@@ -61,14 +58,20 @@ pub struct OverlayPanel {
 /// script; `panel-slot` registers views into these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelContainer {
-    // The Edge variant constructs at PC3's dormant rail; the expect
-    // comes off there.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Edge constructs at PC3's rail"))]
     Edge(EdgeRail),
     Overlay(OverlayPanel),
 }
 
 impl PanelContainer {
+    /// The declared right rail at a width — PC3's dormant container,
+    /// the shell's one construction of the Edge kind.
+    pub fn right_rail(width: u32) -> Self {
+        PanelContainer::Edge(EdgeRail {
+            edge: RailEdge::Right,
+            width: width.max(MIN_RAIL_WIDTH),
+        })
+    }
+
     /// The overlay's armed delete row, read-only (the render's
     /// cluster choice). `None` for a rail — no delete seat there.
     pub fn armed(&self) -> Option<&std::path::Path> {
@@ -119,16 +122,28 @@ impl PanelContainer {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the model lands before its consumers")
-)]
 impl EdgeRail {
     /// Resize the rail: the edge's memory, clamped to the floor.
     /// The memory survives open/close whole — there is no close for
-    /// a rail, only the gate.
+    /// a rail, only the gate. Nothing calls it until a tenant needs
+    /// a resize seam (panel-slot); the pin holds the clamp rule.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the resize seam waits for its tenant")
+    )]
     pub fn resize(&mut self, width: u32) {
         self.width = width.max(MIN_RAIL_WIDTH);
+    }
+
+    /// The rail's width as the painter's px value — the u32 memory's
+    /// one conversion, the cast's home.
+    pub fn width_px(&self) -> f32 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a px width from a u32 memory: f32's mantissa is exact for any rail width"
+        )]
+        let px = self.width as f32;
+        px
     }
 }
 

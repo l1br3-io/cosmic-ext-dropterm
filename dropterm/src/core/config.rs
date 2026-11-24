@@ -444,6 +444,16 @@ pub struct DropTermConfig {
     /// most one quiet log line at the sync that reveals it. Applies
     /// live on the config echo.
     pub status_script_segments: Option<Vec<String>>,
+    /// Whether the right edge rail stands (panel-containers PC3): a
+    /// host-owned panel container at the drawer's right edge, the
+    /// seam `panel-slot` docks plugin views into. Defaults to
+    /// `false` — dormant until a tenant exists; with the gate off,
+    /// nothing in the composition changes (the byte-identical pin),
+    /// with it on, an empty rail stands beside the column. The
+    /// rail's width is the shared per-edge size memory (the model's
+    /// own default; nothing resizes it until a tenant needs to).
+    /// Applies on the config echo's next view pass.
+    pub panel_rail_enabled: bool,
     /// Whether the tab strip renders its border hairline
     /// (bar-borders spec): a 1 px line on the strip's
     /// terminal-facing edge, in the pane-derived foreground at low
@@ -644,6 +654,7 @@ impl Default for DropTermConfig {
             status_bar_show_program_status: true,
             status_bar_show_scrollback: true,
             status_script_segments: None,
+            panel_rail_enabled: false,
             tab_bar_border: true,
             status_bar_border: true,
             status_bar_activity_mark: true,
