@@ -349,6 +349,9 @@ pub(crate) struct Shell {
     /// dormant container `panel-slot` docks into — sized by the
     /// shared per-edge memory, standing only behind the config gate.
     rail: PanelContainer,
+    /// The live panel views' sync rows (panel-slot): the registry's
+    /// truth, the rail's titled sections' input.
+    panel_views: Vec<dropterm::core::lua_host::PanelViewRow>,
     images_thumbs: HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
     /// The fleet's size, published for the dbus mirror's `TabCount`
     /// (py-5): written at every fleet change, mirrored by the served
@@ -876,6 +879,7 @@ impl Shell {
             phase,
             images_panel: PanelContainer::Overlay(OverlayPanel::default()),
             rail: PanelContainer::right_rail(DEFAULT_RAIL_WIDTH),
+            panel_views: Vec::new(),
             images_thumbs: HashMap::new(),
             tab_count,
             verbs,
@@ -5217,6 +5221,27 @@ impl Shell {
         }
     }
 
+    /// The rail's titled sections' truth (panel-slot): the registry
+    /// report lands here; the drain-side close rides it the dialog's
+    /// way — a reload cleared the interpreter's seats.
+    fn note_panel_views(
+        &mut self,
+        views: Vec<dropterm::core::lua_host::PanelViewRow>,
+        cx: &mut Context<Self>,
+    ) {
+        if views == self.panel_views {
+            return;
+        }
+        let ids: Vec<&str> = views.iter().map(|row| row.id.as_str()).collect();
+        println!(
+            "dropterm: plugins: panel views {ids:?} at +{}ms",
+            self.boot.elapsed().as_millis()
+        );
+        self.panel_views = views;
+        self.close_dialog(cx);
+        cx.notify();
+    }
+
     fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
         while let Some(event) = self.lua_host.try_event() {
             match event {
@@ -5270,6 +5295,9 @@ impl Shell {
                 dropterm::core::lua_host::HostEvent::OpenDialog { spec } => {
                     self.pending_dialog = Some(spec);
                     cx.notify();
+                }
+                dropterm::core::lua_host::HostEvent::PanelViewsSync { views } => {
+                    self.note_panel_views(views, cx);
                 }
                 dropterm::core::lua_host::HostEvent::TabTitleProvider { present } => {
                     self.tab_titles.note_provider(present);

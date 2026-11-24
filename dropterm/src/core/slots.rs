@@ -441,6 +441,148 @@ pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError
     })
 }
 
+/// One panel view's row (panel-slot spec): the row's spans — the
+/// spec example's own span-keys form parses as a single-span row,
+/// the richer `spans` array carries many — and the optional `id`
+/// key, the additive escape over the positional default. Closed
+/// keyset: new keys join as additive releases.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelRow {
+    pub spans: Vec<Span>,
+    /// The row's own event id, when the script named it; `None`
+    /// rides the positional index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
+}
+
+/// One panel view's answer (panel-slot spec): the additive successor
+/// to [`SlotContent`] (the evolution rule) — flat content stays the
+/// slot's shapes; panels add rows. Untagged: a bare string or spans
+/// table crosses as [`PanelContent::Slot`], a rows table as
+/// [`PanelContent::Rows`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PanelContent {
+    Slot(SlotContent),
+    Rows { rows: Vec<PanelRow> },
+}
+
+/// One panel answer's failure, typed — the script's bug, one log
+/// line, the view keeps its prior content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelError {
+    /// A key outside the closed vocabulary — on the rows table or a
+    /// row.
+    UnknownKey(String),
+    /// A known key held the wrong shape (`content` itself for a
+    /// non-table).
+    WrongType(&'static str),
+    /// Two rows shared the script-named id — presses would be
+    /// ambiguous.
+    DuplicateRowId(u32),
+    /// A row span failed the slot contract's own rules.
+    Body(SlotError),
+}
+
+impl std::fmt::Display for PanelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PanelError::UnknownKey(key) => write!(f, "unknown key '{key}'"),
+            PanelError::WrongType(key) => write!(f, "the '{key}' key has the wrong type"),
+            PanelError::DuplicateRowId(id) => write!(f, "two rows share the id {id}"),
+            PanelError::Body(error) => write!(f, "a row: {error}"),
+        }
+    }
+}
+
+/// Parse one panel answer from its serde form (panel-slot, PS1):
+/// the slot's own shapes pass through; a rows table parses each row
+/// in both its forms — the spec example's span-keys row (one span)
+/// and the spans-array row.
+pub fn parse_panel_content(value: &serde_json::Value) -> Result<PanelContent, PanelError> {
+    const ROW_KEYS: [&str; 5] = ["id", "spans", "text", "color", "icon"];
+    let Some(map) = value.as_object() else {
+        // A bare string (or anything non-table): the slot's own rules
+        // decide, and the answer rides the Slot arm.
+        let content = parse_content(value).map_err(PanelError::Body)?;
+        return Ok(PanelContent::Slot(content));
+    };
+    let Some(rows) = map.get("rows") else {
+        // No rows key: the slot's own shapes (kind/spans/string) and
+        // their own closed keyset decide.
+        let content = parse_content(value).map_err(PanelError::Body)?;
+        return Ok(PanelContent::Slot(content));
+    };
+    for key in map.keys() {
+        if key != "rows" && key != "kind" {
+            return Err(PanelError::UnknownKey(key.clone()));
+        }
+    }
+    let rows = rows.as_array().ok_or(PanelError::WrongType("rows"))?;
+    let mut parsed = Vec::with_capacity(rows.len());
+    let mut seen = std::collections::HashSet::new();
+    for row in rows {
+        let map = row.as_object().ok_or(PanelError::WrongType("row"))?;
+        for key in map.keys() {
+            if !ROW_KEYS.contains(&key.as_str()) {
+                return Err(PanelError::UnknownKey(key.clone()));
+            }
+        }
+        let spans = if let Some(raw) = map.get("spans") {
+            parse_spans(raw).map_err(PanelError::Body)?
+        } else {
+            // The spec example's form: span keys on the row
+            // (plus the row's own `id`, which is no span's) —
+            // one span, the styled rules for its keys. A row
+            // with no text key at all is an empty row (the
+            // shape error), a wrong-shaped text the type error.
+            if !map.contains_key("text") {
+                return Err(PanelError::WrongType("row"));
+            }
+            let span = Span {
+                text: map
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(PanelError::Body(SlotError::WrongType("text")))?
+                    .to_owned(),
+                color: match map.get("color") {
+                    Some(raw) => Some(
+                        SlotColor::parse(
+                            raw.as_str()
+                                .ok_or(PanelError::Body(SlotError::WrongType("color")))?,
+                        )
+                        .map_err(PanelError::Body)?,
+                    ),
+                    None => None,
+                },
+                icon: match map.get("icon") {
+                    Some(raw) => Some(
+                        raw.as_str()
+                            .ok_or(PanelError::Body(SlotError::WrongType("icon")))?
+                            .to_owned(),
+                    ),
+                    None => None,
+                },
+            };
+            vec![span]
+        };
+        let id = match map.get("id") {
+            Some(raw) => Some(
+                u32::try_from(raw.as_u64().ok_or(PanelError::WrongType("id"))?)
+                    .map_err(|_| PanelError::WrongType("id"))?,
+            ),
+            None => None,
+        };
+        if let Some(id) = id
+            && !seen.insert(id)
+        {
+            return Err(PanelError::DuplicateRowId(id));
+        }
+        parsed.push(PanelRow { spans, id });
+    }
+    Ok(PanelContent::Rows { rows: parsed })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotEvent {
     /// The slot surface that produced the event (`"status"`,
@@ -1012,6 +1154,118 @@ end)";
             serde_json::from_slice(&serde_json::to_vec(&spec).expect("serializes"))
                 .expect("round-trips");
         assert_eq!(back, spec);
+    }
+
+    // --- the panel vocabulary (panel-slot, PS1) ---
+
+    #[test]
+    fn a_rows_answer_parses_both_row_forms() {
+        // The spec example's form: span keys directly on the row.
+        let content = parse_panel_content(&json!({
+            "kind": "panel",
+            "rows": [
+                { "icon": "◯", "text": "ship the spec review" },
+                { "icon": "◉", "text": "walk the dialog", "color": "green" },
+            ],
+        }))
+        .expect("the spec's example parses");
+        let PanelContent::Rows { rows } = content else {
+            panic!("a rows table parses as Rows");
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].spans.len(), 1);
+        assert_eq!(rows[0].spans[0].text, "ship the spec review");
+        assert_eq!(rows[0].spans[0].icon, Some("◯".to_owned()));
+        assert_eq!(
+            rows[1].spans[0].color,
+            Some(SlotColor::Token("green".to_owned()))
+        );
+        assert_eq!(rows[0].id, None, "positional ids are the stood default");
+
+        // The richer form: a spans array per row, with the optional
+        // id key.
+        let content = parse_panel_content(&json!({
+            "rows": [
+                { "id": 7, "spans": [{ "text": "a" }, { "text": "b" }] },
+            ],
+        }))
+        .expect("the spans-array form parses");
+        let PanelContent::Rows { rows } = content else {
+            panic!("rows");
+        };
+        assert_eq!(rows[0].id, Some(7));
+        assert_eq!(rows[0].spans.len(), 2);
+    }
+
+    #[test]
+    fn a_slot_answer_parses_as_the_panel_content() {
+        // The additive successor's first arm: flat content stays.
+        for raw in [
+            json!("plain"),
+            json!({ "kind": "styled", "spans": [{ "text": "x" }] }),
+        ] {
+            let content = parse_panel_content(&raw).expect("the slot shape parses");
+            assert!(matches!(content, PanelContent::Slot(_)), "for {raw}");
+        }
+    }
+
+    #[test]
+    fn every_panel_bad_shape_yields_its_typed_error() {
+        // An unknown key on the rows table and on a row.
+        let error = parse_panel_content(&json!({ "rows": [], "bogus": 1 }))
+            .expect_err("unknown rows-table key");
+        assert_eq!(error, PanelError::UnknownKey("bogus".to_owned()));
+        let error = parse_panel_content(&json!({
+            "rows": [{ "text": "x", "bogus": 1 }],
+        }))
+        .expect_err("unknown row key");
+        assert_eq!(error, PanelError::UnknownKey("bogus".to_owned()));
+
+        // A row with neither span keys nor a spans array.
+        let error =
+            parse_panel_content(&json!({ "rows": [{ "id": 3 }] })).expect_err("an empty row");
+        assert_eq!(error, PanelError::WrongType("row"));
+
+        // Duplicate row ids.
+        let error = parse_panel_content(&json!({
+            "rows": [{ "id": 3, "text": "a" }, { "id": 3, "text": "b" }],
+        }))
+        .expect_err("duplicate ids");
+        assert_eq!(error, PanelError::DuplicateRowId(3));
+
+        // A non-numeric id.
+        let error = parse_panel_content(&json!({
+            "rows": [{ "id": "x", "text": "a" }],
+        }))
+        .expect_err("non-numeric id");
+        assert_eq!(error, PanelError::WrongType("id"));
+
+        // A row span failing the slot rules.
+        let error = parse_panel_content(&json!({
+            "rows": [{ "text": 3 }],
+        }))
+        .expect_err("non-string text");
+        assert_eq!(error, PanelError::Body(SlotError::WrongType("text")));
+
+        // Neither content shape: the slot arm's error, wrapped (the
+        // panel answer's body failure is one surface).
+        assert_eq!(
+            parse_panel_content(&json!(42)).expect_err("non-content"),
+            PanelError::Body(SlotError::WrongType("content"))
+        );
+    }
+
+    #[test]
+    fn a_panel_content_round_trips_through_serde() {
+        let content = parse_panel_content(&json!({
+            "kind": "panel",
+            "rows": [{ "id": 2, "text": "row" }],
+        }))
+        .expect("parses");
+        let back: PanelContent =
+            serde_json::from_slice(&serde_json::to_vec(&content).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(back, content);
     }
 
     // --- the render's flatten (the band's byte-compat pin) ---

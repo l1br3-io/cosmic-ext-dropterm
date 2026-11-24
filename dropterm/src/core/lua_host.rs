@@ -167,6 +167,14 @@ pub enum HostCommand {
 /// One observation out of the host thread. v1 carried only the log;
 /// the query surfaces' replies and reports join as new arms with the
 /// modules that ask for them (the same closed-extension rule).
+/// One registered panel view's sync row (panel-slot spec): the
+/// view's id and its section title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelViewRow {
+    pub id: String,
+    pub title: String,
+}
+
 #[derive(Debug)]
 pub enum HostEvent {
     /// One `dropterm:` evidence line: host up, each script loaded,
@@ -234,6 +242,11 @@ pub enum HostEvent {
         /// The exact bytes the script asked for, verbatim.
         text: String,
     },
+    /// The live panel-view set (panel-slot spec) — [`RegistrySync`]'s
+    /// shape for the rail's titled sections: one row per registered
+    /// view, id + title, in registration order; empty after a reload
+    /// into an empty dir (the rail clears with it).
+    PanelViewsSync { views: Vec<PanelViewRow> },
     /// One `dropterm.dialog` request (dialog-slot spec): the script
     /// opens a modal — fire-and-forget the other way, the drain
     /// mounts it and presses return over [`SLOT_EVENT`]. The spec
@@ -521,6 +534,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 &generation.segments,
                 &generation.tab_title,
                 &generation.commands,
+                &generation.panel_views,
                 plugins_dir,
                 events,
                 &frame,
@@ -548,6 +562,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.segments,
                             &generation.tab_title,
                             &generation.commands,
+                            &generation.panel_views,
                             plugins_dir,
                             events,
                             &frame,
@@ -588,6 +603,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.segments,
                             &generation.tab_title,
                             &generation.commands,
+                            &generation.panel_views,
                             plugins_dir,
                             events,
                             &frame,
@@ -609,6 +625,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.segments,
                             &generation.tab_title,
                             &generation.commands,
+                            &generation.panel_views,
                             plugins_dir,
                             events,
                             &frame,
@@ -630,6 +647,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             &generation.segments,
                             &generation.tab_title,
                             &generation.commands,
+                            &generation.panel_views,
                             plugins_dir,
                             events,
                             &frame,
@@ -694,6 +712,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                         &generation.segments,
                         &generation.tab_title,
                         &generation.commands,
+                        &generation.panel_views,
                         plugins_dir,
                         events,
                         &frame,
@@ -785,6 +804,7 @@ struct Generation {
     segments: Table,
     tab_title: Table,
     commands: Table,
+    panel_views: Table,
 }
 
 impl Generation {
@@ -799,16 +819,17 @@ impl Generation {
         // sandbox claimed anywhere — the docs state it plainly.
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
-        let (registry, segments, tab_title, commands) = match install_port(&lua, events, frame) {
-            Ok(registries) => registries,
-            Err(err) => {
-                log(
-                    events,
-                    format!("the dropterm port would not install: {err}"),
-                );
-                return None;
-            }
-        };
+        let (registry, segments, tab_title, commands, panel_views) =
+            match install_port(&lua, events, frame) {
+                Ok(registries) => registries,
+                Err(err) => {
+                    log(
+                        events,
+                        format!("the dropterm port would not install: {err}"),
+                    );
+                    return None;
+                }
+            };
         if let Err(err) = install_bounds(&lua, events, frame) {
             log(
                 events,
@@ -822,6 +843,7 @@ impl Generation {
             segments,
             tab_title,
             commands,
+            panel_views,
         })
     }
 }
@@ -892,7 +914,7 @@ fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
-) -> mlua::Result<(Table, Table, Table, Table)> {
+) -> mlua::Result<(Table, Table, Table, Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
@@ -1057,6 +1079,80 @@ fn install_port(
         Ok(())
     })?;
 
+    // The panel-view registry (panel-slot spec): one seat per view
+    // id, replacements logged, the sync reporting id + title in
+    // registration order at every load/reload.
+    let panel_views = lua.create_table()?;
+    let panel_events = events.clone();
+    let panel_registry = panel_views.clone();
+    let panel_view = lua.create_function(
+        move |lua, (id, config, handler): (String, Table, Function)| {
+            // The port's own validation: the id's shape, the v1
+            // container word, the title — a bad shape costs one line
+            // and takes no seat.
+            if id.is_empty() {
+                log(&panel_events, "panel_view rejected: the view id is empty");
+                return Ok(());
+            }
+            let container: String = match config.get("container") {
+                Ok(word) => word,
+                Err(err) => {
+                    log(&panel_events, format!("panel_view '{id}' rejected: {err}"));
+                    return Ok(());
+                }
+            };
+            if container != "right-rail" {
+                log(
+                    &panel_events,
+                    format!(
+                        "panel_view '{id}' rejected: the container '{container}' is not 'right-rail'"
+                    ),
+                );
+                return Ok(());
+            }
+            let Ok(title) = config.get::<String>("title") else {
+                log(
+                    &panel_events,
+                    format!("panel_view '{id}' rejected: the title key is missing"),
+                );
+                return Ok(());
+            };
+            if title.is_empty() {
+                log(
+                    &panel_events,
+                    format!("panel_view '{id}' rejected: the title is empty"),
+                );
+                return Ok(());
+            }
+            // One seat per id: a replacement takes the seat, logged
+            // (the array registry scans by name — the segments'
+            // array shape, the sync's walk unchanged).
+            let mut replaced = false;
+            for slot in 1..=panel_registry.raw_len() {
+                if let Ok(entry) = panel_registry.get::<Table>(slot)
+                    && entry
+                        .get::<String>("name")
+                        .is_ok_and(|name| name == id)
+                {
+                    panel_registry.set(slot, lua.create_table()?)?;
+                    replaced = true;
+                }
+            }
+            if replaced {
+                log(
+                    &panel_events,
+                    format!("panel_view '{id}' replaced (one live seat)"),
+                );
+            }
+            let entry = lua.create_table()?;
+            entry.set("name", id.clone())?;
+            entry.set("title", title.clone())?;
+            entry.set("handler", handler)?;
+            panel_registry.push(entry)?;
+            Ok(())
+        },
+    )?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
@@ -1065,12 +1161,19 @@ fn install_port(
     module.set("command", command)?;
     module.set("send_text", send_text)?;
     module.set("dialog", dialog)?;
+    module.set("panel_view", panel_view)?;
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("dropterm", module)?;
 
     install_print(lua, events)?;
-    Ok((registry, segment_table, tab_title_seat, command_table))
+    Ok((
+        registry,
+        segment_table,
+        tab_title_seat,
+        command_table,
+        panel_views,
+    ))
 }
 
 /// Deliver one event to every handler registered under it, on this
@@ -1169,11 +1272,16 @@ fn display_value(lua: &Lua, value: Value) -> String {
 /// registry-sync report (status-segments spec): the live id set is
 /// the asking surface's source of truth, and the tab-title seat's
 /// and command registry's own reports ride beside it (their specs).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one registry table per script surface; the panel registry joins its peers"
+)]
 fn load_scripts(
     lua: &Lua,
     segments: &Table,
     tab_title: &Table,
     commands: &Table,
+    panel_views: &Table,
     dir: &Path,
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
@@ -1184,6 +1292,7 @@ fn load_scripts(
             sync_registry(segments, events);
             sync_tab_title_provider(tab_title, events);
             sync_commands(commands, events);
+            sync_panel_views(panel_views, events);
             return;
         }
         Err(err) => {
@@ -1191,6 +1300,7 @@ fn load_scripts(
             sync_registry(segments, events);
             sync_tab_title_provider(tab_title, events);
             sync_commands(commands, events);
+            sync_panel_views(panel_views, events);
             return;
         }
     };
@@ -1229,6 +1339,25 @@ fn load_scripts(
     sync_registry(segments, events);
     sync_tab_title_provider(tab_title, events);
     sync_commands(commands, events);
+    sync_panel_views(panel_views, events);
+}
+
+/// Report the live panel-view registry — the id+title rows in
+/// registration order — at every load/reload (panel-slot spec), the
+/// rail's titled sections' source of truth, empty after a reload
+/// into an empty dir.
+fn sync_panel_views(views: &Table, events: &Sender<HostEvent>) {
+    let mut rows = Vec::new();
+    for slot in 1..=views.raw_len() {
+        match views
+            .get::<Table>(slot)
+            .and_then(|entry| Ok((entry.get::<String>("name")?, entry.get::<String>("title")?)))
+        {
+            Ok((id, title)) => rows.push(PanelViewRow { id, title }),
+            Err(err) => log(events, format!("the panel registry would not read: {err}")),
+        }
+    }
+    let _ = events.send(HostEvent::PanelViewsSync { views: rows });
 }
 
 /// Report the live segment registry — the id set in registration
@@ -2811,6 +2940,172 @@ mod tests {
     }
 
     #[test]
+    fn panel_view_registration_syncs_and_replaces_one_seat() {
+        let dir = TempDir::new("panels");
+        script(
+            &dir,
+            "views.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('tasks', {{ container = 'right-rail', title = 'Tasks' }}, function(ctx)\n\
+                   return {{ kind = 'panel', rows = {{ {{ icon = '◯', text = 'ship the review' }} }} }}\n\
+                 end)\n\
+                 d.panel_view('git', {{ container = 'right-rail', title = 'Git' }}, function()\n\
+                   return {{ rows = {{}} }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let events = events_until_quiet(&host);
+        let rows = events.iter().find_map(|event| match event {
+            HostEvent::PanelViewsSync { views } => Some(views.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            rows,
+            Some(vec![
+                PanelViewRow {
+                    id: "tasks".to_owned(),
+                    title: "Tasks".to_owned()
+                },
+                PanelViewRow {
+                    id: "git".to_owned(),
+                    title: "Git".to_owned()
+                },
+            ]),
+            "the load reports the views in registration order, titled: {events:?}"
+        );
+        // The reload clears the seats (the interpreter is the seat's
+        // life) — a fresh dir without the script reports empty.
+    }
+
+    #[test]
+    fn a_panel_view_replacement_is_logged_and_takes_the_seat() {
+        let dir = TempDir::new("panel-replace");
+        script(
+            &dir,
+            "views.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('tasks', {{ container = 'right-rail', title = 'Tasks' }}, function() return {{ rows = {{}} }} end)\n\
+                 d.panel_view('tasks', {{ container = 'right-rail', title = 'Tasks v2' }}, function() return {{ rows = {{}} }} end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let events = events_until_quiet(&host);
+        let rows = events.iter().find_map(|event| match event {
+            HostEvent::PanelViewsSync { views } => Some(views.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            rows,
+            Some(vec![PanelViewRow {
+                id: "tasks".to_owned(),
+                title: "Tasks v2".to_owned(),
+            }]),
+            "the replacement takes the seat: {events:?}"
+        );
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("replaced"))
+                .count(),
+            1,
+            "the replacement costs exactly one line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn each_bad_panel_view_costs_one_line_and_takes_no_seat() {
+        let dir = TempDir::new("panel-bad");
+        script(
+            &dir,
+            "views.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('', {{ container = 'right-rail', title = 't' }}, function() end)\n\
+                 d.panel_view('x', {{ container = 'left-rail', title = 't' }}, function() end)\n\
+                 d.panel_view('y', {{ container = 'right-rail' }}, function() end)\n\
+                 d.panel_view('ok', {{ container = 'right-rail', title = 'Fine' }}, function() end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let events = events_until_quiet(&host);
+        let rows = events.iter().find_map(|event| match event {
+            HostEvent::PanelViewsSync { views } => Some(views.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            rows,
+            Some(vec![PanelViewRow {
+                id: "ok".to_owned(),
+                title: "Fine".to_owned()
+            }]),
+            "only the good shape takes a seat: {events:?}"
+        );
+        let lines: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line.clone()),
+                _ => None,
+            })
+            .collect();
+        for shape in [
+            "the view id is empty",
+            "is not 'right-rail'",
+            "the title key is missing",
+        ] {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(shape)).count(),
+                1,
+                "'{shape}' costs exactly one line: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reload_clears_the_panel_seats() {
+        let dir = TempDir::new("panel-reload");
+        script(
+            &dir,
+            "views.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('tasks', {{ container = 'right-rail', title = 'Tasks' }}, function() return {{ rows = {{}} }} end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "wake");
+        let _ = events_until_quiet(&host);
+        // The script unlinks first (the reload rescans current disk),
+        // then the tests' reload lever (the resync test's own): the
+        // host command, not the watcher's inotify timing.
+        std::fs::remove_file(dir.0.join("views.lua")).expect("the script unlinks");
+        host.send(HostCommand::Reload);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::PanelViewsSync { views } if views.is_empty()),
+            LONG_WAIT,
+        );
+        assert!(
+            events.iter().any(
+                |event| matches!(event, HostEvent::PanelViewsSync { views } if views.is_empty())
+            ),
+            "the reload reports the cleared seats: {events:?}"
+        );
+    }
+
+    #[test]
     fn a_styled_answer_round_trips_host_side_as_typed_content() {
         use crate::core::slots::{SlotColor, SlotContent, Span};
         let dir = TempDir::new("styled");
@@ -3663,6 +3958,7 @@ mod tests {
                         | HostEvent::CommandsSync { .. }
                         | HostEvent::RegistrySync { .. }
                         | HostEvent::TabTitleProvider { .. }
+                        | HostEvent::PanelViewsSync { .. }
                 ),
                 "a command dispatch has no reply arm: {event:?}"
             );
