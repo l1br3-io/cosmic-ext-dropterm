@@ -88,6 +88,7 @@ Against an installed release build on a desktop with an SNI host; the degrade ro
 - [ ] Bar borders: one 1 px hairline on each bar's terminal-facing edge through the four stackings, no doubled seam
 - [ ] Command duration ticks live, freezes as `name time` at finish, honest across hide/show and respawns
 - [ ] Scrolled chip counts and jump-clicks to the bottom with no clipboard write; ssh shows the host token stand-in and restores on exit
+- [ ] Styled status segments paint (typed-slots): a script returning a styled answer - `{ kind = 'styled', spans = { { icon = '↓', text = ' 1.2 MB/s', color = 'green' } } }` - paints its glyph prefix and its color word beside unchanged builtins; the right side's dim sits on top of every run; an unknown color word costs one `dropterm:` line and renders the span unstyled (never dropped); every plain-string script renders byte-identically to before the typed-answers upgrade (slot-contract's smoke walk may ride this build - the owner's call, one session, two verdicts)
 - [ ] Activity halo arms on output that landed hidden, clears on any touch; exit chip (fish 4), OSC 7 path, OSC 9;4 progress, OSC 7501 program status: every state renders, and a shell without the integration renders silence
 
 ### Inline images and paste images

@@ -608,3 +608,24 @@ fn unknown_tokens_name_themselves_once_per_segment_and_reply() {
     assert!(lines[0].contains("net") && lines[0].contains("nope"));
     assert!(lines[1].contains("net") && lines[1].contains("nah"));
 }
+
+/// The palette's own docs pin (the `every_..._is_documented`
+/// pattern, styled-status-slot ST3): every color word the band
+/// resolves appears backticked in docs/plugins.md's typed-answers
+/// section — the closed wordset cannot drift from its docs.
+#[test]
+fn every_slot_token_word_is_documented() {
+    let docs = include_str!("../../../docs/plugins.md");
+    let (_, rest) = docs
+        .split_once("## Typed answers")
+        .expect("docs/plugins.md carries the typed-answers section");
+    let section = rest
+        .split_once("\n## ")
+        .map_or(rest, |(section, _)| section);
+    for word in SLOT_TOKENS {
+        assert!(
+            section.contains(&format!("`{word}`")),
+            "the palette word `{word}` is not documented in docs/plugins.md"
+        );
+    }
+}

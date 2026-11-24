@@ -83,8 +83,8 @@ module later.
 Every slot's answer is one plain string, and a plain string stays valid
 forever. The typed-answers contract adds one more shape: a styled
 answer - an ordered list of flat spans, no nesting - which the band
-renders as the spans' concatenated text. Any segment handler may
-return one:
+paints span by span, each span's color and icon rendered. Any
+segment handler may return one:
 
 ```lua
 dropterm.status_segment('net', function(ctx)
@@ -92,6 +92,14 @@ dropterm.status_segment('net', function(ctx)
     { icon = 'arrow-down', text = ' 1.2 MB/s', color = 'accent' },
   } }
 end)
+```
+
+A span's `icon` is a glyph string, prepended like the band's builtin
+sigils (`{icon} {text}` - the band's ⎇ ⊞ ◉ shapes, not an icon
+font); a glyph works:
+
+```lua
+{ icon = '↓', text = ' 1.2 MB/s', color = 'green' }
 ```
 
 The vocabulary is closed - every key it declares:
@@ -102,15 +110,20 @@ The vocabulary is closed - every key it declares:
 | `spans` | the answer table | the ordered span list; required for a styled answer, 16 spans at most |
 | `side` | the answer table | the side word - required for a text answer exactly as before; a styled answer may omit it and takes `left` |
 | `text` | inside each span | the span's text - the part the band renders |
-| `color` | inside each span | optional; a theme token name (`accent`) or a `#rrggbb` literal |
-| `icon` | inside each span | optional; a Lucide name from the band's existing vocabulary (`segment_icon`'s set) |
+| `color` | inside each span | optional; a color word or a `#rrggbb` literal |
+| `icon` | inside each span | optional; a glyph string, prepended like the band's builtin sigils |
 
-A `color` is either a theme token name - the theme's own vocabulary,
-`accent` as the example - or a `#rrggbb` literal; resolution is the
-painter's job, so an unknown token renders unstyled, never an error.
-Icons and colors render nothing until the painter module ships: today
-the spans' texts concatenate, byte-identical to what a plain string
-would have laid.
+A `color` word resolves against the band's palette: `accent` (the
+scheme's BrightBlue), `fg` (the pane's foreground), and the ANSI
+words - `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
+`cyan`, `white`, and their `bright_black`, `bright_red`,
+`bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`,
+`bright_cyan`, `bright_white` forms. An unknown word costs one
+`dropterm:` log line and renders unstyled (the span still paints its
+text, in the row's own color); a `#rrggbb` literal paints directly.
+The right side's dim styling is the band's, applied on top - never
+the script's. A plain-string answer renders exactly as it always
+did.
 
 The evolution rule, stated plainly: the keyset grows additive-only -
 a new key arrives as a release, an existing key never changes meaning.
