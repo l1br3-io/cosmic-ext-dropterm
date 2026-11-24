@@ -1800,33 +1800,6 @@ fn the_trailing_space_withholds_on_an_empty_insert() {
 }
 
 #[test]
-fn the_fill_appends_its_space_too() {
-    // The LCP fill is as explicit an insert as an accept — its
-    // completed prefix ends the line the same way.
-    let mut menu = MenuState::new();
-    assert!(menu.open(vec![
-        MenuCandidate {
-            label: "git".to_string(),
-            suffix: "t".to_string(),
-            description: None,
-            source: SuggestionSource::Catalog,
-        },
-        MenuCandidate {
-            label: "gitk".to_string(),
-            suffix: "tk".to_string(),
-            description: None,
-            source: SuggestionSource::Catalog,
-        },
-    ]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "gi"),
-        MenuOutcome::Accepted {
-            suffix: "t ".to_string()
-        }
-    );
-}
-
-#[test]
 fn resolve_alias_returns_the_input_unmapped() {
     let aliases = HashMap::from([("gc".to_string(), "git checkout".to_string())]);
     assert_eq!(resolve_alias("git", &aliases), "git");
@@ -2901,57 +2874,6 @@ fn the_fuzzy_toggle_restores_the_prefix_ladder() {
     );
 }
 
-#[test]
-fn fuzzy_rows_never_fill_or_insert_through_tab() {
-    // A prefix row beside a fuzzy one: the LCP fills over the prefix
-    // row's continuation alone, and the single remaining continuation
-    // closes the menu after its fill.
-    let mut menu = MenuState::new();
-    assert!(menu.open(vec![
-        MenuCandidate {
-            label: "cargo test".to_string(),
-            suffix: "est".to_string(),
-            description: None,
-            source: SuggestionSource::History,
-        },
-        MenuCandidate {
-            label: "crgo test".to_string(),
-            suffix: String::new(),
-            description: None,
-            source: SuggestionSource::History,
-        },
-    ]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "cargo t"),
-        MenuOutcome::Accepted {
-            suffix: "est ".to_string()
-        },
-        "the fuzzy row contributes nothing to the fill"
-    );
-    // Fuzzy-only rows: nothing extends the line, so Tab cycles
-    // instead of filling.
-    let mut menu = MenuState::new();
-    assert!(menu.open(vec![
-        MenuCandidate {
-            label: "slack".to_string(),
-            suffix: String::new(),
-            description: None,
-            source: SuggestionSource::History,
-        },
-        MenuCandidate {
-            label: "clock".to_string(),
-            suffix: String::new(),
-            description: None,
-            source: SuggestionSource::History,
-        },
-    ]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "lk"),
-        MenuOutcome::Noop,
-        "no fuzzy row ever fills through Tab"
-    );
-}
-
 // --- the env-var tier (suggest-depth, SP-D5) ---
 
 /// A tiny spawn-truth name set for the env tier's pins.
@@ -3491,30 +3413,6 @@ fn menu_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
         .collect()
 }
 
-fn history_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
-    entries
-        .iter()
-        .map(|(label, suffix)| MenuCandidate {
-            label: (*label).to_string(),
-            suffix: (*suffix).to_string(),
-            description: None,
-            source: SuggestionSource::History,
-        })
-        .collect()
-}
-
-fn path_rows(entries: &[(&str, &str)]) -> Vec<MenuCandidate> {
-    entries
-        .iter()
-        .map(|(label, suffix)| MenuCandidate {
-            label: (*label).to_string(),
-            suffix: (*suffix).to_string(),
-            description: None,
-            source: SuggestionSource::Path,
-        })
-        .collect()
-}
-
 #[test]
 fn open_lands_the_collection_in_source_order_and_declines_an_empty_one() {
     // The record's ruled contents: the merged collection's own
@@ -3619,146 +3517,6 @@ fn any_other_key_closes_the_menu() {
     menu.open(menu_rows(&[("stash", "ash")]));
     assert_eq!(menu.press(MenuKey::Other, ""), MenuOutcome::Noop);
     assert!(!menu.is_open());
-}
-
-#[test]
-fn tab_fills_the_common_prefix_and_keeps_the_menu() {
-    // Warp's input_tab (suggest-parity spec): over the rows whose
-    // labels carry the typed token as a case-sensitive prefix, the
-    // longest common prefix fills when it extends the token — rows
-    // `git`/`gitk` over `gi` fill `t` — and the menu stays (two rows
-    // remain, the selection unchanged).
-    let mut menu = MenuState::new();
-    menu.open(menu_rows(&[("git", "t"), ("gitk", "tk")]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "gi"),
-        MenuOutcome::Accepted {
-            suffix: "t ".to_string()
-        }
-    );
-    assert!(menu.is_open(), "the fill keeps the menu");
-    assert_eq!(menu.selected(), 0, "the fill leaves the selection");
-}
-
-#[test]
-fn tab_over_a_single_row_fills_it_and_closes() {
-    // The single remaining row: the LCP is the label's whole
-    // remainder, so Tab fills it and closes the menu — Warp's
-    // single-insert resolve.
-    let mut menu = MenuState::new();
-    menu.open(menu_rows(&[("gitk", "tk")]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "gi"),
-        MenuOutcome::Accepted {
-            suffix: "tk ".to_string()
-        }
-    );
-    assert!(!menu.is_open(), "the single remaining row closes the menu");
-}
-
-#[test]
-fn tab_without_an_extending_prefix_cycles_down_instead() {
-    // Rows `git`/`gut` over `g`: the LCP is the token itself —
-    // nothing to fill — so Tab cycles the selection down one,
-    // wrapping, and the menu stays.
-    let mut menu = MenuState::new();
-    menu.open(menu_rows(&[("git", "it"), ("gut", "ut")]));
-    assert_eq!(menu.press(MenuKey::Tab, "g"), MenuOutcome::Noop);
-    assert_eq!(menu.selected(), 1, "the selection advanced one");
-    assert_eq!(menu.press(MenuKey::Tab, "g"), MenuOutcome::Noop);
-    assert_eq!(menu.selected(), 0, "the cycle wraps");
-    assert!(menu.is_open());
-}
-
-#[test]
-fn tab_over_an_already_filled_line_cycles_instead_of_growing() {
-    // The fill's re-press (the owner's 2026-11-24 report): history
-    // rows `cd cd`/`cd cd cd` over the typed `cd` fill ` cd` once —
-    // and the re-press on the filled line `cd cd` must cycle: the
-    // rows' shared prefix is already on the line, nothing extends it,
-    // and appending ` cd` again would grow the line forever.
-    let mut menu = MenuState::new();
-    menu.open(history_rows(&[("cd cd", " cd"), ("cd cd cd", " cd cd")]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "cd"),
-        MenuOutcome::Accepted {
-            suffix: " cd ".to_string()
-        }
-    );
-    assert_eq!(
-        menu.press(MenuKey::Tab, "cd cd"),
-        MenuOutcome::Noop,
-        "the filled line has nothing left to fill"
-    );
-    assert_eq!(menu.selected(), 1, "the re-press cycles instead");
-    assert!(menu.is_open());
-    assert_eq!(
-        menu.press(MenuKey::Tab, "cd cd cd"),
-        MenuOutcome::Noop,
-        "and the line never grows past the rows"
-    );
-}
-
-#[test]
-fn a_multi_word_line_fills_the_word_it_extends() {
-    // The same report's cousin: history rows `git checkout` /
-    // `git checkout main` over the typed `git che` — the word being
-    // completed is `che`, the rows' shared continuation is `ckout`,
-    // and the fill inserts it (the token anchor on the whole label
-    // found nothing here).
-    let mut menu = MenuState::new();
-    menu.open(history_rows(&[
-        ("git checkout", "ckout"),
-        ("git checkout main", "ckout main"),
-    ]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "git che"),
-        MenuOutcome::Accepted {
-            suffix: "ckout ".to_string()
-        }
-    );
-    assert!(menu.is_open());
-}
-
-#[test]
-fn tab_fills_a_path_rows_shared_component() {
-    // The path tier's anchor (the owner's 2026-11-24 second report):
-    // a path row's label is the bare listing entry — `Documents/`,
-    // never the typed `~/Doc` — so the fill's anchor is the token's
-    // final component, the tier's own carve. Rows `Documents/` and
-    // `Documentary` over the typed `~/Doc` share `ument`: it fills
-    // and the menu stays; the re-press on the filled `~/Document`
-    // finds nothing shared left and cycles, never growing.
-    let mut menu = MenuState::new();
-    menu.open(path_rows(&[
-        ("Documents/", "uments/"),
-        ("Documentary", "umentary"),
-    ]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "~/Doc"),
-        MenuOutcome::Accepted {
-            suffix: "ument ".to_string()
-        }
-    );
-    assert!(menu.is_open());
-    assert_eq!(menu.press(MenuKey::Tab, "~/Document"), MenuOutcome::Noop);
-    assert_eq!(menu.selected(), 1, "the re-press cycles instead");
-}
-
-#[test]
-fn tab_over_a_single_path_row_fills_it_and_closes() {
-    // The single remaining path row: its whole component remainder
-    // fills and the menu closes — Warp's single-insert resolve, on
-    // the tier whose label never carried the typed token.
-    let mut menu = MenuState::new();
-    menu.open(path_rows(&[("Documents/", "uments/")]));
-    assert_eq!(
-        menu.press(MenuKey::Tab, "~/Doc"),
-        MenuOutcome::Accepted {
-            suffix: "uments/".to_string()
-        }
-    );
-    assert!(!menu.is_open(), "the single remaining row closes the menu");
 }
 
 #[test]

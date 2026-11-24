@@ -25,14 +25,15 @@ use gpui::{Bounds, Modifiers, Pixels, Point};
 
 /// The completion menu's scoped-key verdict (the libcosmic
 /// `MenuRouting`, same rules): the claimed keys — bare
-/// up/down/tab/enter/escape, plus the `show_completions` chord (its
-/// toggle-close) — are the menu's alone while it shows; every other
-/// press closes it first and then processes normally (the ghost's
-/// accepts included). `None` is no menu routing at all — no menu
-/// shows — and the press is the shell's verbatim, the trigger
-/// chord's open attempt included (the caller tries the open on a
-/// `None` + trigger-chord press and forwards the chord's own bytes
-/// on the decline).
+/// up/down/enter/escape, plus the `show_completions` chord (its
+/// toggle-close) — are the menu's alone while it shows; Tab and
+/// every other press closes it first and then processes normally
+/// (the ghost's accepts included — Tab is the shell's completion
+/// key, the 2026-11-24 correction). `None` is no menu routing at
+/// all — no menu shows — and the press is the shell's verbatim, the
+/// trigger chord's open attempt included (the caller tries the open
+/// on a `None` + trigger-chord press and forwards the chord's own
+/// bytes on the decline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuRouting {
     /// The press is the menu's: navigate, fill, accept, or close.
@@ -48,7 +49,7 @@ pub(crate) enum MenuRouting {
 
 /// The scoped routing itself — pure, pinned headless against the
 /// libcosmic rules (the same table in GPUI's key names: `"up"`,
-/// `"down"`, `"tab"`, `"enter"`, `"escape"`). `key_char` is the
+/// `"down"`, `"enter"`, `"escape"`). `key_char` is the
 /// keystroke's produced character — the printable test's honest
 /// input, shift-bearing capitals included (an edit is an edit; only
 /// the command modifiers ctrl/alt/super exempt a key). `equal_line`
@@ -78,7 +79,6 @@ pub(crate) fn menu_routing(
         match key {
             "up" => return Some(MenuRouting::Consume(MenuKey::Up)),
             "down" => return Some(MenuRouting::Consume(MenuKey::Down)),
-            "tab" => return Some(MenuRouting::Consume(MenuKey::Tab)),
             "enter" => {
                 // The two-stage Enter (suggest-parity spec, record
                 // finding 4): an equal line closes-and-processes so
@@ -94,10 +94,13 @@ pub(crate) fn menu_routing(
             _ => {}
         }
     }
-    // Warp's select-prev (record finding 4): Shift+Tab cycles up
-    // while the menu shows.
-    if no_command_mods && modifiers.shift && key == "tab" {
-        return Some(MenuRouting::Consume(MenuKey::Up));
+    // Tab is the shell's (the 2026-11-24 correction): with the menu
+    // showing, the press closes it and the bytes flow — one
+    // completion authority at a time, and it's the shell's. Bare and
+    // Shift+Tab alike (shift is not a command modifier); the
+    // key_char check below never sees a Tab.
+    if no_command_mods && key == "tab" {
+        return Some(MenuRouting::CloseThenProcess);
     }
     // The as-you-type edit (record finding 4): a printable keeps the
     // menu alive — the key's bytes flow to the PTY and the rows
@@ -106,85 +109,6 @@ pub(crate) fn menu_routing(
         return Some(MenuRouting::KeepOpen);
     }
     Some(MenuRouting::CloseThenProcess)
-}
-
-/// The Tab-while-closed resolution's action (suggest-parity spec,
-/// Warp's `explicit_tab_completion` over OQ-1's conditioned open):
-/// what the collected rows resolve a bare Tab into. `None` — the
-/// caller's gate failure or nothing qualifying — is not an action:
-/// the Tab bytes flow to the shell verbatim.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TabAction {
-    /// The single prefix row's remainder inserts directly and the
-    /// menu stays closed.
-    Insert {
-        /// The row's suffix — the exact bytes the typed line gains.
-        suffix: String,
-    },
-    /// A case-sensitive common prefix longer than the typed token
-    /// inserts, and the menu opens over the fresh collection.
-    InsertOpen {
-        /// The LCP's remainder — the exact bytes the typed line
-        /// gains.
-        suffix: String,
-    },
-    /// Rows exist with nothing to insert: the menu opens.
-    Open,
-}
-
-/// The Tab-while-closed decision itself — pure, pinned headless
-/// beside [`menu_routing`]: the gates (menu enabled, idle, focused,
-/// line-end, a non-empty typed segment) are the caller's; this reads
-/// only the collected rows and the typed segment, the token carved
-/// here so the two stay consistent. `None` is nothing qualifying —
-/// no rows, or no row extending the line — and the Tab bytes flow.
-/// Warp's `explicit_tab_completion` shape (suggest-parity spec,
-/// record finding 5): exactly one extending row inserts its
-/// remainder directly (the menu stays closed); a shared continuation
-/// longer than the line inserts and opens; rows with nothing to
-/// insert open. The continuation anchor is each row's own (the
-/// owner's 2026-11-24 report: a token-anchored slice over whole-line
-/// history rows re-inserted bytes already typed, growing the line
-/// every press).
-pub(crate) fn tab_while_closed(rows: &[suggest::MenuCandidate], typed: &str) -> Option<TabAction> {
-    let token = suggest::trailing_token(typed);
-    // A row with no cs-extension never qualifies (the honest-write
-    // rule, suggest-depth spec): the ladder's exact-ci and fuzzy
-    // rows carry no continuation at all. A line-equal row's empty
-    // continuation DOES qualify — it blocks the single-insert and
-    // poisons the common prefix, so Tab over an already-filled line
-    // opens or forwards rather than grows (the owner's multi-word
-    // report's own rule).
-    let matching: Vec<&suggest::MenuCandidate> = rows
-        .iter()
-        .filter(|row| suggest::fill_continuation(row, typed, token).is_some())
-        .collect();
-    if let [only] = &matching[..] {
-        if let Some(suffix) = suggest::fill_continuation(only, typed, token)
-            .filter(|continuation| !continuation.is_empty())
-        {
-            return Some(TabAction::Insert {
-                suffix: suggest::with_trailing_space(suffix.to_string()),
-            });
-        }
-        // Rows exist with nothing to insert: the menu opens, never a
-        // zero-byte Insert that swallows the Tab.
-        return Some(TabAction::Open);
-    }
-    let continuations: Vec<&str> = matching
-        .iter()
-        .filter_map(|row| suggest::fill_continuation(row, typed, token))
-        .collect();
-    let lcp = suggest::longest_common_prefix(&continuations);
-    if !lcp.is_empty() {
-        return Some(TabAction::InsertOpen {
-            suffix: suggest::with_trailing_space(lcp.to_string()),
-        });
-    }
-    if rows.is_empty() || matching.is_empty() {
-        return None;
-    }
-    Some(TabAction::Open)
 }
 
 /// The autosuggest soft keys (the libcosmic `accept_kind`): bare
@@ -371,10 +295,6 @@ mod tests {
             Some(MenuRouting::Consume(MenuKey::Down))
         );
         assert_eq!(
-            menu_routing("tab", bare(), true, false, None, false),
-            Some(MenuRouting::Consume(MenuKey::Tab))
-        );
-        assert_eq!(
             menu_routing("enter", bare(), true, false, None, false),
             Some(MenuRouting::Consume(MenuKey::Accept))
         );
@@ -409,44 +329,6 @@ mod tests {
         }
     }
 
-    /// Menu rows from (label, suffix) pairs — the routing-side
-    /// fixtures for the Tab-while-closed decision.
-    fn menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
-        entries
-            .iter()
-            .map(|(label, suffix)| suggest::MenuCandidate {
-                label: (*label).to_string(),
-                suffix: (*suffix).to_string(),
-                description: None,
-                source: suggest::SuggestionSource::Specs,
-            })
-            .collect()
-    }
-
-    fn history_menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
-        entries
-            .iter()
-            .map(|(label, suffix)| suggest::MenuCandidate {
-                label: (*label).to_string(),
-                suffix: (*suffix).to_string(),
-                description: None,
-                source: suggest::SuggestionSource::History,
-            })
-            .collect()
-    }
-
-    fn path_menu_rows(entries: &[(&str, &str)]) -> Vec<suggest::MenuCandidate> {
-        entries
-            .iter()
-            .map(|(label, suffix)| suggest::MenuCandidate {
-                label: (*label).to_string(),
-                suffix: (*suffix).to_string(),
-                description: None,
-                source: suggest::SuggestionSource::Path,
-            })
-            .collect()
-    }
-
     #[test]
     fn a_printable_keeps_the_menu_open() {
         // The as-you-type rule (suggest-parity spec, record finding
@@ -475,13 +357,25 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_selects_previous_while_open() {
-        // Warp's completions menu claims Shift+Tab as the
-        // select-prev (suggest-parity spec, record finding 4) — no
-        // longer the close-then-process fall-through.
+    fn menu_tab_closes_then_forwards_while_open() {
+        // Tab is the shell's (the 2026-11-24 correction): with the
+        // menu showing, the press closes it and the bytes flow —
+        // the shell's own completion takes over. Never a fill, a
+        // cycle, or a claim.
+        assert_eq!(
+            menu_routing("tab", bare(), true, false, None, false),
+            Some(MenuRouting::CloseThenProcess)
+        );
+    }
+
+    #[test]
+    fn shift_tab_closes_then_forwards_while_open() {
+        // Shift is not a command modifier on Tab (the 2026-11-24
+        // correction): Shift+Tab closes the menu and the backtab
+        // bytes flow, the same close-then-process as bare Tab.
         assert_eq!(
             menu_routing("tab", shift(), true, false, None, false),
-            Some(MenuRouting::Consume(MenuKey::Up))
+            Some(MenuRouting::CloseThenProcess)
         );
     }
 
@@ -504,95 +398,6 @@ mod tests {
         assert_eq!(
             menu_routing("enter", bare(), true, false, Some('\r'), false),
             Some(MenuRouting::Consume(MenuKey::Accept))
-        );
-    }
-
-    #[test]
-    fn a_single_prefix_row_inserts_directly_and_stays_closed() {
-        // Warp's explicit_tab_completion over OQ-1 (suggest-parity
-        // spec): exactly one prefix row — its remainder inserts
-        // through the funnel and no menu opens.
-        let rows = menu_rows(&[("gitk", "tk")]);
-        assert_eq!(
-            tab_while_closed(&rows, "gi"),
-            Some(TabAction::Insert {
-                suffix: "tk ".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn a_shared_prefix_longer_than_typed_inserts_and_opens() {
-        // Rows `git`/`gitk` over `gi`: the case-sensitive LCP `git`
-        // extends the token — `t` inserts and the menu opens.
-        let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
-        assert_eq!(
-            tab_while_closed(&rows, "gi"),
-            Some(TabAction::InsertOpen {
-                suffix: "t ".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn rows_without_an_extending_prefix_open() {
-        // Rows `git`/`gut` over `g`: the LCP is the token itself —
-        // nothing to insert — so the menu opens.
-        let rows = menu_rows(&[("git", "it"), ("gut", "ut")]);
-        assert_eq!(tab_while_closed(&rows, "g"), Some(TabAction::Open));
-    }
-
-    #[test]
-    fn nothing_qualifying_forwards_the_tab() {
-        // No rows, or no row extending the token: nothing qualifies,
-        // the Tab bytes flow to the shell verbatim.
-        assert_eq!(tab_while_closed(&[], "gi"), None);
-        let rows = menu_rows(&[("git", "t"), ("gitk", "tk")]);
-        assert_eq!(tab_while_closed(&rows, "zz"), None, "no prefix row");
-    }
-
-    #[test]
-    fn rows_with_only_empty_continuations_open() {
-        // The ladder's exact and fuzzy rows (suggest-depth spec): a
-        // row that does not cs-extend the line carries no
-        // continuation, so a menu of only such rows inserts nothing —
-        // rows exist with nothing to insert, and the menu opens
-        // (never a zero-byte Insert that swallows the Tab).
-        let rows = vec![suggest::MenuCandidate {
-            label: "cargo t".to_string(),
-            suffix: String::new(),
-            description: None,
-            source: suggest::SuggestionSource::History,
-        }];
-        assert_eq!(tab_while_closed(&rows, "cargo t"), Some(TabAction::Open));
-    }
-
-    #[test]
-    fn an_already_filled_line_opens_without_inserting_again() {
-        // The owner's 2026-11-24 report: history rows `cd cd` /
-        // `cd cd cd` over the typed line `cd cd` — the rows' shared
-        // prefix is already on the line, so nothing qualifies as an
-        // insert and the menu opens. The token-anchored slice used to
-        // return InsertOpen ` cd` again, growing the line every press.
-        let rows = history_menu_rows(&[("cd cd", " cd"), ("cd cd cd", " cd cd")]);
-        assert_eq!(tab_while_closed(&rows, "cd cd"), Some(TabAction::Open));
-    }
-
-    #[test]
-    fn a_path_rows_shared_component_inserts_and_opens() {
-        // The owner's 2026-11-24 second report: path rows carry the
-        // bare listing entry as their label (`Documents/`), so the
-        // fill's anchor is the token's final component, the tier's own
-        // carve — rows `Documents/`/`Documentary` over the typed
-        // `~/Doc` share `ument`, it inserts and the menu opens. The
-        // token-anchored test matched nothing here and the Tab bytes
-        // flowed to the shell instead.
-        let rows = path_menu_rows(&[("Documents/", "uments/"), ("Documentary", "umentary")]);
-        assert_eq!(
-            tab_while_closed(&rows, "~/Doc"),
-            Some(TabAction::InsertOpen {
-                suffix: "ument ".to_string()
-            })
         );
     }
 

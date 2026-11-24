@@ -2712,41 +2712,6 @@ impl Terminal {
         self.menu.selected_equals(typed)
     }
 
-    /// The Tab-while-closed opener's inputs (suggest-parity spec,
-    /// OQ-1): the gates — line-end (`after_cursor_blank`), not
-    /// scrolled, a non-empty typed segment; the menu-enabled, idle,
-    /// and focused gates ride [`Self::menu_candidates`]' own — hold,
-    /// and the freshly collected rows plus the typed segment answer
-    /// through the pure decision the view pins (the segment, not its
-    /// token: the decision carves the token itself so the fill's
-    /// anchor stays the row's own). `None` is a failed gate or an
-    /// empty collection: the Tab bytes flow verbatim.
-    pub fn menu_tab_open(&mut self) -> Option<(Vec<suggest::MenuCandidate>, String)> {
-        let (before_cursor, after_cursor_blank, display_offset, ..) = self.scrape_cursor_line();
-        if display_offset != 0 || !after_cursor_blank {
-            return None;
-        }
-        let typed = self.suggest.typed_segment(&before_cursor)?;
-        if typed.is_empty() {
-            return None;
-        }
-        let rows = self.menu_candidates();
-        if rows.is_empty() {
-            return None;
-        }
-        Some((rows, typed.to_string()))
-    }
-
-    /// The Tab-while-closed insert (suggest-parity spec, Warp's
-    /// single-insert resolve): the resolved suffix rides the one
-    /// funnel — typed characters via `input_no_scroll`, never a
-    /// paste — with no menu change (the menu stays closed).
-    pub fn menu_tab_insert(&mut self, suffix: &str) {
-        if !suffix.is_empty() {
-            self.input_no_scroll(suffix.as_bytes().to_vec());
-        }
-    }
-
     /// The cursor line's reduced facts (suggest-menu spec): the
     /// before-cursor text (wide spacers skipped, tabs flattened,
     /// zero-width runs carried), the after-cursor blank fact, the

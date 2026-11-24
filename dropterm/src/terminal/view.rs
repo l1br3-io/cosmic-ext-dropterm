@@ -757,33 +757,6 @@ impl TerminalPane {
                     engine.needs_update = opened;
                     consumed = opened;
                 }
-                // The conditioned opener (suggest-parity spec, OQ-1):
-                // no menu, bare Tab — the gates decide. A decline
-                // forwards the Tab bytes to the shell verbatim.
-                None if keystroke.key == "tab" && unmodified => {
-                    let action = engine
-                        .menu_tab_open()
-                        .and_then(|(rows, typed)| suggest::tab_while_closed(&rows, &typed));
-                    match action {
-                        Some(suggest::TabAction::Insert { suffix }) => {
-                            engine.menu_tab_insert(&suffix);
-                            engine.needs_update = true;
-                            consumed = true;
-                        }
-                        Some(suggest::TabAction::InsertOpen { suffix }) => {
-                            engine.menu_tab_insert(&suffix);
-                            let opened = engine.menu_open();
-                            engine.needs_update = opened;
-                            consumed = opened;
-                        }
-                        Some(suggest::TabAction::Open) => {
-                            let opened = engine.menu_open();
-                            engine.needs_update = opened;
-                            consumed = opened;
-                        }
-                        None => consumed = false,
-                    }
-                }
                 None => return false,
             }
         }

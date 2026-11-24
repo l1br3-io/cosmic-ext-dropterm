@@ -886,67 +886,14 @@ fn shared_prefix<'a>(first: &'a str, last: &'a str) -> &'a str {
     &first[..end]
 }
 
-/// The longest prefix every label in the set shares, cut on a char
-/// boundary — case-sensitive by construction, empty for an empty
-/// set. Tab's fill (suggest-parity spec) computes it over the
-/// token-prefix rows; `pub` so the view-side Tab-while-closed
-/// decision (the bin's crate) reads the one shared implementation
-/// rather than restating it.
-pub fn longest_common_prefix<'a>(labels: &[&'a str]) -> &'a str {
-    let Some(first) = labels.first() else {
-        return "";
-    };
-    let mut lcp = *first;
-    for label in &labels[1..] {
-        lcp = shared_prefix(lcp, label);
-        if lcp.is_empty() {
-            break;
-        }
-    }
-    lcp
-}
-
-/// One row's fill continuation against the current line (suggest-parity
-/// fix, the owner's 2026-11-24 reports): the bytes the row can still
-/// append at the cursor, re-derived per press — the menu's rows may
-/// predate the line's edits. The anchor is the tier's own: a history
-/// label carries the whole typed segment (the line-prefix walk's
-/// anchor); a path label is the bare listing entry, anchored at the
-/// token's final component (empty for the bare `~` root) — the token
-/// itself is never the path label's prefix, so a token-anchored test
-/// silently dropped the whole tier and Tab completed nothing; the
-/// remaining tiers' labels begin with the word being completed (the
-/// catalog's command word, the walker's partial, the generator's
-/// token). A row anchored to neither contributes nothing: its bytes
-/// do not extend the line. A history row never rides the token tier —
-/// the token is the line's prefix only while the segment is one word
-/// long, and slicing past it on a multi-word line re-inserts bytes
-/// already typed (the grow-the-line bug: `cd` Tab → `cd cd` → Tab →
-/// `cd cd cd`, forever).
-pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -> Option<&'a str> {
-    let anchor = match row.source {
-        SuggestionSource::History => typed,
-        SuggestionSource::Path if is_path_shaped(token) => match token.rfind('/') {
-            Some(idx) => &token[idx + 1..],
-            None => "",
-        },
-        _ => token,
-    };
-    if row.label.starts_with(anchor) {
-        Some(&row.label[anchor.len()..])
-    } else {
-        None
-    }
-}
-
 /// The menu insert's trailing-space rule (suggest-depth spec, LG4 /
 /// depth finding 5): an explicit insert that ends the line gains one
 /// space — the next word is always wanted after a completed command
 /// or argument — withheld after a path separator (the slash invites
 /// the next segment), after an `=` (an assignment's value is not a
 /// word boundary), and when nothing was inserted at all. The ghost's
-/// own accepts keep their existing behavior: this is the menu's and
-/// Tab's explicit path only.
+/// own accepts keep their existing behavior: this is the menu's
+/// explicit insert path only.
 pub fn with_trailing_space(mut suffix: String) -> String {
     if !suffix.is_empty() && !suffix.ends_with('/') && !suffix.ends_with('=') {
         suffix.push(' ');
@@ -2214,18 +2161,15 @@ pub const MENU_VISIBLE_ROWS: usize = 8;
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —
-/// Up/Down navigate, Tab fills-or-cycles (suggest-parity spec's
-/// `input_tab`), Enter accepts — and every press it does not claim
-/// arrives as [`MenuKey::Other`], whose transition closes the menu
-/// before the press flows on through the normal handler.
+/// Up/Down navigate, Enter accepts — and every press it does not
+/// claim arrives as [`MenuKey::Other`], whose transition closes the
+/// menu before the press flows on through the normal handler (Tab
+/// rides that path: it is the shell's completion key, the
+/// 2026-11-24 correction).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKey {
     Up,
     Down,
-    /// Tab while the menu shows: the fill-else-cycle (Warp's
-    /// `input_tab`, suggest-parity spec) over the rows' own
-    /// continuations against the typed line.
-    Tab,
     Accept,
     Other,
 }
@@ -2345,11 +2289,10 @@ impl MenuState {
         self.scroll = 0;
     }
 
-    /// One menu-scoped press's transition: navigate, Tab's
-    /// fill-else-cycle, accept, or close on any other key. `typed`
-    /// is the line's typed segment — the anchor-stripped
-    /// before-cursor text — which Tab's fill and the Enter equality
-    /// read. A closed menu answers [`MenuOutcome::Noop`] to
+    /// One menu-scoped press's transition: navigate, accept, or
+    /// close on any other key. `typed` is the line's typed segment —
+    /// the anchor-stripped before-cursor text — which the Enter
+    /// equality reads. A closed menu answers [`MenuOutcome::Noop`] to
     /// everything and stays closed.
     pub(crate) fn press(&mut self, key: MenuKey, typed: &str) -> MenuOutcome {
         if !self.open {
@@ -2364,7 +2307,6 @@ impl MenuState {
                 self.move_down();
                 MenuOutcome::Noop
             }
-            MenuKey::Tab => self.fill_or_cycle(typed),
             MenuKey::Accept => {
                 if self.selected_equals(typed) {
                     self.close();
@@ -2377,38 +2319,6 @@ impl MenuState {
                 self.close();
                 MenuOutcome::Noop
             }
-        }
-    }
-
-    /// Tab's fill-else-cycle (Warp's `input_tab`, suggest-parity
-    /// spec): over the rows' own continuations against the current
-    /// line — what each can still append, per [`fill_continuation`] —
-    /// the longest common prefix fills when it is non-empty (the
-    /// single remaining row closes the menu after its fill),
-    /// otherwise the selection cycles down.
-    fn fill_or_cycle(&mut self, typed: &str) -> MenuOutcome {
-        let token = trailing_token(typed);
-        // A row with no cs-extension contributes nothing at all (the
-        // honest-write rule: the ladder's exact-ci and fuzzy rows
-        // never fill), but a line-equal row's empty continuation
-        // DOES participate — it poisons the common prefix on
-        // purpose, so Tab over an already-filled line cycles rather
-        // than grows (the owner's multi-word-fill report).
-        let continuations: Vec<&str> = self
-            .rows
-            .iter()
-            .filter_map(|row| fill_continuation(row, typed, token))
-            .collect();
-        let lcp = longest_common_prefix(&continuations).to_string();
-        if lcp.is_empty() {
-            self.move_down();
-            return MenuOutcome::Noop;
-        }
-        if continuations.len() == 1 {
-            self.close();
-        }
-        MenuOutcome::Accepted {
-            suffix: with_trailing_space(lcp),
         }
     }
 

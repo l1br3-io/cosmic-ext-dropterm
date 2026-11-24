@@ -1160,68 +1160,6 @@ fn the_auto_popups_close_survives_the_updates_before_the_next_keystroke() {
 }
 
 #[test]
-fn the_tab_opener_gates_hold_at_a_live_line_end_only() {
-    // The conditioned opener's gates (suggest-parity spec, OQ-1): a
-    // bare Tab at a fresh prompt over a typed prefix collects; the
-    // same Tab mid-line declines — the planted cell is the grid
-    // fact the gate reads, no shell line-editor needed — and with
-    // nothing typed it declines. The Tab bytes flow verbatim in
-    // both declines.
-    let mut terminal = autosuggest_terminal();
-    resize_cols(&mut terminal, 100); // the grant applied first
-    terminal.settle_spawn_grid_now(); // the funnel's close, after
-    poll_update_until(
-        &mut terminal,
-        |t| t.suggest.anchored(),
-        "the settle prompt anchors",
-    );
-    seed_three_sleep_commands(&mut terminal);
-    terminal.input_no_scroll(&b"slee"[..]);
-    poll_update_until(
-        &mut terminal,
-        |t| t.suggestion().is_some(),
-        "the typed prefix echoes",
-    );
-    assert!(
-        terminal.menu_tab_open().is_some(),
-        "line-end over rows collects"
-    );
-    // The mid-line fact: a cell right of the cursor ends the
-    // line-end gate.
-    {
-        let mut term = terminal.term.lock();
-        let cursor = term.grid().cursor.point;
-        term.grid_mut()[cursor.line][cursor.column].c = 'x';
-    }
-    assert!(
-        terminal.menu_tab_open().is_none(),
-        "mid-line declines: the Tab bytes flow"
-    );
-    {
-        let mut term = terminal.term.lock();
-        let cursor = term.grid().cursor.point;
-        term.grid_mut()[cursor.line][cursor.column].c = ' ';
-    }
-    assert!(
-        terminal.menu_tab_open().is_some(),
-        "the cleared cell restores the line-end collection"
-    );
-    // Nothing typed: the carve is empty, the gate declines.
-    terminal.input_no_scroll(&b"\x7f\x7f\x7f\x7f"[..]);
-    poll_update_until(
-        &mut terminal,
-        |t| t.suggestion().is_none(),
-        "the bare prompt restored",
-    );
-    assert!(
-        terminal.menu_tab_open().is_none(),
-        "nothing typed declines: the Tab bytes flow"
-    );
-    terminal.input_no_scroll(&b"\x03"[..]);
-    terminal.input_no_scroll(&b"exit\r"[..]);
-}
-
-#[test]
 fn a_single_qualifying_row_opens_the_menu() {
     // The ≥2 demand is gone (suggest-parity spec, record finding 3):
     // one qualifying row pops the menu without the chord, the
