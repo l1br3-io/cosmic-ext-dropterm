@@ -329,3 +329,17 @@ so the patched sources stay the lockfile's versions plus the one arm.
 
 The module map - the two crates, the module inventory, the load-bearing seams,
 and where the reasoning lives - is in [architecture.md](architecture.md).
+
+### The panel containers
+
+`src/panels.rs` is the host-owned panel container model (the
+panel-containers spec): the edge rails and overlay panels the shell
+declares and positions - never a script. The overlays carry the open
+door with its focus-return claim and the armed-pair-dies-on-close
+rule; the rails carry the shared per-edge size memory (one memory per
+edge, not per consumer) with no close door - a rail stands by its
+config gate (`panel_rail_enabled`, default off). The shell owns every
+transition: the model pins them headless, the shell's images panel is
+the first overlay consumer, and the right rail is the dormant seam
+`panel-slot` docks plugin views into. Adding a container kind is an
+additive ruling (the spec's ask-first line), never a local addition.
