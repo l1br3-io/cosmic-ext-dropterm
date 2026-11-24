@@ -232,8 +232,10 @@ pub struct ScriptSegmentValue {
     pub id: String,
     /// The side the last shown answer chose.
     pub side: ScriptSide,
-    /// The last shown text; `None` renders the segment absent.
-    pub text: Option<String>,
+    /// The last shown typed answer; `None` renders the segment
+    /// absent (styled-status-slot: the content rides whole, the
+    /// painter decides its runs).
+    pub content: Option<SlotContent>,
 }
 
 /// One script segment's answer on a query trip (status-segments
@@ -417,13 +419,11 @@ impl ScriptSegmentsState {
                 ScriptSegmentValue {
                     id: id.to_owned(),
                     side: slot.map_or(ScriptSide::Left, |(side, _)| *side),
-                    // The render surface flattens (slot-contract
-                    // spec): the typed answer renders as its
-                    // concatenated text — icons and colors wait for
-                    // the painter module, so every existing script's
-                    // band bytes stand.
-                    text: slot
-                        .and_then(|(_, content)| content.as_ref().map(SlotContent::plain_text)),
+                    // The content rides whole (styled-status-slot):
+                    // the painter lays its painted runs — the
+                    // byte-compat pin holds because a string answer
+                    // composes its own single run.
+                    content: slot.and_then(|(_, content)| content.clone()),
                 }
             })
             .collect()
@@ -1463,6 +1463,16 @@ pub struct DiscVm {
     pub attention: bool,
 }
 
+/// One painted run of a laid script-segment row
+/// (styled-status-slot): the span's text with its glyph prefix
+/// already composed (the builtin `"{icon} {value}"` idiom — the
+/// icon string verbatim, the band's sigil shape). The painter
+/// mounts one child per run; ST2 adds the resolved colors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandScriptRunVm {
+    pub text: String,
+}
+
 /// One laid script-segment row (status-segments spec) — the script
 /// groups' own seat type: painted like any row over its laid rect,
 /// but non-interactive in v1 (no hover tint, no selection, no copy —
@@ -1471,7 +1481,9 @@ pub struct DiscVm {
 pub struct BandScriptRowVm {
     /// The `dropterm.status_segment` registration name.
     pub id: String,
-    pub text: String,
+    /// The row's painted runs, in span order — a string answer is
+    /// its own single run (styled-status-slot).
+    pub runs: Vec<BandScriptRunVm>,
     pub x: f32,
     pub width: f32,
     pub text_x: f32,
@@ -1501,6 +1513,28 @@ pub struct BandVm {
     /// The script segments' laid rows (status-segments spec), in
     /// x-order — the left group's seats, then the right group's.
     pub script_rows: Vec<BandScriptRowVm>,
+}
+
+/// One script answer's painted runs (styled-status-slot): a string
+/// answer is its own single run; a styled answer composes one run
+/// per span, its glyph prefix riding the builtin
+/// [`prefixed_display`]-shaped idiom — `{icon} {value}` with text,
+/// nothing without (a glyph alone narrates a span with nothing to
+/// say). The icon string rides verbatim: it is a glyph string, not
+/// a name.
+fn script_runs(content: &SlotContent) -> Vec<BandScriptRunVm> {
+    match content {
+        SlotContent::Text(text) => vec![BandScriptRunVm { text: text.clone() }],
+        SlotContent::Styled { spans } => spans
+            .iter()
+            .map(|span| BandScriptRunVm {
+                text: match span.icon.as_deref() {
+                    Some(icon) if !span.text.is_empty() => format!("{icon} {}", span.text),
+                    _ => span.text.clone(),
+                },
+            })
+            .collect(),
+    }
 }
 
 /// The band's one layout pass: the reference band's fit + rect
@@ -1652,18 +1686,28 @@ pub fn band_vm(
     } else {
         PAD_X + SEGMENT_GAP + PAD_X
     };
-    // The script seats (status-segments spec): every slot with a
-    // non-empty text, in the shell's render order — the seats consume
-    // room like any present segment and give it back first (the
-    // group's tail drops before any builtin yields), so an empty
-    // script vec is today's fit exactly (the byte-identical pin).
-    let script_seats: Vec<(&ScriptSegmentValue, f32)> = segments
+    // The script seats (status-segments spec): every slot whose
+    // painted runs compose non-empty text, in the shell's render
+    // order — the seats consume room like any present segment and
+    // give it back first (the group's tail drops before any builtin
+    // yields), so an empty script vec is today's fit exactly (the
+    // byte-identical pin). Styled answers lay their painted runs
+    // (styled-status-slot): a string answer composes its own single
+    // run, so its seat measures today's width exactly.
+    let script_seats: Vec<(&ScriptSegmentValue, Vec<BandScriptRunVm>, f32)> = segments
         .script
         .iter()
-        .filter(|slot| slot.text.as_deref().is_some_and(|text| !text.is_empty()))
-        .map(|slot| (slot, measure(slot.text.as_deref().unwrap_or_default())))
+        .filter_map(|slot| {
+            let runs = slot.content.as_ref().map(script_runs)?;
+            let painted = runs.iter().map(|run| run.text.as_str()).collect::<String>();
+            if painted.is_empty() {
+                return None;
+            }
+            let width: f32 = runs.iter().map(|run| measure(&run.text)).sum();
+            Some((slot, runs, width))
+        })
         .collect();
-    let script_widths: Vec<f32> = script_seats.iter().map(|(_, w)| *w).collect();
+    let script_widths: Vec<f32> = script_seats.iter().map(|(_, _, w)| *w).collect();
     let (fit, kept_scripts) = band_fit_with_scripts(
         width,
         fixed,
@@ -1747,7 +1791,7 @@ pub fn band_vm(
         // loan — the expansion fits beside them, never through them.
         let script_room: f32 = script_seats[..kept_scripts]
             .iter()
-            .map(|(_, w)| SEGMENT_GAP + w)
+            .map(|(_, _, w)| SEGMENT_GAP + w)
             .sum();
         (
             reveal_display(
@@ -1803,16 +1847,16 @@ pub fn band_vm(
     // seats in slot order, hairlines between adjacent seats like any
     // cluster, none across to the builtins (never between clusters).
     let mut prev_end: Option<f32> = None;
-    for (slot, w) in script_seats[..kept_scripts]
+    for (slot, runs, w) in script_seats[..kept_scripts]
         .iter()
-        .filter(|(slot, _)| slot.side == ScriptSide::Left)
+        .filter(|(slot, _, _)| slot.side == ScriptSide::Left)
     {
         if let Some(start) = prev_end {
             separators.push(f32::midpoint(start, x));
         }
         script_rows.push(BandScriptRowVm {
             id: slot.id.clone(),
-            text: slot.text.clone().unwrap_or_default(),
+            runs: runs.clone(),
             x,
             width: *w,
             text_x: x,
@@ -1846,9 +1890,9 @@ pub fn band_vm(
     // left edge — seats in slot order laid right-to-left with the
     // cluster, dimmed like the cluster they join.
     let mut next_start: Option<f32> = None;
-    for (slot, w) in script_seats[..kept_scripts]
+    for (slot, runs, w) in script_seats[..kept_scripts]
         .iter()
-        .filter(|(slot, _)| slot.side == ScriptSide::Right)
+        .filter(|(slot, _, _)| slot.side == ScriptSide::Right)
     {
         right -= w;
         if let Some(start) = next_start {
@@ -1856,7 +1900,7 @@ pub fn band_vm(
         }
         script_rows.push(BandScriptRowVm {
             id: slot.id.clone(),
-            text: slot.text.clone().unwrap_or_default(),
+            runs: runs.clone(),
             x: right,
             width: *w,
             text_x: right,

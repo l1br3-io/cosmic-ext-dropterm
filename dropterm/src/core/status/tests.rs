@@ -882,17 +882,17 @@ fn script_segments_render_as_trailing_groups_on_their_chosen_sides() {
         ScriptSegmentValue {
             id: "git".to_owned(),
             side: ScriptSide::Left,
-            text: Some("git:1".to_owned()),
+            content: Some(SlotContent::Text("git:1".to_owned())),
         },
         ScriptSegmentValue {
             id: "mem".to_owned(),
             side: ScriptSide::Left,
-            text: Some("mem:512M".to_owned()),
+            content: Some(SlotContent::Text("mem:512M".to_owned())),
         },
         ScriptSegmentValue {
             id: "net".to_owned(),
             side: ScriptSide::Right,
-            text: Some("net:1.2M".to_owned()),
+            content: Some(SlotContent::Text("net:1.2M".to_owned())),
         },
     ];
     let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
@@ -954,12 +954,12 @@ fn script_segments_drop_before_any_builtin_under_width_pressure() {
         ScriptSegmentValue {
             id: "keep".to_owned(),
             side: ScriptSide::Left,
-            text: Some("aaaa".to_owned()),
+            content: Some(SlotContent::Text("aaaa".to_owned())),
         },
         ScriptSegmentValue {
             id: "yield".to_owned(),
             side: ScriptSide::Right,
-            text: Some("bbbbbbbb".to_owned()),
+            content: Some(SlotContent::Text("bbbbbbbb".to_owned())),
         },
     ];
     // Roomy: both script seats render beside the full band.
@@ -1025,12 +1025,12 @@ fn script_slots_that_answer_nothing_change_no_laid_pixel() {
         ScriptSegmentValue {
             id: "mute".to_owned(),
             side: ScriptSide::Right,
-            text: None,
+            content: None,
         },
         ScriptSegmentValue {
             id: "blank".to_owned(),
             side: ScriptSide::Left,
-            text: Some(String::new()),
+            content: Some(SlotContent::Text(String::new())),
         },
     ];
     let niled = band_vm(&segments, 2000.0, &script_measure, None, None, None);
@@ -1040,10 +1040,118 @@ fn script_slots_that_answer_nothing_change_no_laid_pixel() {
 
 // --- the shell-side trigger state (status-segments spec, task SG2) ---
 
+/// The rendered slot's flatten — the composition contract's own
+/// `plain_text`, the drain-side assertions' reading once the render
+/// surface carries the typed content whole (styled-status-slot).
+fn rendered_text(slot: &ScriptSegmentValue) -> Option<String> {
+    slot.content.as_ref().map(SlotContent::plain_text)
+}
+
 /// One tick's ctx stand-in: two distinct payloads are all the
 /// trigger's comparisons need.
 fn ctx_for(word: &str) -> serde_json::Value {
     serde_json::json!({ "cwd": word })
+}
+
+/// The typed row's layout half (styled-status-slot ST1): script
+/// seats lay painted runs — a string answer is its own single run
+/// (byte-identical metrics to today), a styled answer composes one
+/// run per span with the glyph prefix riding the builtin
+/// `"{icon} {value}"` idiom, and the seat's width measures the runs
+/// (the fit never sees styling, only painted text).
+#[test]
+fn script_seats_lay_painted_runs_from_the_typed_content() {
+    use crate::core::slots::{SlotContent, Span};
+
+    // The string answer's seat: one run, the string's own measure —
+    // the same-metrics pin.
+    let mut segments = StatusSegments {
+        script: vec![ScriptSegmentValue {
+            id: "git".to_owned(),
+            side: ScriptSide::Left,
+            content: Some(SlotContent::Text("git:1".to_owned())),
+        }],
+        ..StatusSegments::default()
+    };
+    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    assert_eq!(vm.script_rows.len(), 1);
+    assert_eq!(
+        vm.script_rows[0].runs.len(),
+        1,
+        "a string answer is one run"
+    );
+    assert_eq!(vm.script_rows[0].runs[0].text, "git:1");
+    assert_eq!(vm.script_rows[0].width, script_measure("git:1"));
+
+    // The styled answer's seat: one run per span, widths summed.
+    segments.script = vec![ScriptSegmentValue {
+        id: "net".to_owned(),
+        side: ScriptSide::Left,
+        content: Some(SlotContent::Styled {
+            spans: vec![
+                Span {
+                    text: "▼".to_owned(),
+                    color: None,
+                    icon: None,
+                },
+                Span {
+                    text: " 1.2 MB/s".to_owned(),
+                    color: None,
+                    icon: None,
+                },
+            ],
+        }),
+    }];
+    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let runs: Vec<&str> = vm.script_rows[0]
+        .runs
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(runs, ["▼", " 1.2 MB/s"], "one run per span, in order");
+    assert_eq!(
+        vm.script_rows[0].width,
+        script_measure("▼") + script_measure(" 1.2 MB/s"),
+        "the seat measures its painted runs"
+    );
+
+    // The glyph prefix rides the builtin idiom: `{icon} {value}`
+    // when the span carries text, nothing when it does not (a glyph
+    // alone narrates a span with nothing to say).
+    segments.script = vec![ScriptSegmentValue {
+        id: "net".to_owned(),
+        side: ScriptSide::Left,
+        content: Some(SlotContent::Styled {
+            spans: vec![Span {
+                text: "1.2 MB/s".to_owned(),
+                color: None,
+                icon: Some("↓".to_owned()),
+            }],
+        }),
+    }];
+    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    assert_eq!(vm.script_rows[0].runs.len(), 1);
+    assert_eq!(vm.script_rows[0].runs[0].text, "↓ 1.2 MB/s");
+    assert_eq!(vm.script_rows[0].width, script_measure("↓ 1.2 MB/s"));
+
+    // An icon-only span composes empty; a styled answer whose every
+    // span composes empty lays no seat — the no-answer rule.
+    segments.script = vec![ScriptSegmentValue {
+        id: "mute".to_owned(),
+        side: ScriptSide::Right,
+        content: Some(SlotContent::Styled {
+            spans: vec![Span {
+                text: String::new(),
+                color: None,
+                icon: Some("↓".to_owned()),
+            }],
+        }),
+    }];
+    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    assert!(
+        vm.script_rows.is_empty(),
+        "an all-empty styled answer lays nothing"
+    );
 }
 
 /// The typed-slots widening's drain side (slot-contract spec): a
@@ -1085,7 +1193,7 @@ fn a_styled_reply_flattens_to_its_concatenated_text_at_the_render() {
     assert_eq!(rendered[0].id, "net");
     assert_eq!(rendered[0].side, ScriptSide::Right);
     assert_eq!(
-        rendered[0].text.as_deref(),
+        rendered_text(&rendered[0]).as_deref(),
         Some("▼ 1.2 MB/s"),
         "the texts concatenate; icons and colors are ignored until the painter"
     );
@@ -1125,7 +1233,7 @@ fn the_prior_content_survives_an_omission_and_the_shapes_swap() {
         .expect("the next query fires");
     state.apply_reply(next, false, vec![]);
     assert_eq!(
-        state.render()[0].text.as_deref(),
+        rendered_text(&state.render()[0]).as_deref(),
         Some("styled"),
         "an omitted id keeps its prior styled content"
     );
@@ -1144,7 +1252,7 @@ fn the_prior_content_survives_an_omission_and_the_shapes_swap() {
         }],
     );
     assert_eq!(
-        state.render()[0].text.as_deref(),
+        rendered_text(&state.render()[0]).as_deref(),
         Some("plain"),
         "a text answer replaces a styled prior"
     );
@@ -1236,7 +1344,12 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
             content: SlotContent::Text("stale".to_owned()),
         }],
     );
-    assert!(state.render().iter().all(|slot| slot.text.is_none()));
+    assert!(
+        state
+            .render()
+            .iter()
+            .all(|slot| rendered_text(slot).is_none())
+    );
     // A superseded token drops too.
     state.apply_reply(
         token + 7,
@@ -1247,7 +1360,12 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
             content: SlotContent::Text("superseded".to_owned()),
         }],
     );
-    assert!(state.render().iter().all(|slot| slot.text.is_none()));
+    assert!(
+        state
+            .render()
+            .iter()
+            .all(|slot| rendered_text(slot).is_none())
+    );
     // The matching fresh reply lands: shown values fill, a nil clears
     // (a fresh hide), and an omitted id keeps its prior.
     state.apply_reply(
@@ -1267,13 +1385,16 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
         ],
     );
     let answered = state.render();
-    let answered: Vec<(&str, Option<&str>)> = answered
+    let answered: Vec<(&str, Option<String>)> = answered
         .iter()
-        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .map(|slot| (slot.id.as_str(), rendered_text(slot)))
         .collect();
     assert_eq!(
         answered,
-        vec![("net", Some("▼ 1.2 MB/s")), ("git", Some("main"))]
+        vec![
+            ("net", Some("▼ 1.2 MB/s".to_owned())),
+            ("git", Some("main".to_owned()))
+        ]
     );
     // The next trip hides git (nil) and says nothing of net: git
     // clears, net keeps its prior — the stale-degrade contract.
@@ -1288,13 +1409,13 @@ fn replies_apply_under_token_and_stale_guards_with_nil_clearing() {
         }],
     );
     let degraded = state.render();
-    let degraded: Vec<(&str, Option<&str>)> = degraded
+    let degraded: Vec<(&str, Option<String>)> = degraded
         .iter()
-        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .map(|slot| (slot.id.as_str(), rendered_text(slot)))
         .collect();
     assert_eq!(
         degraded,
-        vec![("net", Some("▼ 1.2 MB/s")), ("git", None)],
+        vec![("net", Some("▼ 1.2 MB/s".to_owned())), ("git", None)],
         "a hidden id clears; an omitted id keeps its prior"
     );
 }
@@ -1327,13 +1448,13 @@ fn registry_syncs_sweep_slots_reorder_and_reset() {
     // keeps its prior text across the reload gap (spec assumption 6).
     state.note_sync(vec!["git".to_owned(), "mem".to_owned()]);
     let reloaded = state.render();
-    let reloaded: Vec<(&str, Option<&str>)> = reloaded
+    let reloaded: Vec<(&str, Option<String>)> = reloaded
         .iter()
-        .map(|slot| (slot.id.as_str(), slot.text.as_deref()))
+        .map(|slot| (slot.id.as_str(), rendered_text(slot)))
         .collect();
     assert_eq!(
         reloaded,
-        vec![("git", Some("main")), ("mem", None)],
+        vec![("git", Some("main".to_owned())), ("mem", None)],
         "the survivor keeps its text across the gap; the newcomer is absent until it answers"
     );
     // An emptied registry resets whole: nothing renders, and the next
@@ -1391,13 +1512,13 @@ fn the_ordered_key_filters_and_reorders_the_render() {
     let order = vec!["zoom".to_owned(), "git".to_owned(), "net".to_owned()];
     state.configure(Some(&order));
     let ordered = state.render();
-    let pairs: Vec<(&str, &str)> = ordered
+    let pairs: Vec<(&str, String)> = ordered
         .iter()
-        .map(|slot| (slot.id.as_str(), slot.text.as_deref().unwrap_or_default()))
+        .map(|slot| (slot.id.as_str(), rendered_text(slot).unwrap_or_default()))
         .collect();
     assert_eq!(
         pairs,
-        vec![("git", "g"), ("net", "n")],
+        vec![("git", "g".to_owned()), ("net", "n".to_owned())],
         "the list orders and filters; the unregistered id costs nothing"
     );
     // Back to unset: the full registration order returns, the hidden

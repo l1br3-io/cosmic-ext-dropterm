@@ -314,7 +314,9 @@ impl gpui::RenderOnce for StatusBandView {
         // The script segments' rows (status-segments spec): painted
         // like any row over their laid rects, but non-interactive in
         // v1 — the default cursor, no hover tint, no copy (the
-        // interactions key on SegmentId and never see these).
+        // interactions key on SegmentId and never see these). The
+        // row mounts one child per painted run (styled-status-slot):
+        // a string answer's single run paints exactly as before.
         for row in &vm.script_rows {
             let mut text = gpui::div()
                 .absolute()
@@ -326,7 +328,9 @@ impl gpui::RenderOnce for StatusBandView {
                 .items_center()
                 .font(self.font.clone())
                 .text_size(gpui::px(SEGMENT_FONT_SIZE));
-            text = text.child(row.text.clone());
+            for run in &row.runs {
+                text = text.child(run.text.clone());
+            }
             let color = if row.dimmed {
                 gpui::Hsla { a: DIM_ALPHA, ..fg }
             } else {

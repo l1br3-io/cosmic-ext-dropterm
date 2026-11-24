@@ -2653,9 +2653,9 @@ mod tests {
             .expect("the reply lands");
         // The drain side's apply: every Shown answer becomes a slot —
         // the shape SG2's shell state keeps, proven here against the
-        // real reply. A styled answer rides typed to the state and
-        // flattens at the render surface (slot-contract spec): the
-        // band lays the spans' concatenated text.
+        // real reply. A styled answer rides typed to the band and
+        // lays its painted runs (styled-status-slot): the glyph
+        // prefix rides the builtin idiom, the row lays per span.
         let mut segments = StatusSegments {
             clock: Some("14:32".to_owned()),
             ..StatusSegments::default()
@@ -2665,20 +2665,29 @@ mod tests {
                 segments.script.push(ScriptSegmentValue {
                     id,
                     side,
-                    text: Some(content.plain_text()),
+                    content: Some(content),
                 });
             }
         }
         let vm = crate::core::status::band_vm(&segments, 2000.0, &eight_px, None, None, None);
-        let laid: Vec<(&str, &str)> = vm
+        let laid: Vec<(&str, String)> = vm
             .script_rows
             .iter()
-            .map(|row| (row.id.as_str(), row.text.as_str()))
+            .map(|row| {
+                (
+                    row.id.as_str(),
+                    row.runs.iter().map(|run| run.text.as_str()).collect(),
+                )
+            })
             .collect();
         assert_eq!(
             laid,
-            vec![("git", "git:1"), ("mem", "mem:512M"), ("net", "net:1.2M")],
-            "the reply's values render: the left group before the right, per side in slot order; the styled answer renders its concatenated text"
+            vec![
+                ("git", "git:1".to_owned()),
+                ("mem", "cpu mem:512M".to_owned()),
+                ("net", "net:1.2M".to_owned()),
+            ],
+            "the reply's values render: the left group before the right, per side in slot order; the styled answer lays its runs, the glyph prefixed"
         );
     }
 

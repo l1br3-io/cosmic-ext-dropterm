@@ -9578,7 +9578,7 @@ mod tests {
                         .status_scripts
                         .render()
                         .first()
-                        .is_some_and(|slot| slot.text.is_some())
+                        .is_some_and(|slot| slot.content.is_some())
                 })
             });
             if answered || Instant::now() >= deadline {
@@ -9596,7 +9596,9 @@ mod tests {
             vec![status::ScriptSegmentValue {
                 id: "net".to_owned(),
                 side: status::ScriptSide::Right,
-                text: Some("cwd:/home/u/src".to_owned()),
+                content: Some(dropterm::core::slots::SlotContent::Text(
+                    "cwd:/home/u/src".to_owned()
+                )),
             }],
             "a real reply must land in the band state through the drain and the refresh overlay"
         );
