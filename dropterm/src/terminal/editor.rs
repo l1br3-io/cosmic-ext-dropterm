@@ -8,8 +8,9 @@
 //! in its docked row (the view's own paint).
 
 use dropterm::core::terminal::editor::Key;
-// Re-exported for the view, which owns the pane-side instance.
-pub(crate) use dropterm::core::terminal::editor::Editor;
+// Re-exported for the view, which owns the pane-side instance and
+// routes the lane's menu outcomes.
+pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress};
 use gpui::Keystroke;
 
 /// Translate a keystroke into the editor's canonical key vocabulary —
@@ -99,6 +100,7 @@ pub(crate) fn editor_key(keystroke: &Keystroke) -> Option<Key> {
 /// The routing claim (rich-input RI-4): `Some` only when the editor
 /// owns the line right now — native mode and every stand-aside state
 /// forward verbatim through today's translation.
+#[cfg(test)]
 pub(crate) fn claimed_key(keystroke: &Keystroke, editor_owns: bool) -> Option<Key> {
     editor_owns.then(|| editor_key(keystroke)).flatten()
 }
@@ -129,6 +131,135 @@ impl StripLine {
             after_caret: after.to_string(),
             ghost: ghost.unwrap_or_default().to_string(),
         }
+    }
+}
+
+/// The editor's menu routing (rich-input RI-5, the restored parity
+/// contract): while the menu shows inside the editor, Up/Down
+/// navigate, Enter two-stages (the equal line runs, a differing one
+/// accepts), Escape closes, printables keep the menu open — the
+/// insert plus the lane's step re-collecting the rows — and Tab,
+/// the shell's key in the native lane, restored to the menu inside
+/// the editor by the rich-input lift: the LCP fill of the filtered
+/// case-sensitive prefix rows (closing the last) else a cycle of
+/// the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorMenuRouting {
+    /// Up/Down (wrap is the transition's own).
+    Navigate(dropterm::core::terminal::suggest::MenuKey),
+    /// The menu's Accept press (a differing line; the equal line is
+    /// [`Self::CloseThenRun`]).
+    Accept,
+    /// The equal-line Enter (two-stage): close, insert nothing, run.
+    CloseThenRun,
+    /// Escape: close, insert nothing, nothing else.
+    Close,
+    /// Tab: the LCP-fill-else-cycle decision.
+    FillOrCycle,
+    /// A printable edit: the press flows to the buffer, the menu
+    /// stays, the rows re-collect on the lane's step.
+    KeepOpen,
+    /// Not the menu's: close it, then the press's own meaning runs.
+    CloseThenProcess,
+}
+
+/// The scoped routing itself — [`super::suggest::menu_routing`]'s
+/// editor twin, pure over the keystroke shape. The differences from
+/// the grid lane are the lift itself: Tab is the menu's fill here,
+/// and the equal-line Enter closes-and-runs (the editor executes;
+/// the grid lane forwarded bytes).
+pub(crate) fn editor_menu_routing(keystroke: &Keystroke, equal_line: bool) -> EditorMenuRouting {
+    let modifiers = &keystroke.modifiers;
+    let key = keystroke.key.as_str();
+    let no_command_mods = !(modifiers.control || modifiers.alt || modifiers.platform);
+    if no_command_mods {
+        if !modifiers.shift {
+            match key {
+                "up" => {
+                    return EditorMenuRouting::Navigate(
+                        dropterm::core::terminal::suggest::MenuKey::Up,
+                    );
+                }
+                "down" => {
+                    return EditorMenuRouting::Navigate(
+                        dropterm::core::terminal::suggest::MenuKey::Down,
+                    );
+                }
+                "enter" => {
+                    return if equal_line {
+                        EditorMenuRouting::CloseThenRun
+                    } else {
+                        EditorMenuRouting::Accept
+                    };
+                }
+                "escape" => return EditorMenuRouting::Close,
+                _ => {}
+            }
+        }
+        // The lift (rich-input spec): Tab fills or cycles inside the
+        // editor, bare and shifted alike.
+        if key == "tab" {
+            return EditorMenuRouting::FillOrCycle;
+        }
+        // The as-you-type edit: printables keep the menu open.
+        if keystroke
+            .key_char
+            .as_deref()
+            .and_then(|c| c.chars().next())
+            .is_some_and(|c| !c.is_control())
+        {
+            return EditorMenuRouting::KeepOpen;
+        }
+    }
+    EditorMenuRouting::CloseThenProcess
+}
+
+/// Tab's decision (the restored LCP-fill-else-cycle): the longest
+/// common prefix of the rows whose label starts with the typed
+/// segment case-sensitively — extending the segment means the fill
+/// (the insert is the extension beyond the typed text, the last row
+/// standing closing the menu), anything else a plain cycle. Pure
+/// over the rows the engine exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TabFill {
+    /// The insert beyond the typed text, and whether the menu
+    /// closes after (one row left standing).
+    Insert { beyond: String, close: bool },
+    /// No common extension: cycle the selection.
+    Cycle,
+}
+
+pub(crate) fn tab_fill(labels: &[&str], typed: &str) -> TabFill {
+    let prefix_rows: Vec<&str> = labels
+        .iter()
+        .copied()
+        .filter(|label| label.starts_with(typed))
+        .collect();
+    if prefix_rows.is_empty() {
+        return TabFill::Cycle;
+    }
+    let mut lcp = prefix_rows[0].to_string();
+    for label in &prefix_rows[1..] {
+        let common = lcp
+            .chars()
+            .zip(label.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a)
+            .collect::<String>();
+        lcp = common;
+    }
+    if lcp.len() > typed.len() && lcp.starts_with(typed) {
+        let beyond = lcp[typed.len()..].to_string();
+        let standing = prefix_rows
+            .iter()
+            .filter(|label| label.starts_with(lcp.as_str()))
+            .count();
+        TabFill::Insert {
+            beyond,
+            close: standing == 1,
+        }
+    } else {
+        TabFill::Cycle
     }
 }
 
@@ -349,5 +480,85 @@ mod tests {
         assert_eq!(empty.before_caret, "");
         assert_eq!(empty.after_caret, "");
         assert_eq!(empty.ghost, "");
+    }
+
+    // --- the editor's menu routing and Tab fill (RI-5 part 2) ---
+
+    #[test]
+    fn the_editor_menu_routing_restores_the_parity_table() {
+        use super::{EditorMenuRouting, editor_menu_routing};
+        use dropterm::core::terminal::suggest::MenuKey;
+
+        let equal = editor_menu_routing(&key(plain(), "enter", Some("\r")), true);
+        assert_eq!(equal, EditorMenuRouting::CloseThenRun);
+        let differing = editor_menu_routing(&key(plain(), "enter", Some("\r")), false);
+        assert_eq!(differing, EditorMenuRouting::Accept);
+        assert_eq!(
+            editor_menu_routing(&key(plain(), "up", None), false),
+            EditorMenuRouting::Navigate(MenuKey::Up)
+        );
+        assert_eq!(
+            editor_menu_routing(&key(plain(), "down", None), false),
+            EditorMenuRouting::Navigate(MenuKey::Down)
+        );
+        assert_eq!(
+            editor_menu_routing(&key(plain(), "escape", None), false),
+            EditorMenuRouting::Close
+        );
+        // The lift: Tab is the menu's fill inside the editor, bare
+        // and shifted alike (the native lane's verbatim forward is
+        // the claim's own exclusion, not this table's).
+        assert_eq!(
+            editor_menu_routing(&key(plain(), "tab", None), false),
+            EditorMenuRouting::FillOrCycle
+        );
+        assert_eq!(
+            editor_menu_routing(&key(shift(), "tab", None), false),
+            EditorMenuRouting::FillOrCycle
+        );
+        // Printables keep the menu open; command chords close it.
+        assert_eq!(
+            editor_menu_routing(&key(plain(), "a", Some("a")), false),
+            EditorMenuRouting::KeepOpen
+        );
+        assert_eq!(
+            editor_menu_routing(&key(shift(), "a", Some("A")), false),
+            EditorMenuRouting::KeepOpen
+        );
+        assert_eq!(
+            editor_menu_routing(&key(ctrl(), "a", None), false),
+            EditorMenuRouting::CloseThenProcess
+        );
+    }
+
+    #[test]
+    fn the_tab_fill_extends_the_lcp_else_cycles() {
+        use super::{TabFill, tab_fill};
+
+        // The LCP of the case-sensitive prefix rows extends "gi"
+        // (the rows that share it — gimp diverges and would cap the
+        // LCP at the query itself, the Cycle case below).
+        let rows = vec!["git", "git-status"];
+        assert_eq!(
+            tab_fill(&rows, "gi"),
+            TabFill::Insert {
+                beyond: "t".to_string(),
+                close: false
+            }
+        );
+        // One row left standing closes the menu.
+        assert_eq!(
+            tab_fill(&rows, "git-st"),
+            TabFill::Insert {
+                beyond: "atus".to_string(),
+                close: true
+            }
+        );
+        // No common extension: cycle.
+        assert_eq!(tab_fill(&["git", "gimp"], "gi"), TabFill::Cycle);
+        // Case-sensitive: a capital row never fills a lowercase query.
+        assert_eq!(tab_fill(&["Git", "Gimp"], "gi"), TabFill::Cycle);
+        // No prefix rows at all: cycle.
+        assert_eq!(tab_fill(&["cargo"], "gi"), TabFill::Cycle);
     }
 }

@@ -2925,6 +2925,23 @@ impl Terminal {
         (!gained.is_empty()).then_some(gained)
     }
 
+    /// The history-navigation slice (rich-input RI-5): the ring's
+    /// commands newest-first, read fresh at each navigation entry.
+    pub fn editor_history(&self) -> Vec<String> {
+        self.suggest.history_newest_first()
+    }
+
+    /// The two-stage Enter's pre-check from the editor lane
+    /// (rich-input RI-5): whether the owned buffer's typed segment
+    /// already equals the menu's selected row.
+    pub fn editor_menu_selected_equals(&self, buffer: &str) -> bool {
+        let line = self.editor_grid_line(buffer);
+        let Some(typed) = self.suggest.typed_segment(&line) else {
+            return false;
+        };
+        self.menu.selected_equals(typed)
+    }
+
     /// The completion menu's open attempt from the editor lane
     /// (rich-input RI-5, the conditioned opener's backing): the soft
     /// trigger's collection over the owned line — the same

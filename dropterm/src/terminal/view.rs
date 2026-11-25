@@ -1093,11 +1093,78 @@ impl TerminalPane {
     /// never claims at all (the claim is gated inside the engine's
     /// own routing answer).
     fn route_editor_claim(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        let claim = {
-            let engine = self.terminal.lock().expect("engine lock");
-            editor::claimed_key(keystroke, engine.editor_owns_line())
-        };
-        if let Some(key) = claim {
+        if !self
+            .terminal
+            .lock()
+            .expect("engine lock")
+            .editor_owns_line()
+        {
+            return false;
+        }
+        // The menu layer (rich-input RI-5): while the menu shows
+        // inside the editor, the parity table owns the press.
+        if self.terminal.lock().expect("engine lock").menu_is_open()
+            && self.route_editor_menu_press(keystroke, cx)
+        {
+            return true;
+        }
+        // Tab while closed (the lift's conditioned opener): a line
+        // with a qualifying row opens the menu; the decline falls
+        // through and Tab forwards to the shell verbatim — SP-D10's
+        // Tab stays the native lane's rule, the lift is the
+        // editor's own.
+        if !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && keystroke.key == "tab"
+        {
+            let (to_caret, _) = self.editor_to_caret();
+            if self
+                .terminal
+                .lock()
+                .expect("engine lock")
+                .editor_menu_open(&to_caret)
+            {
+                cx.notify();
+                return true;
+            }
+            return false;
+        }
+        // The ghost's accepts (the settled set): bare Right takes
+        // the whole showing, Alt+Right one word — only while showing
+        // and only with the caret at the line's end (the ghost
+        // paints after the buffer; a mid-line Right moves).
+        if let Some(kind) = suggest::accept_kind(&keystroke.key, keystroke.modifiers) {
+            let showing = self
+                .terminal
+                .lock()
+                .expect("engine lock")
+                .suggestion()
+                .is_some();
+            let at_end = self.editor.lock().expect("editor lock").caret_at_end();
+            if showing && at_end {
+                let gained = {
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.editor_accept_suggestion(kind)
+                };
+                if let Some(suffix) = gained {
+                    self.editor.lock().expect("editor lock").paste(&suffix);
+                    self.step_editor_lane();
+                    cx.notify();
+                    return true;
+                }
+            }
+        }
+        // The buffer keys: the v1 chord table, the history slice fed
+        // fresh at each navigation entry (the first Up of a line).
+        if let Some(key) = editor::editor_key(keystroke) {
+            if key == Key::Up && self.editor.lock().expect("editor lock").at_live_line() {
+                let history = self.terminal.lock().expect("engine lock").editor_history();
+                self.editor
+                    .lock()
+                    .expect("editor lock")
+                    .set_history(history);
+            }
             self.apply_editor_key(key, cx);
             true
         } else {
@@ -1105,42 +1172,179 @@ impl TerminalPane {
         }
     }
 
-    /// One claimed keystroke through the pure editor model
-    /// (rich-input RI-4): the verdict routes — Handled repaints the
-    /// strip, Execute PTY-writes through the engine's own execution
-    /// (the echo handoff riding it), and the signals forward their
-    /// byte or clear the screen (Warp's own Ctrl+L reading, the
-    /// record's finding 3: the history goes, the owned line stands).
-    fn apply_editor_key(&mut self, key: Key, cx: &mut Context<Self>) {
-        let verdict = self.editor.lock().expect("editor lock").key(key);
-        let mut engine = self.terminal.lock().expect("engine lock");
-        match verdict {
-            // Handled repaints the strip alone; Passthrough is
-            // unreachable in v1 (every mapped key handles) — the arm
-            // keeps the match honest for the model's future keys.
-            Verdict::Handled | Verdict::Passthrough => {}
-            Verdict::Execute { line } => {
-                println!(
-                    "dropterm: rich-input execute — {} bytes PTY-written",
-                    line.len() + 1
-                );
-                engine.editor_execute(&line);
-                engine.needs_update = true;
+    /// One press against the editor's showing menu (rich-input
+    /// RI-5): the parity table's decision applied over the lane —
+    /// navigation, the two-stage Enter, Tab's fill-or-cycle, the
+    /// close paths — with `KeepOpen` and `CloseThenProcess` falling
+    /// through to the buffer keys after their own side effects.
+    /// True when the press is consumed here.
+    fn route_editor_menu_press(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use dropterm::core::terminal::suggest::MenuKey;
+        let (to_caret, _) = self.editor_to_caret();
+        let equal_line = {
+            let engine = self.terminal.lock().expect("engine lock");
+            engine.editor_menu_selected_equals(&to_caret)
+        };
+        match editor::editor_menu_routing(keystroke, equal_line) {
+            editor::EditorMenuRouting::Navigate(menu_key) => {
+                self.terminal
+                    .lock()
+                    .expect("engine lock")
+                    .editor_menu_press(menu_key, &to_caret);
+                cx.notify();
+                true
             }
-            Verdict::Signal(Signal::Interrupt) => {
-                engine.input_scroll(b"\x03".to_vec());
-                engine.needs_update = true;
+            editor::EditorMenuRouting::Accept => {
+                let outcome = {
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.editor_menu_press(MenuKey::Accept, &to_caret)
+                };
+                self.apply_editor_menu_outcome(outcome, cx);
+                true
             }
-            Verdict::Signal(Signal::EndOfFile) => {
-                engine.input_scroll(b"\x04".to_vec());
-                engine.needs_update = true;
+            editor::EditorMenuRouting::CloseThenRun => {
+                self.terminal.lock().expect("engine lock").menu_close();
+                self.apply_editor_key(Key::Enter, cx);
+                true
             }
-            Verdict::Signal(Signal::ClearScreen) => {
-                engine.term.lock().grid_mut().clear_history();
-                engine.needs_update = true;
+            editor::EditorMenuRouting::Close => {
+                self.terminal.lock().expect("engine lock").menu_close();
+                cx.notify();
+                true
+            }
+            editor::EditorMenuRouting::FillOrCycle => {
+                let labels: Vec<String> = {
+                    let engine = self.terminal.lock().expect("engine lock");
+                    engine
+                        .menu_rows()
+                        .iter()
+                        .map(|row| row.label.clone())
+                        .collect()
+                };
+                // The fill compares the typed segment — the last
+                // token of the buffer to the caret — against the
+                // rows' labels, case-sensitively.
+                let typed = to_caret
+                    .split_whitespace()
+                    .next_back()
+                    .unwrap_or_default()
+                    .to_string();
+                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                match editor::tab_fill(&refs, &typed) {
+                    editor::TabFill::Insert { beyond, close } => {
+                        self.editor.lock().expect("editor lock").paste(&beyond);
+                        if close {
+                            self.terminal.lock().expect("engine lock").menu_close();
+                        }
+                        self.step_editor_lane();
+                        cx.notify();
+                    }
+                    editor::TabFill::Cycle => {
+                        self.terminal
+                            .lock()
+                            .expect("engine lock")
+                            .editor_menu_press(MenuKey::Down, &to_caret);
+                        cx.notify();
+                    }
+                }
+                true
+            }
+            // The printable edit: the buffer keys insert, the lane's
+            // step re-collects, the menu stays open.
+            editor::EditorMenuRouting::KeepOpen => false,
+            // The press's own meaning runs after the close — the
+            // buffer keys, the ghost accepts, or the fall-through.
+            editor::EditorMenuRouting::CloseThenProcess => {
+                self.terminal.lock().expect("engine lock").menu_close();
+                false
             }
         }
-        drop(engine);
+    }
+
+    /// Apply a lane menu outcome to the buffer (rich-input RI-5):
+    /// the insert lands at the caret (an undoable edit, the accept
+    /// funnel's own shape) and the lane steps; Execute runs the line
+    /// through the editor's own Enter.
+    fn apply_editor_menu_outcome(&mut self, outcome: editor::MenuPress, cx: &mut Context<Self>) {
+        match outcome {
+            editor::MenuPress::Insert(suffix) => {
+                self.editor.lock().expect("editor lock").paste(&suffix);
+                self.step_editor_lane();
+                cx.notify();
+            }
+            editor::MenuPress::Execute => self.apply_editor_key(Key::Enter, cx),
+            editor::MenuPress::Noop => cx.notify(),
+        }
+    }
+
+    /// The owned buffer's step inputs: the text to the caret and the
+    /// caret-at-end fact.
+    fn editor_to_caret(&self) -> (String, bool) {
+        let state = self.editor.lock().expect("editor lock");
+        let (to_caret, after_blank) = state.step_inputs();
+        (to_caret.to_string(), after_blank)
+    }
+
+    /// Step the suggest lane over the owned buffer (rich-input
+    /// RI-5): the ghost, the anchor bookkeeping, and the auto-pop
+    /// re-collect answer the editor's line after every mutation.
+    fn step_editor_lane(&mut self) {
+        let (to_caret, after_blank) = self.editor_to_caret();
+        self.terminal
+            .lock()
+            .expect("engine lock")
+            .editor_step(&to_caret, after_blank);
+    }
+
+    /// One claimed keystroke through the pure editor model
+    /// (rich-input RI-4): the verdict routes — Handled repaints the
+    /// strip and steps the lane, Execute PTY-writes through the
+    /// engine's own execution (the echo handoff riding it), and the
+    /// signals forward their byte or clear the screen (Warp's own
+    /// Ctrl+L reading, the record's finding 3: the history goes,
+    /// the owned line stands).
+    fn apply_editor_key(&mut self, key: Key, cx: &mut Context<Self>) {
+        let verdict = self.editor.lock().expect("editor lock").key(key);
+        // Every buffer mutation steps the lane (RI-5): the ghost and
+        // the auto-pop answer the editor's line, never the grid's.
+        let mutated = matches!(verdict, Verdict::Handled | Verdict::Passthrough);
+        {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            match verdict {
+                // Handled repaints the strip alone; Passthrough is
+                // unreachable in v1 (every mapped key handles) — the
+                // arm keeps the match honest for the model's future
+                // keys.
+                Verdict::Handled | Verdict::Passthrough => {}
+                Verdict::Execute { line } => {
+                    println!(
+                        "dropterm: rich-input execute — {} bytes PTY-written",
+                        line.len() + 1
+                    );
+                    engine.editor_execute(&line);
+                    engine.needs_update = true;
+                }
+                Verdict::Signal(Signal::Interrupt) => {
+                    engine.input_scroll(b"\x03".to_vec());
+                    engine.needs_update = true;
+                }
+                Verdict::Signal(Signal::EndOfFile) => {
+                    engine.input_scroll(b"\x04".to_vec());
+                    engine.needs_update = true;
+                }
+                Verdict::Signal(Signal::ClearScreen) => {
+                    engine.term.lock().grid_mut().clear_history();
+                    engine.needs_update = true;
+                }
+            }
+        }
+        if mutated {
+            self.step_editor_lane();
+        }
         cx.notify();
     }
 
@@ -1169,6 +1373,7 @@ impl TerminalPane {
                     };
                     if editor_owns {
                         self.editor.lock().expect("editor lock").paste(&text);
+                        self.step_editor_lane();
                     }
                     println!(
                         "dropterm: pane action Paste — {} bytes {}",

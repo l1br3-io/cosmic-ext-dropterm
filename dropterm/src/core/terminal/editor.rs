@@ -459,6 +459,40 @@ impl Editor {
         Verdict::Handled
     }
 
+    /// Whether navigation stands on the live line (rich-input
+    /// RI-5): the history slice's refresh window — the pane feeds
+    /// the store fresh at each entry, never mid-navigation.
+    #[must_use]
+    pub fn at_live_line(&self) -> bool {
+        self.history_position.is_none()
+    }
+
+    /// Swap the history slice (rich-input RI-5): the pane feeds the
+    /// store's newest-first commands here, read fresh at each
+    /// navigation entry (the first Up of a line) — navigation in
+    /// flight is never disturbed (the caller swaps only from the
+    /// live line).
+    pub fn set_history(&mut self, history: Vec<String>) {
+        self.history = history;
+    }
+
+    /// Whether the caret sits at the buffer's end — the ghost's
+    /// accept gate (the ghost paints after the buffer; a mid-line
+    /// Right moves).
+    #[must_use]
+    pub fn caret_at_end(&self) -> bool {
+        self.cursor == self.char_len()
+    }
+
+    /// The buffer's text up to the caret, and whether the caret ends
+    /// the line — the lane's step inputs ([`crate::core::terminal::
+    /// Terminal::editor_step`]).
+    #[must_use]
+    pub fn step_inputs(&self) -> (&str, bool) {
+        let byte = self.byte_of(self.cursor);
+        (&self.text[..byte], byte == self.text.len())
+    }
+
     /// The buffer's length in chars.
     fn char_len(&self) -> usize {
         self.text.chars().count()
