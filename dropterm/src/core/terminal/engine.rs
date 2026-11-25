@@ -54,7 +54,9 @@ use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
+use super::editor;
 use super::host::TextHost;
+use crate::core::config::InputMode;
 use crate::core::tabs::TabId;
 use crate::core::terminal::suggest::{self, AcceptKind, Suggest};
 
@@ -202,6 +204,12 @@ pub struct TerminalOptions {
     /// truth, never rewritten by `set_config` (the `spawn_path`
     /// contract).
     pub spawn_env_names: Arc<[String]>,
+    /// Who owns the prompt line (rich-input spec): resolved from the
+    /// app config's `input_mode` where options are built — `Native`
+    /// (the default) keeps every keystroke a PTY byte; `Rich` opens
+    /// the editor lane at a live prompt. Flips apply at the next
+    /// `set_config` pass, so the mode switch lands live.
+    pub input_mode: InputMode,
 }
 
 impl Default for TerminalOptions {
@@ -230,6 +238,7 @@ impl Default for TerminalOptions {
             autosuggestions_specs_loading: false,
             autosuggestions_history_context: true,
             history_state_path: None,
+            input_mode: InputMode::default(),
             autosuggestions_menu_fuzzy: true,
             spawn_env_names: Arc::from(Vec::new()),
         }
@@ -639,6 +648,10 @@ pub struct Terminal {
     /// The auto-popup opt-in (suggest-menu spec) — the resolved
     /// options flag, re-read at every `set_config`.
     autosuggestions_menu_auto: bool,
+    /// Who owns the prompt line (rich-input spec, RI-3) — the mode
+    /// truth the routing reads: the resolved options flag, re-read
+    /// at every `set_config`, so the mode switch flips live.
+    input_mode: InputMode,
     /// Whether the open menu's session is auto-managed
     /// (suggest-menu spec): an auto-opened menu closes itself when
     /// narrowing leaves one or nothing; a chord-opened one obeys
@@ -1620,6 +1633,7 @@ impl Terminal {
             spawn_env_names: options.spawn_env_names.clone(),
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
+            input_mode: options.input_mode,
             menu_auto_opened: false,
             menu_accept_echo: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
@@ -1898,6 +1912,48 @@ impl Terminal {
 
     pub fn input_no_scroll<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
         self.notifier.notify(input);
+    }
+
+    /// The editor's live-prompt gates (rich-input spec, RI-3): the
+    /// same facts the ghost lane reads — focus, a fresh foreground
+    /// check, the viewport's bottom — plus the grid-read's prompt
+    /// truth: an adopted suggest anchor is a prompt the grid can see
+    /// (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
+    pub fn editor_gates(&self) -> editor::Gates {
+        let at_bottom = {
+            let term = self.term.lock();
+            let grid = term.grid();
+            grid.display_offset() == 0 && grid.cursor.point.line == grid.bottommost_line()
+        };
+        editor::Gates {
+            focused: self.is_focused,
+            no_foreground_child: !self.foreground_child_running(),
+            at_bottom,
+            prompt_detection: if self.suggest.anchored() {
+                editor::PromptDetection::Live
+            } else {
+                editor::PromptDetection::Unsure
+            },
+        }
+    }
+
+    /// The routing decision (rich-input spec, RI-3): whether the
+    /// editor owns the line for a keystroke arriving right now — the
+    /// mode and the gates in one answer. `native` never opens the
+    /// lane (the bare-mode pin), whatever the gates say.
+    pub fn editor_owns_line(&self) -> bool {
+        self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
+    }
+
+    /// Enter's execution (rich-input spec): PTY-write the line plus
+    /// the single newline byte — the shell keeps its line
+    /// discipline, echo, and history (the record's deliberate
+    /// divergence from Warp's block render). The echo handoff rides
+    /// SP3's one-shot: the update that lands the shell's echo of
+    /// this line must not re-collect the auto-pop lane over it.
+    pub fn editor_execute(&mut self, line: &str) {
+        self.menu_accept_echo = true;
+        self.input_no_scroll(format!("{line}\n").into_bytes());
     }
 
     pub fn working_directory(&self) -> Option<PathBuf> {
@@ -3170,6 +3226,14 @@ impl Terminal {
 
         if self.autosuggestions_enabled != options.autosuggestions_enabled {
             self.autosuggestions_enabled = options.autosuggestions_enabled;
+            update = true;
+        }
+
+        if self.input_mode != options.input_mode {
+            // The mode truth (rich-input spec, RI-3): the switch
+            // flips live on this pass — the routing reads it at the
+            // next keystroke, and nothing else moves.
+            self.input_mode = options.input_mode;
             update = true;
         }
 

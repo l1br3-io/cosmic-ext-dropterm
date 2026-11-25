@@ -5303,3 +5303,164 @@ fn a_fixed_family_host_answers_false_and_stays_healthy() {
         "the engine's own state is untouched"
     );
 }
+
+// --- the rich-input engine wiring (rich-input RI-3) ---
+
+/// A rich-mode terminal over the same hermetic /bin/sh harness: the
+/// mode truth rides the options, and the auto-pop lane stands armed
+/// for the echo-handoff pin.
+fn rich_terminal() -> Terminal {
+    use alacritty_terminal::tty::Shell as PtyShell;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Terminal::new(
+        Box::new(PlainHost::default()),
+        TabId(0),
+        tx,
+        Config::default(),
+        &Options {
+            shell: Some(PtyShell::new("/bin/sh".to_owned(), Vec::new())),
+            drain_on_exit: true,
+            ..Options::default()
+        },
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    )
+    .expect("spawn a rich-mode /bin/sh test terminal")
+}
+
+/// The whole grid's text — the execution pin reads both the echoed
+/// line and the shell's answer wherever they land.
+fn grid_text(terminal: &Terminal) -> String {
+    terminal.with_buffer(|buffer| {
+        buffer
+            .lines
+            .iter()
+            .map(|line| line.text().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+/// Scroll the harness to a real prompt at the grid's foot — the
+/// recording pin's own recipe: the settle path anchors the prompt
+/// (arm the close, land the settling resize), then a scrolling
+/// command pushes it to the bottom row. A fresh terminal's cursor
+/// sits at the top of an empty screen, so `at_bottom` cannot read
+/// true until output has pushed the prompt down.
+fn drive_to_a_bottom_prompt(terminal: &mut Terminal) {
+    terminal.arm_spawn_grid_next_resize();
+    resize_cols(terminal, 100);
+    poll_update_until(
+        terminal,
+        |t| t.suggest.anchored(),
+        "the settle prompt anchors",
+    );
+    terminal.input_no_scroll(&b"seq 1 40\r"[..]);
+    poll_update_until(
+        terminal,
+        |t| {
+            bottom_line_text(t)
+                .trim_start_matches('\u{2066}')
+                .starts_with('$')
+        },
+        "the prompt lands on the bottom row",
+    );
+}
+
+#[test]
+fn the_options_default_mode_stays_native() {
+    // The no-regression ruling, restated at the engine's edge where
+    // the routing reads it: default options never open the lane.
+    assert_eq!(TerminalOptions::default().input_mode, InputMode::Native);
+}
+
+#[test]
+fn native_mode_never_opens_the_lane() {
+    // The bare-mode pin: with every live-prompt gate passing (a real
+    // /bin/sh prompt, focused, at the bottom), `native` still never
+    // claims — the lane stays dark and keys forward verbatim.
+    let mut terminal = autosuggest_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(
+        &mut terminal,
+        |t| editor::owns_line(&t.editor_gates()),
+        "a live prompt with every gate passing",
+    );
+    assert!(!terminal.editor_owns_line());
+}
+
+#[test]
+fn rich_mode_claims_at_a_live_prompt() {
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(
+        &mut terminal,
+        Terminal::editor_owns_line,
+        "the editor to own the line",
+    );
+}
+
+#[test]
+fn an_unknown_prompt_maps_to_unsure_and_a_read_one_to_live() {
+    // The engine's prompt-truth mapping (OQ-4): no adopted anchor is
+    // Unsure (the pure gates' default-hide pin owns the decision
+    // itself); a prompt the grid read adopts is Live. The pre-drive
+    // look is deterministic — no update has run, so nothing has been
+    // read yet.
+    let mut terminal = rich_terminal();
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Unsure
+    );
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(
+        &mut terminal,
+        |t| t.editor_gates().prompt_detection == editor::PromptDetection::Live,
+        "the prompt to be read",
+    );
+}
+
+#[test]
+fn a_foreground_child_stands_the_rich_editor_aside() {
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(
+        &mut terminal,
+        Terminal::editor_owns_line,
+        "a live prompt first",
+    );
+    terminal.input_no_scroll(&b"sleep 5\n"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.editor_owns_line(),
+        "the foreground child to take the screen",
+    );
+}
+
+#[test]
+fn execution_writes_the_line_and_the_echo_does_not_reopen_the_lane() {
+    // Enter's execution: one PTY write of the line plus the newline
+    // byte — the shell echoes the line ("ec": a two-char prefix
+    // whose auto-pop WOULD collect a qualifying row) and answers
+    // "not found", both landing in the grid; the echo handoff (SP3's
+    // one-shot, re-armed by the write) keeps the standing auto-pop
+    // lane from re-opening over the echo.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+
+    terminal.editor_execute("ec");
+    poll_update_until(
+        &mut terminal,
+        |t| grid_text(t).contains("not found"),
+        "the shell to echo and answer the executed line",
+    );
+    assert!(
+        !terminal.menu_is_open(),
+        "the echo must not re-open the menu lane"
+    );
+}

@@ -191,6 +191,10 @@ pub(crate) fn pane_options(
 ) -> TerminalOptions {
     TerminalOptions {
         font_size: config.font_size,
+        // The mode truth rides every construction and set_config
+        // pass like the toggles (rich-input RI-3); the per-profile
+        // resolution lands where the spawn knows its profile.
+        input_mode: config.input_mode,
         // The folded surfaces read the decoupled rich-input keys
         // (rich-input RI-1's cull): the internal option names keep
         // their shape — the editor's own wiring (RI-3/RI-4) renames
