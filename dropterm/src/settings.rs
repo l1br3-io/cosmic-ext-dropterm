@@ -284,6 +284,24 @@ type FormIdentity = Option<(String, usize)>;
 /// The drawer's Kit halves: the stateful controls, built once per
 /// open from the live config, seeded on the file's values (drafts
 /// are empty at open — the buffer's reopen-fresh rule).
+/// The page's class word (style-engine SE4): the addressable tree's
+/// `settings-page.<word>` — one word per page, kebab-case.
+fn page_word(page: dropterm::core::settings::SettingsPage) -> &'static str {
+    use dropterm::core::settings::SettingsPage;
+    match page {
+        SettingsPage::Appearance => "appearance",
+        SettingsPage::Window => "window",
+        SettingsPage::Tabs => "tabs",
+        SettingsPage::StatusBar => "status-bar",
+        SettingsPage::Dropdown => "dropdown",
+        SettingsPage::Terminal => "terminal",
+        SettingsPage::Profiles => "profiles",
+        SettingsPage::Keybindings => "keybindings",
+        SettingsPage::Advanced => "advanced",
+        SettingsPage::Plugins => "plugins",
+    }
+}
+
 pub(crate) struct SettingsWindow {
     shell: Entity<Shell>,
     inputs: InputMap,
@@ -1163,11 +1181,40 @@ impl SettingsWindow {
         state
     }
 
+    /// The standing palette (style-engine SE4): the scheme's words
+    /// the declarations resolve through, the band's own source —
+    /// built per render beside the resolves.
+    fn style_palette(&self, cx: &App) -> crate::status_bar::ScriptPalette {
+        let shell = self.shell.read(cx);
+        let colors = crate::app_shell::resolve_theme(&shell.config, &shell.user_schemes).colors;
+        let (fg, bg) = crate::tab_bar::strip_pair(None);
+        crate::status_bar::ScriptPalette::resolve(&colors, fg, bg)
+    }
+
     /// The open page: the section cards (the Profiles and
     /// Keybindings pages carry their own bodies — their increments).
     fn page_element(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let config = self.shell.read(cx).config.clone();
         let page = self.shell.read(cx).settings.page;
+        // The page root's rules (style-engine SE4): `settings-page`
+        // + the page's class — its background and color, unset
+        // leaving the theme's look.
+        let palette = self.style_palette(cx);
+        let engine = self.shell.read(cx).style_engine.borrow();
+        let word = page_word(page);
+        let classes = [word];
+        let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+            element: "settings-page",
+            classes: &classes,
+            id: None,
+            inline: &[],
+        });
+        drop(engine);
+        let paint = |value: Option<&dropterm::core::slots::SlotColor>| match value {
+            Some(dropterm::core::slots::SlotColor::Token(token)) => palette.color(token),
+            Some(dropterm::core::slots::SlotColor::Hex(hex)) => crate::status_bar::parse_hex(hex),
+            None => None,
+        };
         let mut content = v_flex()
             .id("settings-page")
             .gap_4()
@@ -1176,6 +1223,12 @@ impl SettingsWindow {
             .min_h_0()
             .min_w_0()
             .overflow_y_scroll();
+        if let Some(background) = paint(resolved.background.as_ref()) {
+            content = content.bg(background);
+        }
+        if let Some(color) = paint(resolved.color.as_ref()) {
+            content = content.text_color(color);
+        }
         match page {
             SettingsPage::Profiles => {
                 content = content.child(self.profiles_page(window, cx));
@@ -2328,6 +2381,23 @@ impl Render for SettingsWindow {
         let nav = self.nav_column(page, cx);
         let armed = self.shell.read(cx).settings.keybind_capture.is_some();
         let target = self.shell.clone();
+        // The window root's rules (style-engine SE4): `settings` —
+        // the window's background and color, unset leaving the
+        // theme's look.
+        let palette = self.style_palette(cx);
+        let engine = self.shell.read(cx).style_engine.borrow();
+        let root = engine.resolve(&dropterm::core::style_engine::StyleNode {
+            element: "settings",
+            classes: &[],
+            id: None,
+            inline: &[],
+        });
+        drop(engine);
+        let root_paint = |value: Option<&dropterm::core::slots::SlotColor>| match value {
+            Some(dropterm::core::slots::SlotColor::Token(token)) => palette.color(token),
+            Some(dropterm::core::slots::SlotColor::Hex(hex)) => crate::status_bar::parse_hex(hex),
+            None => None,
+        };
         h_flex()
             .id("settings-window")
             .key_context("settings-window")
@@ -2370,8 +2440,8 @@ impl Render for SettingsWindow {
             .when(armed, gpui::Styled::border_1)
             .size_full()
             .min_w_0()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(root_paint(root.background.as_ref()).unwrap_or(cx.theme().background))
+            .text_color(root_paint(root.color.as_ref()).unwrap_or(cx.theme().foreground))
             .child(nav)
             // The content pane: the open page's rows, the terminal's
             // window full width beside the nav. `h_full` is load-

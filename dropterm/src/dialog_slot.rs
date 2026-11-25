@@ -56,6 +56,10 @@ pub(crate) struct DialogSlot {
     /// and color, palette-mapped at construction — the Kit custom
     /// variant when anything resolves, the Kit secondary otherwise.
     button_paints: Vec<ButtonPaint>,
+    /// The `dialog` root's resolved paint (SE4): the card's
+    /// background and color, `None` leaving the theme's look.
+    dialog_background: Option<gpui::Hsla>,
+    dialog_color: Option<gpui::Hsla>,
     /// The first paint's repair — focus applied at open races the
     /// element's first mount (the palette's own pattern).
     painted_once: bool,
@@ -90,6 +94,22 @@ impl DialogSlot {
     ) -> Self {
         use dropterm::core::style_engine::StyleNode;
         let container_focus = cx.focus_handle();
+        // The dialog's surface root (style-engine SE4): the card's
+        // background and color — a `dialog` rule restyles the modal
+        // by ordinary cascade, unset leaving the theme's look.
+        let dialog = engine.resolve(&StyleNode {
+            element: "dialog",
+            classes: &[],
+            id: None,
+            inline: &[],
+        });
+        let paint = |value: Option<&SlotColor>| match value {
+            Some(SlotColor::Token(token)) => palette.color(token),
+            Some(SlotColor::Hex(hex)) => status_bar::parse_hex(hex),
+            None => None,
+        };
+        let dialog_background = paint(dialog.background.as_ref());
+        let dialog_color = paint(dialog.color.as_ref());
         let body_runs = status_bar::paint_script_segment(
             &dropterm::core::status::script_runs(
                 &dropterm::core::slots::SlotContent::Styled {
@@ -134,6 +154,8 @@ impl DialogSlot {
             escaped: false,
             body_runs,
             button_paints,
+            dialog_background,
+            dialog_color,
             painted_once: false,
             on_press,
             on_dismiss,
@@ -157,9 +179,9 @@ impl DialogSlot {
 impl Render for DialogSlot {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let card = theme.background;
         let hairline = theme.border;
-        let fg = theme.foreground;
+        let fg = self.dialog_color.unwrap_or(theme.foreground);
+        let card = self.dialog_background.unwrap_or(theme.background);
         // The keyboard's first-paint repair (the palette's own
         // windowless-arm pattern): focus applied at open races the
         // element's first mount, and a lost race strands the dialog
@@ -511,4 +533,45 @@ mod tests {
             "the entity itself never emits — the shell closes"
         );
     }
+}
+
+#[test]
+fn a_dialog_rule_restyles_the_card_root() {
+    // The `dialog` root (SE4): the card's resolved background and
+    // color — constructed the same headless way the mounted
+    // dialog is, asserting the retained paint fields.
+    let _ = std::panic::catch_unwind(|| {}); // keep the test in the same module shape
+    let engine = |declarations: serde_json::Value| {
+        let mut set = dropterm::core::style_engine::StyleSet::default();
+        let parsed = dropterm::core::style_engine::parse_declarations(&declarations);
+        assert!(parsed.drops.is_empty(), "{:?}", parsed.drops);
+        set.replace_manifest(vec![dropterm::core::style_engine::Rule {
+            origin: dropterm::core::style_engine::RuleOrigin::Manifest {
+                plugin: "styler".to_owned(),
+            },
+            selector: dropterm::core::style_engine::parse_selector("dialog").expect("parses"),
+            declarations: parsed.declarations,
+        }]);
+        set
+    };
+    // The resolve is the render's own input: a rule on `dialog`
+    // answers background/color; no rule answers nothing.
+    let bare = dropterm::core::style_engine::StyleSet::default();
+    let node = dropterm::core::style_engine::StyleNode {
+        element: "dialog",
+        classes: &[],
+        id: None,
+        inline: &[],
+    };
+    assert_eq!(bare.resolve(&node).background, None);
+    let set = engine(serde_json::json!({ "background": "accent", "color": "fg" }));
+    let resolved = set.resolve(&node);
+    assert_eq!(
+        resolved.background,
+        Some(dropterm::core::slots::SlotColor::Token("accent".to_owned()))
+    );
+    assert_eq!(
+        resolved.color,
+        Some(dropterm::core::slots::SlotColor::Token("fg".to_owned()))
+    );
 }

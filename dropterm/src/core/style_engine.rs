@@ -895,6 +895,111 @@ mod tests {
         assert_eq!(set.resolve(&node), ResolvedStyle::default());
     }
 
+    // --- the addressable tree (SE4's end-to-end walk) ---
+
+    /// The addressable tree's element names, one node shape per
+    /// surface — the shapes the painters build, the names the spec's
+    /// tree declares.
+    fn tree_nodes<'a>() -> Vec<(&'a str, Vec<&'a str>, Option<&'a str>, StyleNode<'a>)> {
+        let page_words = [
+            "appearance",
+            "window",
+            "tabs",
+            "status-bar",
+            "dropdown",
+            "terminal",
+            "advanced",
+            "profiles",
+            "keybindings",
+            "plugins",
+        ];
+        let mut nodes = vec![
+            ("band", vec!["left"], None),
+            ("band", vec!["right"], None),
+            ("tabstrip", vec![], None),
+            ("tab", vec![], None),
+            ("tab", vec!["active"], None),
+            ("settings", vec![], None),
+            ("dialog", vec![], None),
+            ("dialog-button", vec!["accent"], None),
+            ("panel", vec![], None),
+            ("panel-view", vec![], Some("tasks")),
+            ("span", vec!["warn"], Some("rx")),
+            // The row's numeric event id is not rule-addressable (a
+            // digit-led `#id` does not parse — the fail-to-default);
+            // the pin's row node carries none.
+            ("row", vec!["done"], None),
+        ];
+        for word in page_words {
+            nodes.push(("settings-page", vec![word], None));
+        }
+        nodes
+            .into_iter()
+            .map(|(element, classes, id)| {
+                // The leak is the fixture's own: the pin's node shapes
+                // live for the test's whole life.
+                let class_refs: &'static [&'static str] = Box::leak(
+                    classes
+                        .iter()
+                        .map(|c| &*Box::leak(c.to_string().into_boxed_str()) as &str)
+                        .collect::<Vec<&str>>()
+                        .into_boxed_slice(),
+                );
+                (
+                    element,
+                    classes.clone(),
+                    id,
+                    StyleNode {
+                        element,
+                        classes: class_refs,
+                        id,
+                        inline: &[],
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_addressable_tree_resolves_end_to_end() {
+        // One fixture rule per element name and shape: every node the
+        // painters build answers its own rule — the tree walks whole.
+        let mut engine = StyleSet::default();
+        let mut rules = Vec::new();
+        for (element, classes, id, _) in tree_nodes() {
+            let mut selector = element.to_owned();
+            for class in &classes {
+                selector.push('.');
+                selector.push_str(class);
+            }
+            if let Some(id) = id {
+                selector.push('#');
+                selector.push_str(id);
+            }
+            let parsed_selector = parse_selector(&selector).expect("the tree name parses");
+            let parsed = parse_declarations(&json!({ "color": "accent" }));
+            assert!(parsed.drops.is_empty(), "{:?}", parsed.drops);
+            rules.push(Rule {
+                origin: RuleOrigin::Manifest {
+                    plugin: "tree".to_owned(),
+                },
+                selector: parsed_selector,
+                declarations: parsed.declarations,
+            });
+        }
+        engine.replace_manifest(rules);
+        for (_, _, _, node) in tree_nodes() {
+            let resolved = engine.resolve(&node);
+            assert_eq!(
+                resolved.color,
+                Some(SlotColor::Token("accent".to_owned())),
+                "the tree node '{}/{}' resolves its own rule",
+                node.element,
+                node.classes.join(".")
+            );
+        }
+    }
+
     // --- the rule object (the sources' shared shape, SE3) ---
 
     #[test]

@@ -146,10 +146,10 @@ struct RenameEdit {
 /// generator and the pane read from a config — the glue chain's name,
 /// mode, and colors in one value, resolved at the echo so the tick's
 /// apply is pure application.
-struct ResolvedTheme {
+pub(crate) struct ResolvedTheme {
     name: String,
     dark: bool,
-    colors: alacritty_terminal::term::color::Colors,
+    pub(crate) colors: alacritty_terminal::term::color::Colors,
 }
 
 /// A comparable copy of a resolved [`ResolvedTheme::colors`] for the
@@ -175,7 +175,7 @@ fn theme_colors(colors: &alacritty_terminal::term::color::Colors) -> ThemeColors
 /// schemes ride in from the shell's holder (theme-files F2): a
 /// stored user-scheme name resolves through them here exactly as at
 /// every pane spawn.
-fn resolve_theme(
+pub(crate) fn resolve_theme(
     config: &DropTermConfig,
     user_schemes: &[dropterm::core::theme_files::UserScheme],
 ) -> ResolvedTheme {
@@ -6433,6 +6433,10 @@ impl Shell {
     /// pin's law); gate-on lays the column beside the empty rail at
     /// the rail's remembered width. The rail is shell chrome — the
     /// hairline the column already carries stays on the column.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the rail's whole mount: the roots' resolves, the sections, the row painter's flip — one column"
+    )]
     fn rail_column(&self, column: impl gpui::IntoElement, cx: &Context<Self>) -> gpui::AnyElement {
         if !self.config.panel_rail_enabled {
             return column.into_any_element();
@@ -6441,6 +6445,25 @@ impl Shell {
             return column.into_any_element();
         };
         let theme = cx.theme();
+        // The rail's rules resolve through the standing palette (SE4):
+        // the scheme words the declarations carry, one color source
+        // with the band's. Unset values leave today's look.
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
+        let scheme_pair = tab_bar::strip_pair(None);
+        let palette = status_bar::ScriptPalette::resolve(&colors, scheme_pair.0, scheme_pair.1);
+        let engine = self.style_engine.borrow();
+        let paint = |value: Option<&dropterm::core::slots::SlotColor>| match value {
+            Some(dropterm::core::slots::SlotColor::Token(token)) => palette.color(token),
+            Some(dropterm::core::slots::SlotColor::Hex(hex)) => status_bar::parse_hex(hex),
+            None => None,
+        };
+        let panel = engine.resolve(&dropterm::core::style_engine::StyleNode {
+            element: "panel",
+            classes: &[],
+            id: None,
+            inline: &[],
+        });
+        let sections = self.panel_rail.sections_laid(&engine);
         let rail = div()
             .id("panel-rail")
             .h_full()
@@ -6448,57 +6471,123 @@ impl Shell {
             .w(gpui::px(rail.width_px()))
             .border_l_1()
             .border_color(theme.border)
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(paint(panel.background.as_ref()).unwrap_or(theme.background))
+            .text_color(paint(panel.color.as_ref()).unwrap_or(theme.foreground))
             .text_size(gpui::px(13.))
             .p(gpui::px(8.))
             .flex()
             .flex_col()
             .gap(gpui::px(8.))
-            .children(
-                self.panel_rail
-                    .sections_laid(&self.style_engine.borrow())
-                    .iter()
-                    .map(|section| {
-                        let title = gpui::div()
-                            .text_size(gpui::px(11.))
-                            .text_color(theme.muted_foreground)
-                            .child(section.title.clone());
-                        let shell = cx.entity();
-                        let view_id = section.id.clone();
-                        let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
-                            section.rows.iter().map(|(press_id, runs)| {
-                                // The row is the press target (panel-slot
-                                // PS3): the hand gets the pointer and the
-                                // hover, the press routes the slot-event
-                                // through the shell's one emit.
-                                let shell = shell.clone();
-                                let view_id = view_id.clone();
-                                let press_id = press_id.clone();
-                                gpui::div()
-                                    .id(gpui::ElementId::Name(
-                                        format!("panel-row-{view_id}-{press_id}").into(),
-                                    ))
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme.secondary))
-                                    .on_click(move |_: &gpui::ClickEvent, _window, cx| {
-                                        shell.update(cx, |shell, _cx| {
-                                            shell.panel_row_pressed(&view_id, &press_id);
-                                        });
-                                    })
-                                    .children(
-                                        runs.iter().map(|run| gpui::div().child(run.text.clone())),
-                                    )
-                            }),
-                        );
-                        gpui::div()
-                            .flex()
-                            .flex_col()
-                            .gap(gpui::px(4.))
-                            .child(title)
-                            .child(rows)
+            .children(sections.iter().map(|section| {
+                // The section is one `panel-view` node: its id the
+                // view's registration id, its resolved values on the
+                // section container.
+                let view = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "panel-view",
+                    classes: &[],
+                    id: Some(&section.id),
+                    inline: &[],
+                });
+                let title = gpui::div()
+                    .text_size(gpui::px(11.))
+                    .text_color(theme.muted_foreground)
+                    .child(section.title.clone());
+                let shell = cx.entity();
+                let view_id = section.id.clone();
+                let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
+                    section.rows.iter().map(|row| {
+                        // The row resolves its own `row` node (SE4):
+                        // the class hooks, the numeric id's string
+                        // form, the inline declarations — the runs
+                        // paint through the band's composer.
+                        let classes: Vec<&str> = row
+                            .class
+                            .as_deref()
+                            .unwrap_or_default()
+                            .split_whitespace()
+                            .collect();
+                        let id_string = row.id.map(|id| id.to_string());
+                        let style = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "row",
+                            classes: &classes,
+                            id: id_string.as_deref(),
+                            inline: &row.style,
+                        });
+                        let runs = status_bar::paint_script_segment(&row.runs, &palette);
+                        // The row is the press target (panel-slot
+                        // PS3): the hand gets the pointer and the
+                        // hover, the press routes the slot-event
+                        // through the shell's one emit.
+                        let shell = shell.clone();
+                        let view_id = view_id.clone();
+                        let press_id = row.press_id.clone();
+                        let mut div = gpui::div()
+                            .id(gpui::ElementId::Name(
+                                format!("panel-row-{view_id}-{press_id}").into(),
+                            ))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.secondary))
+                            .on_click(move |_: &gpui::ClickEvent, _window, cx| {
+                                shell.update(cx, |shell, _cx| {
+                                    shell.panel_row_pressed(&view_id, &press_id);
+                                });
+                            });
+                        if let Some(background) = paint(style.background.as_ref()) {
+                            div = div.bg(background);
+                        }
+                        if let Some(color) = paint(style.color.as_ref()) {
+                            div = div.text_color(color);
+                        }
+                        div.children(runs.iter().map(|run| {
+                            let mut child =
+                                gpui::div().child(run.text.clone()).text_color(run.color);
+                            if let Some(background) = run.background {
+                                child = child.bg(background);
+                            }
+                            if let Some(weight) = run.weight {
+                                child = child.font_weight(match weight {
+                                    dropterm::core::style_engine::FontWeight::Bold => {
+                                        gpui::FontWeight::BOLD
+                                    }
+                                    dropterm::core::style_engine::FontWeight::Normal => {
+                                        gpui::FontWeight::NORMAL
+                                    }
+                                });
+                            }
+                            if run.slant == Some(dropterm::core::style_engine::FontSlant::Italic) {
+                                child = child.italic();
+                            }
+                            match run.decoration {
+                                Some(dropterm::core::style_engine::TextDecoration::Underline) => {
+                                    child = child.underline();
+                                }
+                                Some(dropterm::core::style_engine::TextDecoration::LineThrough) => {
+                                    child = child.line_through();
+                                }
+                                Some(dropterm::core::style_engine::TextDecoration::None) => {
+                                    child = child.text_decoration_none();
+                                }
+                                None => {}
+                            }
+                            child
+                        }))
                     }),
-            );
+                );
+                let mut section_div = gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap(gpui::px(4.))
+                    .child(title)
+                    .child(rows);
+                if let Some(background) = paint(view.background.as_ref()) {
+                    section_div = section_div.bg(background);
+                }
+                if let Some(color) = paint(view.color.as_ref()) {
+                    section_div = section_div.text_color(color);
+                }
+                section_div
+            }));
+        drop(engine);
         div()
             .size_full()
             .flex()
@@ -11148,6 +11237,69 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
                 assert_eq!(
                     resolved.weight,
                     Some(dropterm::core::style_engine::FontWeight::Bold)
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_open_settings_window_picks_up_a_reloaded_rule_by_the_re_theme_pass(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-settings");
+        write_manifest(
+            &dir.0.join("plugins"),
+            "styler",
+            r#"{ "styles": [ { "selector": "settings-page.plugins",
+                "declarations": { "background": "accent" } } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                // The seam the page root consumes (SE4): the resolve
+                // answers the rule from launch...
+                let resolved =
+                    shell
+                        .style_engine
+                        .borrow()
+                        .resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "settings-page",
+                            classes: &["plugins"],
+                            id: None,
+                            inline: &[],
+                        });
+                assert_eq!(
+                    resolved.background,
+                    Some(dropterm::core::slots::SlotColor::Token("accent".to_owned())),
+                    "the page rule resolves from launch"
+                );
+                // ...and the re-theme pass IS a fresh resolve per
+                // frame: an edited manifest + the rescan's fresh scan
+                // changes the next frame's answer — the window
+                // repainting by the standing notify, headless at the
+                // seam.
+                write_manifest(
+                    &dir.0.join("plugins"),
+                    "styler",
+                    r#"{ "styles": [ { "selector": "settings-page.plugins",
+                        "declarations": { "background": "green" } } ] }"#,
+                );
+                shell.rescan_manifests(cx);
+                let resolved =
+                    shell
+                        .style_engine
+                        .borrow()
+                        .resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "settings-page",
+                            classes: &["plugins"],
+                            id: None,
+                            inline: &[],
+                        });
+                assert_eq!(
+                    resolved.background,
+                    Some(dropterm::core::slots::SlotColor::Token("green".to_owned())),
+                    "the re-theme pass re-resolves the fresh sheets"
                 );
             });
         });
