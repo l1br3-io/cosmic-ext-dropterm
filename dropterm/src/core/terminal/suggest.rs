@@ -1086,6 +1086,12 @@ pub struct SpecCommand {
 }
 
 impl SpecCommand {
+    /// Whether this spec carries a command name (rich-input RI-6,
+    /// the highlighter's known-command rule): the name or an alias.
+    pub(crate) fn carries_name(&self, command: &str) -> bool {
+        self.name == command || self.aliases.iter().any(|alias| alias == command)
+    }
+
     /// The ruled order, recursive (suggest-schema spec): every entry
     /// list — subcommands, flags, and the literal suggestions under a
     /// command's or a flag's arguments — sorts by name at every

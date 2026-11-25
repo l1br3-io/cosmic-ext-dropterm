@@ -2261,6 +2261,7 @@ impl gpui::Render for TerminalPane {
             // Points onto pixels (96/72): the strip shapes in the
             // terminal's own font, sized from the pane's option.
             let font_px = px(f32::from(self.options.font_size) * 4. / 3.);
+            let highlight = self.options.input_highlight;
             let strip = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, cx| {
@@ -2270,6 +2271,7 @@ impl gpui::Render for TerminalPane {
                         &strip_skin,
                         bounds,
                         font_px,
+                        highlight,
                         window,
                         cx,
                     );
@@ -2793,63 +2795,197 @@ fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
 /// One overlay text line — the ghost's visible string or a menu row
 /// — shaped once in the pane's font at its color, natural width (no
 /// cell-grid forcing: the overlays are not the grid).
-/// The rich-input strip's paint (rich-input RI-4): the owned line
-/// shaped in the terminal's own font — the text before the caret, a
-/// caret quad, the rest, and the ghost's dim suffix after the whole
-/// line — inside the docked row's bounds. The highlight tokenizer
-/// (RI-6) splits the buffer into colored spans and the chrome
-/// (RI-7) restyles the row against the mock; this is the buffer's
-/// own first paint, one tint and the dim ghost.
+/// The mock's token palette (rich-input RI-6): the light/dark pairs
+/// keyed on the scheme's foreground luminance — command, flag,
+/// string, and the unknown-command error red (the variable rides
+/// the string green; the mock carries no variable color of its own).
+struct TokenPalette {
+    cmd: gpui::Hsla,
+    flag: gpui::Hsla,
+    string: gpui::Hsla,
+    err: gpui::Hsla,
+}
+
+impl TokenPalette {
+    fn for_scheme(light: bool) -> Self {
+        Self {
+            cmd: hex_hsla(if light { 0x174_7c2 } else { 0x82b_7ff }),
+            flag: hex_hsla(if light { 0x966_60a } else { 0xffd_37e }),
+            string: hex_hsla(if light { 0x177_245 } else { 0x93e_6a5 }),
+            err: hex_hsla(if light { 0xc03_434 } else { 0xff8_080 }),
+        }
+    }
+
+    fn color(&self, class: editor::TokenClass, plain: gpui::Hsla) -> gpui::Hsla {
+        match class {
+            editor::TokenClass::Command { known: true } => self.cmd,
+            editor::TokenClass::Command { known: false } => self.err,
+            editor::TokenClass::Flag => self.flag,
+            editor::TokenClass::String | editor::TokenClass::Variable => self.string,
+            editor::TokenClass::Word => plain,
+        }
+    }
+}
+
+fn hex_hsla(hex: u32) -> gpui::Hsla {
+    gpui::rgb(hex).into()
+}
+
+/// The strip's own shaper (rich-input RI-6): [`shape_overlay_line`]'s
+/// shape with an optional underline — the unknown command's error
+/// mark (gpui's underline is solid or wavy; the record's dashed is
+/// approximated solid, a walk finding to refine).
+fn shape_underlined_line(
+    text: &str,
+    font: &gpui::Font,
+    color: gpui::Hsla,
+    font_size: Pixels,
+    underline: Option<UnderlineStyle>,
+    window: &mut gpui::Window,
+) -> gpui::ShapedLine {
+    window.text_system().shape_line(
+        text.into(),
+        font_size,
+        &[gpui::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline,
+            strikethrough: None,
+        }],
+        None,
+    )
+}
+
+/// The rich-input strip's paint (rich-input RI-4 + RI-6): the owned
+/// line shaped in the terminal's own font, segment by colored
+/// segment — the highlight tokenizer's classes when the toggle is
+/// on, one plain tint when it is off — with the caret quad flush at
+/// its byte offset and the ghost's dim suffix after the whole line.
+/// The chrome (RI-7) restyles the row against the mock around this
+/// token floor.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strip's paint frame mirrors paint_pane's own handle list; a param struct would bundle six unrelated facts"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the strip paints one pass — the segment walk, the caret split, and the ghost share the one lock-derived snapshot"
+)]
 fn paint_strip(
     editor_state: &Arc<Mutex<editor::Editor>>,
     terminal: &Arc<Mutex<Terminal>>,
     skin: &PaneSkin,
     bounds: gpui::Bounds<Pixels>,
     font_px: Pixels,
+    highlight: bool,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
-    let (strip, fg, dim) = {
+    let (segments, ghost, caret_byte, fg, dim, palette) = {
         let engine = terminal.lock().expect("engine lock");
         let ghost = engine.suggestion().map(str::to_string);
-        let strip = {
+        let fg = color_hsla(engine.foreground_color());
+        let dim = color_hsla(engine.ghost_color());
+        let palette = TokenPalette::for_scheme(fg.l > 0.5);
+        let (segments, caret_byte) = {
             let state = editor_state.lock().expect("editor lock");
-            editor::StripLine::capture(&state, ghost.as_deref())
+            let caret_byte = state.step_inputs().0.len();
+            let segments =
+                editor::segments_for(state.line(), highlight, |name| engine.command_known(name));
+            (segments, caret_byte)
         };
-        (
-            strip,
-            color_hsla(engine.foreground_color()),
-            color_hsla(engine.ghost_color()),
-        )
+        (segments, ghost, caret_byte, fg, dim, palette)
     };
     let pad = px(8.);
     let origin = point(
         bounds.origin.x + pad,
         bounds.origin.y + (bounds.size.height - font_px) / 2.,
     );
-    let before = shape_overlay_line(&strip.before_caret, &skin.font, fg, font_px, window);
-    let after = shape_overlay_line(&strip.after_caret, &skin.font, fg, font_px, window);
-    let ghost = shape_overlay_line(&strip.ghost, &skin.font, dim, font_px, window);
-    let _ = before.paint(origin, font_px, TextAlign::Left, None, window, cx);
-    // The caret: a two-pixel block flush between the halves.
-    let caret_x = origin.x + before.width;
-    window.paint_quad(fill(
-        gpui::Bounds {
-            origin: point(caret_x, origin.y),
-            size: gpui::Size::new(px(2.), font_px),
-        },
-        fg,
-    ));
-    let after_origin = point(caret_x + px(2.), origin.y);
-    let _ = after.paint(after_origin, font_px, TextAlign::Left, None, window, cx);
-    let _ = ghost.paint(
-        point(after_origin.x + after.width, origin.y),
-        font_px,
-        TextAlign::Left,
-        None,
-        window,
-        cx,
-    );
+    let caret_quad = |x: Pixels, window: &mut gpui::Window| {
+        window.paint_quad(fill(
+            gpui::Bounds {
+                origin: point(x, origin.y),
+                size: gpui::Size::new(px(2.), font_px),
+            },
+            fg,
+        ));
+    };
+    // Walk the segments, splitting the one carrying the caret so the
+    // quad lands flush between its halves.
+    let mut x = origin.x;
+    let mut painted_bytes = 0usize;
+    let mut caret_placed = false;
+    for (class, text) in &segments {
+        let start = painted_bytes;
+        painted_bytes += text.len();
+        let color = palette.color(*class, fg);
+        let underline =
+            matches!(class, editor::TokenClass::Command { known: false }).then(|| UnderlineStyle {
+                color: Some(palette.err),
+                thickness: px(1.),
+                wavy: false,
+            });
+        if !caret_placed && start <= caret_byte && caret_byte <= painted_bytes {
+            let (before, after) = text.split_at(caret_byte - start);
+            if !before.is_empty() {
+                let shaped =
+                    shape_underlined_line(before, &skin.font, color, font_px, underline, window);
+                let _ = shaped.paint(
+                    point(x, origin.y),
+                    font_px,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                x += shaped.width;
+            }
+            caret_quad(x, window);
+            x += px(2.);
+            if !after.is_empty() {
+                let shaped =
+                    shape_underlined_line(after, &skin.font, color, font_px, underline, window);
+                let _ = shaped.paint(
+                    point(x, origin.y),
+                    font_px,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                x += shaped.width;
+            }
+            caret_placed = true;
+        } else if !text.is_empty() {
+            let shaped = shape_underlined_line(text, &skin.font, color, font_px, underline, window);
+            let _ = shaped.paint(
+                point(x, origin.y),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width;
+        }
+    }
+    if !caret_placed {
+        caret_quad(x, window);
+        x += px(2.);
+    }
+    if let Some(ghost) = ghost.filter(|ghost| !ghost.is_empty()) {
+        let shaped = shape_overlay_line(&ghost, &skin.font, dim, font_px, window);
+        let _ = shaped.paint(
+            point(x, origin.y),
+            font_px,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
 }
 
 fn shape_overlay_line(

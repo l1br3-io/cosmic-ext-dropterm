@@ -9,9 +9,47 @@
 
 use dropterm::core::terminal::editor::Key;
 // Re-exported for the view, which owns the pane-side instance and
-// routes the lane's menu outcomes.
-pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress};
+// routes the lane's menu outcomes and paints the token classes.
+pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress, TokenClass};
 use gpui::Keystroke;
+
+/// The strip's colored segments under the toggle (rich-input
+/// RI-6): the tokenizer's tiling when highlight is on, one plain
+/// segment when it is off — the paint's whole decision, pure for
+/// the pin.
+pub(crate) fn segments_for(
+    line: &str,
+    highlight: bool,
+    command_known: impl Fn(&str) -> bool,
+) -> Vec<(TokenClass, String)> {
+    if highlight {
+        tile_segments(line, command_known)
+    } else {
+        vec![(TokenClass::Word, line.to_string())]
+    }
+}
+
+/// Tile the whole line into colored segments (rich-input RI-6): the
+/// tokenizer's spans with the whitespace gaps as plain pieces, so
+/// the paint walks one contiguous list.
+pub(crate) fn tile_segments(
+    line: &str,
+    command_known: impl Fn(&str) -> bool,
+) -> Vec<(TokenClass, String)> {
+    let mut segments = Vec::new();
+    let mut cursor = 0usize;
+    for span in dropterm::core::terminal::editor::highlight_spans(line, command_known) {
+        if span.range.start > cursor {
+            segments.push((TokenClass::Word, line[cursor..span.range.start].to_string()));
+        }
+        segments.push((span.class, line[span.range.clone()].to_string()));
+        cursor = span.range.end;
+    }
+    if cursor < line.len() {
+        segments.push((TokenClass::Word, line[cursor..].to_string()));
+    }
+    segments
+}
 
 /// Translate a keystroke into the editor's canonical key vocabulary —
 /// the v1 chord table from the record (every documented chord, the
@@ -106,9 +144,10 @@ pub(crate) fn claimed_key(keystroke: &Keystroke, editor_owns: bool) -> Option<Ke
 }
 
 /// The strip's paint snapshot: the owned line split around the caret
-/// with the ghost suffix after it — pure data the view renders and
-/// the tests pin (the highlight tokenizer, RI-6, restyles this shape
-/// into spans; the geometry stays the view's).
+/// with the ghost suffix after it — pure data the tests pin (the
+/// RI-6 segment paint replaced the shape at the view; the pin keeps
+/// the caret-split contract).
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StripLine {
     pub(crate) before_caret: String,
@@ -116,6 +155,7 @@ pub(crate) struct StripLine {
     pub(crate) ghost: String,
 }
 
+#[cfg(test)]
 impl StripLine {
     /// Capture the editor's line at its caret, with the engine's
     /// current ghost as the dim suffix.
@@ -453,6 +493,28 @@ mod tests {
         ] {
             let _ = input::translate(&key(modifiers, name, typed), &binds, modes);
         }
+    }
+
+    #[test]
+    fn the_highlight_toggle_switches_tiled_for_plain() {
+        use super::{TokenClass, segments_for};
+        use dropterm::core::terminal::editor as core_editor;
+
+        // On: the line tiles into its classes (the known command and
+        // its flag).
+        let on = segments_for("git status", true, |name| name == "git");
+        assert_eq!(
+            on,
+            vec![
+                (TokenClass::Command { known: true }, "git".to_string()),
+                (TokenClass::Word, " ".to_string()),
+                (TokenClass::Word, "status".to_string()),
+            ]
+        );
+        // Off: one plain segment carries the whole line.
+        let off = segments_for("git status", false, |name| name == "git");
+        assert_eq!(off, vec![(TokenClass::Word, "git status".to_string())]);
+        let _ = core_editor::TokenClass::Word;
     }
 
     #[test]

@@ -210,6 +210,12 @@ pub struct TerminalOptions {
     /// the editor lane at a live prompt. Flips apply at the next
     /// `set_config` pass, so the mode switch lands live.
     pub input_mode: InputMode,
+    /// Whether the owned line highlights live (rich-input RI-6):
+    /// resolved from the app config's `input_highlight` — the pane's
+    /// strip paints the token classes while on, one plain tint while
+    /// off. Carried for the pane's paint (the engine's lane never
+    /// reads it), flipping live on the config echo.
+    pub input_highlight: bool,
 }
 
 impl Default for TerminalOptions {
@@ -239,6 +245,7 @@ impl Default for TerminalOptions {
             autosuggestions_history_context: true,
             history_state_path: None,
             input_mode: InputMode::default(),
+            input_highlight: true,
             autosuggestions_menu_fuzzy: true,
             spawn_env_names: Arc::from(Vec::new()),
         }
@@ -2940,6 +2947,17 @@ impl Terminal {
             return false;
         };
         self.menu.selected_equals(typed)
+    }
+
+    /// Whether a command name is known (rich-input RI-6, the
+    /// highlighter's rule, the record's finding 6): the specs table
+    /// or the spawn-time PATH catalog carries it. A false answer is
+    /// the unknown-command mark — the dashed red underline.
+    pub fn command_known(&self, name: &str) -> bool {
+        self.autosuggestions_specs_table
+            .iter()
+            .any(|spec| spec.carries_name(name))
+            || self.command_catalog.iter().any(|known| known == name)
     }
 
     /// The completion menu's open attempt from the editor lane

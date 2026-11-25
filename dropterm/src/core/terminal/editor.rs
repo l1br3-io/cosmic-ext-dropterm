@@ -125,6 +125,111 @@ pub enum MenuPress {
     Execute,
 }
 
+/// The owned line's token classes (rich-input RI-6): the mock's
+/// painted set — command (known vs unknown), flag, string — plus the
+/// record's finding-6 ceiling's variable class; `Word` is the plain
+/// default everything else lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenClass {
+    /// The line's command position: the name the known-command
+    /// predicate answers for (the unknown answer carries the
+    /// record's dashed-red underline at paint).
+    Command { known: bool },
+    /// A `-`-prefixed option.
+    Flag,
+    /// A quoted token.
+    String,
+    /// A `$`-prefixed variable reference.
+    Variable,
+    /// Everything else, painted plain.
+    Word,
+}
+
+/// One highlighted slice of the owned line — a byte range with its
+/// class (the ranges tile the line's tokens; the whitespace between
+/// stays unpainted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HighlightSpan {
+    /// The token's byte range in the line.
+    pub range: std::ops::Range<usize>,
+    /// The token's class.
+    pub class: TokenClass,
+}
+
+/// Tokenize the owned line for highlight (rich-input RI-6): one
+/// pass, whitespace-separated tokens, each line of a multi-line
+/// buffer restarting at the command position (a pasted block's
+/// second line is a command too). The known-command predicate is
+/// injected — the paint consumer decides what "known" means (the
+/// engine's specs-and-catalog rule).
+#[must_use]
+pub fn highlight_spans(line: &str, command_known: impl Fn(&str) -> bool) -> Vec<HighlightSpan> {
+    let mut spans = Vec::new();
+    let mut token_index_on_line = 0;
+    let mut token_start: Option<usize> = None;
+    for (offset, ch) in line.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = token_start.take() {
+                spans.push(classify_span(
+                    line,
+                    start,
+                    offset,
+                    token_index_on_line,
+                    &command_known,
+                ));
+                token_index_on_line += 1;
+            }
+            if ch == '\n' {
+                token_index_on_line = 0;
+            }
+        } else if token_start.is_none() {
+            token_start = Some(offset);
+        }
+    }
+    if let Some(start) = token_start {
+        spans.push(classify_span(
+            line,
+            start,
+            line.len(),
+            token_index_on_line,
+            &command_known,
+        ));
+    }
+    spans
+}
+
+/// One token's class: the mock's rules (finding 6's shape) — the
+/// line's first token starting `[a-z_]` is the command, `-` a flag,
+/// quotes a string — plus `$` a variable.
+fn classify_span(
+    line: &str,
+    start: usize,
+    end: usize,
+    token_index_on_line: usize,
+    command_known: &impl Fn(&str) -> bool,
+) -> HighlightSpan {
+    let token = &line[start..end];
+    let class = if token_index_on_line == 0
+        && token.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+    {
+        TokenClass::Command {
+            known: command_known(token),
+        }
+    } else if token.starts_with('-') {
+        TokenClass::Flag
+    } else if token.starts_with('$') {
+        TokenClass::Variable
+    } else if token.starts_with(['"', '\'']) || token.ends_with(['"', '\'']) {
+        TokenClass::String
+    } else {
+        TokenClass::Word
+    };
+    HighlightSpan {
+        range: start..end,
+        class,
+    }
+}
+
 /// What the grid-read gates concluded about the prompt (rich-input
 /// OQ-4): `Live` is a prompt the gates can see; `Unsure` is anything
 /// they cannot decide — and unsure hides (a wrongly-shown editor

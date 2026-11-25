@@ -446,3 +446,82 @@ fn an_unsure_prompt_hides_the_editor() {
     };
     assert!(!owns_line(&gates));
 }
+
+// --- the highlight tokenizer (rich-input RI-6) ---
+
+use super::{HighlightSpan, TokenClass, highlight_spans};
+
+fn classes(line: &str) -> Vec<(String, TokenClass)> {
+    highlight_spans(line, |name| name == "git" || name == "echo")
+        .into_iter()
+        .map(|HighlightSpan { range, class }| (line[range].to_string(), class))
+        .collect()
+}
+
+#[test]
+fn the_four_token_classes_tile_a_line() {
+    // The mock's painted set plus the variable: the command position
+    // (known here), a flag, a variable, a quoted string, and the
+    // plain default.
+    let spans = classes("git status --short $HOME 'a b'");
+    assert_eq!(
+        spans,
+        vec![
+            ("git".to_string(), TokenClass::Command { known: true }),
+            ("status".to_string(), TokenClass::Word),
+            ("--short".to_string(), TokenClass::Flag),
+            ("$HOME".to_string(), TokenClass::Variable),
+            // The mock's own rule: whitespace splits a quoted
+            // phrase, each piece painted string (quote-detection is
+            // per token) — visually one string, structurally two.
+            ("'a".to_string(), TokenClass::String),
+            ("b'".to_string(), TokenClass::String),
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_command_carries_the_unknown_mark() {
+    let spans = classes("totally-made-up --flag");
+    assert_eq!(
+        spans,
+        vec![
+            (
+                "totally-made-up".to_string(),
+                TokenClass::Command { known: false }
+            ),
+            ("--flag".to_string(), TokenClass::Flag),
+        ]
+    );
+}
+
+#[test]
+fn each_line_of_a_multi_line_buffer_restarts_at_the_command() {
+    // A pasted block's second line is a command too (the newline
+    // resets the command position).
+    let spans = classes("echo one\ngit status");
+    assert_eq!(
+        spans,
+        vec![
+            ("echo".to_string(), TokenClass::Command { known: true }),
+            ("one".to_string(), TokenClass::Word),
+            ("git".to_string(), TokenClass::Command { known: true }),
+            ("status".to_string(), TokenClass::Word),
+        ]
+    );
+}
+
+#[test]
+fn a_non_command_shape_leading_a_line_is_not_the_command_class() {
+    // The mock's rule: only a `[a-z_]`-starting first token is the
+    // command position — a leading flag or variable stays its own
+    // class, never a Command span.
+    let spans = classes("-x git");
+    assert_eq!(
+        spans,
+        vec![
+            ("-x".to_string(), TokenClass::Flag),
+            ("git".to_string(), TokenClass::Word),
+        ]
+    );
+}
