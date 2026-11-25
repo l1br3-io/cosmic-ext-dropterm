@@ -1945,6 +1945,14 @@ impl Terminal {
         self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
     }
 
+    /// Whether the prompt line is the rich editor's (rich-input
+    /// RI-4): the mode flag as the paint-side gates read it — the
+    /// grid's own ghost and menu overlays stand down in rich mode
+    /// (the strip carries them).
+    pub fn rich_input(&self) -> bool {
+        self.input_mode == InputMode::Rich
+    }
+
     /// Enter's execution (rich-input spec): PTY-write the line plus
     /// the single newline byte — the shell keeps its line
     /// discipline, echo, and history (the record's deliberate

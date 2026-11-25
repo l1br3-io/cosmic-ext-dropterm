@@ -44,10 +44,12 @@ use dropterm::core::terminal::mouse_reporter::{
 use alacritty_terminal::index::Column;
 
 use super::clipboard;
+use super::editor;
 use super::grid::{self, StyledRun};
 use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
 use super::selection::{self, ClickKind};
 use super::suggest;
+use dropterm::core::terminal::editor::{Key, Signal, Verdict};
 
 gpui::actions!(dropterm_gpui, [TerminalTab, TerminalBackTab]);
 
@@ -196,6 +198,12 @@ struct GridGeometry {
 pub(crate) struct TerminalPane {
     pub(crate) terminal: Arc<Mutex<Terminal>>,
     skin: PaneSkin,
+    /// The rich-input editor's pane-side state (rich-input RI-4):
+    /// the owned line's pure model, shared into the strip's paint
+    /// closure. The history slice feeds from the engine's store with
+    /// the parity replay (RI-5); until then Up/Down walk an empty
+    /// lane and hold.
+    editor: Arc<Mutex<editor::Editor>>,
     /// The shell's latest title report (stored now, consumed when
     /// the tab chrome slices land).
     title: Option<String>,
@@ -360,6 +368,7 @@ impl TerminalPane {
         }
         Self {
             terminal,
+            editor: Arc::new(Mutex::new(editor::Editor::new(Vec::new()))),
             skin: PaneSkin {
                 colors,
                 opacity_alpha: opacity_alpha(opacity),
@@ -1031,6 +1040,110 @@ impl TerminalPane {
         }
     }
 
+    /// The overlay lanes and the editor claim, before the byte
+    /// translation (rich-input RI-4's gate beside the standing
+    /// menu routing): the completion menu's own key lane while it
+    /// shows and the Ctrl+Space NUL special case — both standing
+    /// down in rich mode, where the grid menu is dark and the
+    /// editor's surfaces arrive with the parity replay (RI-5) —
+    /// then the rich-input claim itself. True when the press is
+    /// consumed.
+    fn route_overlay_and_claim(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        matched: Option<&TermAction>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // The completion menu's routing (suggest-menu spec): a
+        // showing menu outranks the keybind swallow and every
+        // mapping; the soft trigger chord tries the open, its
+        // decline falling through with the chord's own shell bytes
+        // still to send. In rich mode the grid menu stands down and
+        // the soft trigger's chord is an app action that dies
+        // quietly until RI-5.
+        let rich = self.terminal.lock().expect("engine lock").rich_input();
+        let trigger_chord = matches!(matched, Some(&TermAction::ShowCompletions));
+        if !rich && self.route_menu_press(keystroke, trigger_chord, cx) {
+            return true;
+        }
+        // The Space special case (the libcosmic widget's own,
+        // verbatim): Ctrl+Space is the NUL press wherever it is not
+        // consumed above — the trigger's decline included, never a
+        // swallow.
+        if !rich && keystroke.key == "space" && keystroke.modifiers.control {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.input_scroll(b"\x00".to_vec());
+            engine.needs_update = true;
+            drop(engine);
+            cx.notify();
+            return true;
+        }
+        // The rich-input claim (RI-4): the v1 chord table takes the
+        // press ahead of the byte translation when the editor owns
+        // the line — an unmapped chord falls through and forwards
+        // verbatim, and native mode never claims (the claim is gated
+        // inside the engine's own routing answer).
+        self.route_editor_claim(keystroke, cx)
+    }
+
+    /// The rich-input claim (rich-input spec, RI-4): with the mode
+    /// rich and the editor owning the line, the v1 chord table takes
+    /// the press ahead of the byte translation — an unmapped chord
+    /// falls through (false) and forwards verbatim, and native mode
+    /// never claims at all (the claim is gated inside the engine's
+    /// own routing answer).
+    fn route_editor_claim(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let claim = {
+            let engine = self.terminal.lock().expect("engine lock");
+            editor::claimed_key(keystroke, engine.editor_owns_line())
+        };
+        if let Some(key) = claim {
+            self.apply_editor_key(key, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// One claimed keystroke through the pure editor model
+    /// (rich-input RI-4): the verdict routes — Handled repaints the
+    /// strip, Execute PTY-writes through the engine's own execution
+    /// (the echo handoff riding it), and the signals forward their
+    /// byte or clear the screen (Warp's own Ctrl+L reading, the
+    /// record's finding 3: the history goes, the owned line stands).
+    fn apply_editor_key(&mut self, key: Key, cx: &mut Context<Self>) {
+        let verdict = self.editor.lock().expect("editor lock").key(key);
+        let mut engine = self.terminal.lock().expect("engine lock");
+        match verdict {
+            // Handled repaints the strip alone; Passthrough is
+            // unreachable in v1 (every mapped key handles) — the arm
+            // keeps the match honest for the model's future keys.
+            Verdict::Handled | Verdict::Passthrough => {}
+            Verdict::Execute { line } => {
+                println!(
+                    "dropterm: rich-input execute — {} bytes PTY-written",
+                    line.len() + 1
+                );
+                engine.editor_execute(&line);
+                engine.needs_update = true;
+            }
+            Verdict::Signal(Signal::Interrupt) => {
+                engine.input_scroll(b"\x03".to_vec());
+                engine.needs_update = true;
+            }
+            Verdict::Signal(Signal::EndOfFile) => {
+                engine.input_scroll(b"\x04".to_vec());
+                engine.needs_update = true;
+            }
+            Verdict::Signal(Signal::ClearScreen) => {
+                engine.term.lock().grid_mut().clear_history();
+                engine.needs_update = true;
+            }
+        }
+        drop(engine);
+        cx.notify();
+    }
+
     /// The text half of a paste action: the capped read — regular
     /// through GPUI, primary through one background data-control
     /// read — then the engine paste, the image road on silence, the
@@ -1040,14 +1153,32 @@ impl TerminalPane {
         if !primary {
             match clipboard::read_text_capped(cx) {
                 clipboard::TextRead::Text(text) => {
+                    // The rich-input lane (rich-input RI-4): while the
+                    // editor owns the line, paste feeds the buffer
+                    // verbatim — the PTY never sees it until Enter
+                    // runs the whole line.
+                    let editor_owns = {
+                        let mut engine = self.terminal.lock().expect("engine lock");
+                        if engine.editor_owns_line() {
+                            true
+                        } else {
+                            engine.paste(&text);
+                            engine.needs_update = true;
+                            false
+                        }
+                    };
+                    if editor_owns {
+                        self.editor.lock().expect("editor lock").paste(&text);
+                    }
                     println!(
-                        "dropterm: pane action Paste — {} bytes through the engine's paste",
-                        text.len()
+                        "dropterm: pane action Paste — {} bytes {}",
+                        text.len(),
+                        if editor_owns {
+                            "into the owned line"
+                        } else {
+                            "through the engine's paste"
+                        }
                     );
-                    let mut engine = self.terminal.lock().expect("engine lock");
-                    engine.paste(&text);
-                    engine.needs_update = true;
-                    drop(engine);
                     if let Some(signals) = &self.shell_signals {
                         let _ = signals.send(PaneSignal::TextPasted);
                     }
@@ -1278,24 +1409,12 @@ impl TerminalPane {
         if matched.is_some() {
             cx.stop_propagation();
         }
-        // The completion menu's routing (suggest-menu spec), before
-        // the keybind swallow and every mapping — a showing menu
-        // outranks them all; the soft trigger chord tries the open
-        // here, its decline falling through with the chord's own
-        // shell bytes still to send.
-        let trigger_chord = matches!(matched, Some(TermAction::ShowCompletions));
-        if self.route_menu_press(keystroke, trigger_chord, cx) {
-            return;
-        }
-        // The Space special case (the libcosmic widget's own, verbatim):
-        // Ctrl+Space is the NUL press wherever it is not consumed
-        // above — the trigger's decline included, never a swallow.
-        if keystroke.key == "space" && keystroke.modifiers.control {
-            let mut engine = self.terminal.lock().expect("engine lock");
-            engine.input_scroll(b"\x00".to_vec());
-            engine.needs_update = true;
-            drop(engine);
-            cx.notify();
+        // The overlay lanes' routing and the rich-input claim, in
+        // order: a showing menu (native mode) outranks everything;
+        // the Ctrl+Space special case rides behind it; then the
+        // editor's v1 chord table takes its press when the line is
+        // owned — each a fall-through, never a swallow.
+        if self.route_overlay_and_claim(keystroke, matched.as_ref(), cx) {
             return;
         }
         match input::translate(keystroke, &self.binds, modes) {
@@ -1909,24 +2028,61 @@ impl gpui::Render for TerminalPane {
                     pane.update(cx, |pane, cx| pane.on_key(&tab_keystroke(true), window, cx));
                 }
             });
-        frame.child(
-            canvas(
+        // The rich-input strip (rich-input spec, RI-4): in rich mode
+        // the owned line paints in its own docked row under the grid
+        // and the grid's prompt-row overlays stand down — the column
+        // replaces the canvas's size-full so the rows share the
+        // frame. The mode flip rides `apply_options`' live pass, so
+        // the strip appears and disappears with the config echo.
+        let grid = canvas(
+            move |bounds, _, _| bounds,
+            move |bounds, _, window, cx| {
+                paint_pane(
+                    &terminal,
+                    &skin,
+                    &walk_log,
+                    &image_cache,
+                    &viewport_origin,
+                    bounds,
+                    window,
+                    cx,
+                );
+            },
+        );
+        if self.options.input_mode == dropterm::core::config::InputMode::Rich {
+            let strip_editor = Arc::clone(&self.editor);
+            let strip_terminal = Arc::clone(&self.terminal);
+            let strip_skin = self.skin.clone();
+            // Points onto pixels (96/72): the strip shapes in the
+            // terminal's own font, sized from the pane's option.
+            let font_px = px(f32::from(self.options.font_size) * 4. / 3.);
+            let strip = canvas(
                 move |bounds, _, _| bounds,
                 move |bounds, _, window, cx| {
-                    paint_pane(
-                        &terminal,
-                        &skin,
-                        &walk_log,
-                        &image_cache,
-                        &viewport_origin,
+                    paint_strip(
+                        &strip_editor,
+                        &strip_terminal,
+                        &strip_skin,
                         bounds,
+                        font_px,
                         window,
                         cx,
                     );
                 },
             )
-            .size_full(),
-        )
+            .w_full()
+            .h(px(30.));
+            frame.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .child(grid.flex_1().min_h_0())
+                    .child(strip),
+            )
+        } else {
+            frame.child(grid.size_full())
+        }
     }
 }
 
@@ -2258,6 +2414,7 @@ fn paint_pane(
     // Scrolled back renders nothing (the offset gate).
     let ghost_row = usize::try_from(cursor.line.0).unwrap_or(0) + display_offset;
     if display_offset == 0
+        && !terminal.rich_input()
         && let Some(visible) = terminal.suggestion().map(str::to_string)
         && !visible.is_empty()
     {
@@ -2309,7 +2466,7 @@ fn paint_pane(
     // the panel quad and its rows issued after the grid float above
     // it with no layering ceremony (the libcosmic build needed
     // `with_layer` for the same effect — wgpu sorts by kind there).
-    if display_offset == 0 && terminal.menu_is_open() {
+    if display_offset == 0 && !terminal.rich_input() && terminal.menu_is_open() {
         let all_rows = terminal.menu_rows();
         let range = suggest::menu_visible_window(terminal.menu_scroll(), all_rows.len());
         if !range.is_empty() {
@@ -2431,6 +2588,65 @@ fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
 /// One overlay text line — the ghost's visible string or a menu row
 /// — shaped once in the pane's font at its color, natural width (no
 /// cell-grid forcing: the overlays are not the grid).
+/// The rich-input strip's paint (rich-input RI-4): the owned line
+/// shaped in the terminal's own font — the text before the caret, a
+/// caret quad, the rest, and the ghost's dim suffix after the whole
+/// line — inside the docked row's bounds. The highlight tokenizer
+/// (RI-6) splits the buffer into colored spans and the chrome
+/// (RI-7) restyles the row against the mock; this is the buffer's
+/// own first paint, one tint and the dim ghost.
+fn paint_strip(
+    editor_state: &Arc<Mutex<editor::Editor>>,
+    terminal: &Arc<Mutex<Terminal>>,
+    skin: &PaneSkin,
+    bounds: gpui::Bounds<Pixels>,
+    font_px: Pixels,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let (strip, fg, dim) = {
+        let engine = terminal.lock().expect("engine lock");
+        let ghost = engine.suggestion().map(str::to_string);
+        let strip = {
+            let state = editor_state.lock().expect("editor lock");
+            editor::StripLine::capture(&state, ghost.as_deref())
+        };
+        (
+            strip,
+            color_hsla(engine.foreground_color()),
+            color_hsla(engine.ghost_color()),
+        )
+    };
+    let pad = px(8.);
+    let origin = point(
+        bounds.origin.x + pad,
+        bounds.origin.y + (bounds.size.height - font_px) / 2.,
+    );
+    let before = shape_overlay_line(&strip.before_caret, &skin.font, fg, font_px, window);
+    let after = shape_overlay_line(&strip.after_caret, &skin.font, fg, font_px, window);
+    let ghost = shape_overlay_line(&strip.ghost, &skin.font, dim, font_px, window);
+    let _ = before.paint(origin, font_px, TextAlign::Left, None, window, cx);
+    // The caret: a two-pixel block flush between the halves.
+    let caret_x = origin.x + before.width;
+    window.paint_quad(fill(
+        gpui::Bounds {
+            origin: point(caret_x, origin.y),
+            size: gpui::Size::new(px(2.), font_px),
+        },
+        fg,
+    ));
+    let after_origin = point(caret_x + px(2.), origin.y);
+    let _ = after.paint(after_origin, font_px, TextAlign::Left, None, window, cx);
+    let _ = ghost.paint(
+        point(after_origin.x + after.width, origin.y),
+        font_px,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
 fn shape_overlay_line(
     text: &str,
     font: &gpui::Font,

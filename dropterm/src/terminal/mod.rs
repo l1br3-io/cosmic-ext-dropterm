@@ -16,9 +16,12 @@
 //! GPUI's font system, [`clipboard`] is the pane's copy/paste seam
 //! (GPUI's clipboard while focused, data-control otherwise),
 //! [`suggest`] is the autosuggest view-model (routing and geometry,
-//! headless-tested), and [`view`] is the render entity.
+//! headless-tested), [`editor`] is the rich-input strip's pane-side
+//! halves (the chord table and the paint snapshot, headless-tested),
+//! and [`view`] is the render entity.
 
 pub(crate) mod clipboard;
+pub(crate) mod editor;
 pub(crate) mod grid;
 pub(crate) mod host;
 pub(crate) mod images;
