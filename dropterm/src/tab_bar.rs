@@ -959,6 +959,56 @@ type PlusMenuFn = std::rc::Rc<dyn Fn(Option<usize>, &mut gpui::Window, &mut gpui
 /// affordances at the right corner, the border hairline on the
 /// terminal-facing edge. Built per frame by the shell from the tab
 /// list's view model; every behavior is a callback into the shell.
+/// One frame's resolved strip styles (style-engine SE3): the
+/// `tabstrip` background and each row's `tab`/`tab.active` paint —
+/// the render seam's pure half, the headless pins' entry.
+fn resolve_strip_styles(
+    engine: &std::cell::Ref<dropterm::core::style_engine::StyleSet>,
+    palette: &crate::status_bar::ScriptPalette,
+    rows: &[RowVm],
+) -> (Option<gpui::Hsla>, Vec<TabStyle>) {
+    use dropterm::core::slots::SlotColor;
+    let resolve_color = |value: &SlotColor| match value {
+        SlotColor::Token(token) => palette.color(token),
+        SlotColor::Hex(hex) => crate::status_bar::parse_hex(hex),
+    };
+    let strip_style = engine.resolve(&dropterm::core::style_engine::StyleNode {
+        element: "tabstrip",
+        classes: &[],
+        id: None,
+        inline: &[],
+    });
+    let strip_background = strip_style.background.as_ref().and_then(resolve_color);
+    let tab_styles = rows
+        .iter()
+        .map(|row| {
+            let classes: &[&str] = if row.is_active { &["active"] } else { &[] };
+            let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                element: "tab",
+                classes,
+                id: None,
+                inline: &[],
+            });
+            TabStyle {
+                color: resolved.color.as_ref().and_then(resolve_color),
+                weight: resolved.weight.map(|weight| match weight {
+                    dropterm::core::style_engine::FontWeight::Bold => gpui::FontWeight::BOLD,
+                    dropterm::core::style_engine::FontWeight::Normal => gpui::FontWeight::NORMAL,
+                }),
+            }
+        })
+        .collect();
+    (strip_background, tab_styles)
+}
+
+/// One tab row's resolved style (SE3): the cascade's answer for
+/// that row's `tab` node — `None` leaves today's look.
+#[derive(Debug, Clone, Copy)]
+struct TabStyle {
+    color: Option<gpui::Hsla>,
+    weight: Option<gpui::FontWeight>,
+}
+
 #[derive(IntoElement)]
 pub(crate) struct TabBarView {
     rows: Vec<RowVm>,
@@ -987,6 +1037,13 @@ pub(crate) struct TabBarView {
     /// The configured row floor (`tab_bar_min_tabs`): tab rows render
     /// from this many tabs on — `1` keeps the single tab's row on.
     min_tabs: usize,
+    /// The style engine (style-engine SE3): the shell's one
+    /// `StyleSet`, borrowed per frame — `tabstrip` and per-tab
+    /// `tab`/`tab.active` rules resolve here.
+    engine: std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
+    /// The strip's palette (the band's own shape): the scheme words
+    /// the rules' colors resolve through.
+    palette: crate::status_bar::ScriptPalette,
 }
 
 impl TabBarView {
@@ -1009,7 +1066,25 @@ impl TabBarView {
             on_plus_menu: std::rc::Rc::new(|_, _, _| {}),
             profile_names: Vec::new(),
             rename: None,
+            engine: std::rc::Rc::new(std::cell::RefCell::default()),
+            palette: crate::status_bar::ScriptPalette::resolve(
+                &alacritty_terminal::term::color::Colors::default(),
+                fg,
+                strip,
+            ),
         }
+    }
+
+    /// The shell's style engine and the strip's palette (SE3): the
+    /// one color source, the rules resolving through it.
+    pub(crate) fn styled(
+        mut self,
+        engine: std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
+        palette: crate::status_bar::ScriptPalette,
+    ) -> Self {
+        self.engine = engine;
+        self.palette = palette;
+        self
     }
 
     /// The `+` dropdown's pick (py-5): `None` runs the plain default
@@ -1158,6 +1233,7 @@ impl TabBarView {
         index: usize,
         count: usize,
         fg: gpui::Hsla,
+        style: TabStyle,
         profile_names: &[String],
         on_select: SelectFn,
         on_close: CloseFn,
@@ -1167,28 +1243,36 @@ impl TabBarView {
         rename: Option<&gpui::Entity<gpui_component::input::InputState>>,
     ) -> impl gpui::IntoElement {
         let active_pill = gpui::Hsla { a: 0.18, ..fg };
-        let text = if row.is_active {
+        // Today's look stands where the rules leave unset (SE3): the
+        // active row full, the quiet row dimmed — a resolved color
+        // replaces it per tab.
+        let text = style.color.unwrap_or(if row.is_active {
             fg
         } else {
             gpui::Hsla { a: 0.65, ..fg }
-        };
+        });
         let id = row.id;
         let on_close_middle = std::rc::Rc::clone(&on_close);
         let row_label = row.label.clone();
         // The pill: the plain row keeps its composed label while the
         // renamed row hosts the Kit input in the same slot.
-        let label_slot = match rename {
-            Some(state) => gpui::div()
+        let label_slot = if let Some(state) = rename {
+            gpui::div()
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .child(gpui_component::input::Input::new(state).appearance(false))
-                .into_any_element(),
-            None => gpui::div()
+                .into_any_element()
+        } else {
+            let mut label = gpui::div()
                 .flex_shrink(1.)
                 .overflow_hidden()
                 .child(row.label.clone())
-                .into_any_element(),
+                .text_color(text);
+            if let Some(weight) = style.weight {
+                label = label.font_weight(weight);
+            }
+            label.into_any_element()
         };
         // The per-tab menu's rows, composed at open time from the
         // clicked row's own state (the muted rows a pick would refuse
@@ -1340,6 +1424,15 @@ impl gpui::RenderOnce for TabBarView {
         let fg = self.fg;
         let count = self.rows.len();
         let on_cancel_rename = std::rc::Rc::clone(&self.on_cancel_rename);
+        // The strip's rules resolve once per frame (style-engine
+        // SE3): `tabstrip` background, per-tab `tab`/`tab.active`
+        // color and weight — unset values leave today's look.
+        // The strip's rules resolve once per frame (style-engine
+        // SE3): `tabstrip` background, per-tab `tab`/`tab.active`
+        // color and weight — unset values leave today's look.
+        let (strip_background, tab_styles) =
+            resolve_strip_styles(&self.engine.borrow(), &self.palette, &self.rows);
+        let strip = strip_background.unwrap_or(self.strip);
         let mut bar = gpui::div()
             .w_full()
             .h(gpui::px(BAR_HEIGHT))
@@ -1349,7 +1442,7 @@ impl gpui::RenderOnce for TabBarView {
             .items_center()
             .gap(gpui::px(BUTTON_GAP))
             .px(gpui::px(BUTTON_PADDING_X))
-            .bg(self.strip)
+            .bg(strip)
             .text_size(gpui::px(TITLE_FONT_SIZE))
             .overflow_hidden();
         if self.show_border {
@@ -1376,6 +1469,7 @@ impl gpui::RenderOnce for TabBarView {
                     index,
                     count,
                     fg,
+                    tab_styles[index],
                     &self.profile_names,
                     std::rc::Rc::clone(&on_select),
                     std::rc::Rc::clone(&on_close),

@@ -50,6 +50,7 @@
 //! rescanned at once.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,10 @@ use std::time::{Duration, Instant};
 use notify::Watcher as _;
 
 use crate::core::keybinds::{CommandRow, MAX_COMMAND_NAME_LEN, valid_command_name};
+use crate::core::plugins_manifest;
+use crate::core::plugins_manifest::{
+    Activation, PluginScan, SCRIPT_FILE_NAME, ScannedPlugin, StoreValues,
+};
 use crate::core::slots::{self, SlotContent};
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use crate::core::tabs::{TabTitleAsk, TabTitleValue};
@@ -166,7 +171,11 @@ pub enum HostCommand {
     /// receives `{ tab }` (the pane the chord landed in); the
     /// soft/hard bounds cover the run. An unknown name (registered
     /// then reloaded away between binding and press, or never
-    /// registered) dispatches to nobody with one line.
+    /// registered) dispatches to nobody with one line. A name a lazy
+    /// plugin's manifest declares activates that plugin first: the
+    /// interpreter recreation loads its script, and the press
+    /// re-serves on the fresh generation (the activation machine,
+    /// SPEC-plugin-manifest).
     RunCommand {
         /// The command's slug — the registry key (its `script/<name>`
         /// id is the keybind file's vocabulary; the host knows names).
@@ -174,7 +183,40 @@ pub enum HostCommand {
         /// The invoking tab's id — the handler's whole ctx.
         tab: u32,
     },
+    /// The shell's startup mark, sent once at the first painted
+    /// frame (plugin-manifest spec): `elapsed_ms` is how long boot
+    /// took at the mark. At or under the 50 ms window the
+    /// `on_startup_finished` plugins activate right here; past it the
+    /// activation defers to the first idle window the command queue
+    /// drains into (VS Code's measured rule). Only sent when the
+    /// plugins dir stood at boot, so a no-plugins session keeps the
+    /// quiet-by-default pin.
+    StartupMark {
+        /// Boot-to-first-frame milliseconds at the mark.
+        elapsed_ms: u64,
+    },
+    /// The shell's settings push (plugin-manifest PM4): the store's
+    /// current per-plugin values, sent at boot and on every settings
+    /// save. The host holds them and merges the dispatching plugin's
+    /// values-with-defaults into every ctx. Passive data — no load
+    /// rides it; the external-edit ruling stands (the host never
+    /// watches the file, the next launch reads it).
+    SettingsSync {
+        /// The whole store's values, keyed by plugin id.
+        values: StoreValues,
+    },
 }
+
+/// The startup budget the `on_startup_finished` ruling measures
+/// against (SPEC-plugin-manifest: VS Code's measured 50 ms).
+const STARTUP_WINDOW_MS: u64 = 50;
+
+/// How often the deferred activation's poll wakes while waiting for
+/// the idle window: small enough that the deferral lands promptly
+/// after the queue drains, large enough that the wake is noise. The
+/// poll lives only between the deferred mark and the activation —
+/// after it the loop returns to a blocking recv.
+const IDLE_POLL: Duration = Duration::from_millis(25);
 
 /// One observation out of the host thread. v1 carried only the log;
 /// the query surfaces' replies and reports join as new arms with the
@@ -252,6 +294,19 @@ pub enum HostEvent {
     /// row set with it, while any persisted `script/<name>` bindings
     /// stay in the file, inert.
     CommandsSync { commands: Vec<CommandRow> },
+    /// One `dropterm.styles(rules)` call (style-engine SE3): the
+    /// caller's whole runtime sheet, parsed host-side by the shared
+    /// validator — the shell replaces that plugin's sheet (the
+    /// `status_segment` replacement-seat discipline).
+    StylesSync {
+        plugin: String,
+        rules: Vec<crate::core::style_engine::Rule>,
+    },
+    /// The interpreter's birth (every generation, including the
+    /// first): every runtime sheet is dead with the interpreter that
+    /// held it — the shell drops all runtime sheets, manifest sheets
+    /// standing. One marker per generation, before any script loads.
+    StylesReset,
     /// One `dropterm.send_text` request (script-commands spec):
     /// fire-and-forget the other way — the tick drain writes the
     /// bytes to the named pane's PTY as raw input (the typed-input
@@ -303,7 +358,7 @@ type DormantChannels = Option<(Receiver<HostCommand>, Sender<HostEvent>)>;
 /// until the handle drops, then takes its interpreter with it.
 pub struct LuaHost {
     /// The plugins dir the first scan (and every future reload)
-    /// reads — flat, `.lua` files only.
+    /// reads — one plugin dir per child, the dir-per-plugin layout.
     plugins_dir: PathBuf,
     /// The gate: the channel halves sit here until the first `send`
     /// takes them (never replaces them); `None` is the spawned
@@ -400,18 +455,22 @@ impl LuaHost {
         }
     }
 
-    /// Watch the plugins dir (non-recursive, the config watcher's
-    /// shape) and queue a [`HostCommand::Reload`] on any event (task
-    /// L3): the watcher feeds the host's command channel — never the
-    /// UI's event channel. A dir event is a first work item (spec
-    /// assumption 4: "first event to deliver, first query, first
-    /// watcher wake"), so the wake spawns the host if it has never
-    /// spawned — the owning wake's scan is the load, with no
-    /// duplicate beside it. Returns the watcher guard (dropping it
-    /// stops watching); a dir that cannot be watched is `None` —
-    /// missing is the silent first-run norm (the theme-files posture),
-    /// anything else costs one line.
-    pub fn watch_plugins_dir(&self) -> Option<notify::RecommendedWatcher> {
+    /// Watch the plugins dir recursively — the dir-per-plugin break
+    /// (plugin-manifest spec) moved the scripts one level down
+    /// (`plugins/<id>/plugin.lua`), so a flat watch would miss every
+    /// script edit — and queue a [`HostCommand::Reload`] on any
+    /// content-changing event (task L3): the watcher feeds the host's
+    /// command channel — never the UI's event channel — and pings
+    /// `shell_wake` beside it, the shell's manifest rescan's own
+    /// signal (the advertising rows re-merge at the same reload). A
+    /// dir event is a first work item (spec assumption 4: "first
+    /// event to deliver, first query, first watcher wake"), so the
+    /// wake spawns the host if it has never spawned — the owning
+    /// wake's scan is the load, with no duplicate beside it. Returns
+    /// the watcher guard (dropping it stops watching); a dir that
+    /// cannot be watched is `None` — missing is the silent first-run
+    /// norm (the theme-files posture), anything else costs one line.
+    pub fn watch_plugins_dir(&self, shell_wake: Sender<()>) -> Option<notify::RecommendedWatcher> {
         let commands = self
             .commands
             .lock()
@@ -441,6 +500,7 @@ impl LuaHost {
                 if changes_content {
                     spawn_from_gate(&dormant, &plugins_dir);
                     let _ = commands.send(HostCommand::Reload);
+                    let _ = shell_wake.send(());
                 }
             }) {
                 Ok(watcher) => watcher,
@@ -449,7 +509,7 @@ impl LuaHost {
                     return None;
                 }
             };
-        match watcher.watch(&self.plugins_dir, notify::RecursiveMode::NonRecursive) {
+        match watcher.watch(&self.plugins_dir, notify::RecursiveMode::Recursive) {
             Ok(()) => Some(watcher),
             Err(err) => {
                 if matches!(
@@ -528,6 +588,170 @@ impl LuaHostHandle {
     }
 }
 
+/// The settings values the shell pushed (plugin-manifest PM4), shared
+/// between the host thread's state and the interpreter's port
+/// closures — a scripted `emit`'s dispatch resolves like the
+/// host-driven ones. Single-threaded host: interior mutability, no
+/// locks (the `TimeoutFrame` rule).
+type SharedSettings = std::rc::Rc<std::cell::RefCell<StoreValues>>;
+
+/// The scan's declared registry, shared the same way — the ctx carry
+/// resolves against the rows it holds.
+type SharedManifests = std::rc::Rc<std::cell::RefCell<Vec<ScannedPlugin>>>;
+
+/// The owner plugin's settings as a JSON object (plugin-manifest
+/// PM4): the declared rows' keys, each the stored value when it
+/// matches the row's type and the row's default otherwise — a
+/// missing key and a wrong-typed store value both fail-to-default,
+/// the latter costing one line (the store is user-writable config:
+/// untrusted at the merge, validated at it). A plugin with no
+/// declared rows is an empty object — never a missing key; an owner
+/// no scan declares (a handler whose script loaded before any scan
+/// saw it) the same.
+fn settings_object(
+    owner: Option<&str>,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
+    events: &Sender<HostEvent>,
+) -> serde_json::Value {
+    let Some(owner) = owner else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let manifests = manifests.borrow();
+    let Some(plugin) = manifests.iter().find(|plugin| plugin.id == owner) else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let values = settings.borrow();
+    let stored = values.get(owner);
+    let mut object = serde_json::Map::new();
+    for row in &plugin.settings {
+        let value = stored.and_then(|rows| rows.get(&row.key));
+        let value = match value {
+            Some(value) if plugins_manifest::value_matches_kind(&row.kind, value) => value.clone(),
+            Some(_) => {
+                log(
+                    events,
+                    format!(
+                        "setting '{}.{}' is the wrong type; using the declared default",
+                        owner, row.key
+                    ),
+                );
+                row.kind.default_value()
+            }
+            None => row.kind.default_value(),
+        };
+        object.insert(row.key.clone(), value);
+    }
+    serde_json::Value::Object(object)
+}
+
+/// The host thread's activation state, living across generations
+/// (plugin-manifest spec): the active set — the plugin ids whose
+/// `plugin.lua` loads on every interpreter build — and the shared
+/// carries (the scan's declared registry, the shell-pushed settings)
+/// the ctx merge reads. A lazy plugin that activated stays active for
+/// the session (the set survives teardown and the watcher's recreate);
+/// a plugin the fresh scan no longer sees drops from it.
+struct ActivationState {
+    active: BTreeSet<String>,
+    plugins: SharedManifests,
+    settings: SharedSettings,
+    /// The startup mark's ruling, once it arrives: `true` — at or
+    /// under the 50 ms window, the `AfterStartup` set joins at every
+    /// scan from here on (the first one included, so a mark that
+    /// arrives before the first load activates at the mark itself);
+    /// `false` — past it, the join waits for the idle window.
+    /// `None` — the mark has not arrived.
+    startup_ruling: Option<bool>,
+}
+
+impl ActivationState {
+    fn new(plugins: SharedManifests, settings: SharedSettings) -> Self {
+        Self {
+            active: BTreeSet::new(),
+            plugins,
+            settings,
+            startup_ruling: None,
+        }
+    }
+
+    /// Fold one scan into the state: the fresh `AtStartup` set joins,
+    /// the previously active plugins still present stay active, the
+    /// `AfterStartup` set joins under the mark's at-window ruling, and
+    /// the shared registry replaces.
+    fn apply_scan(&mut self, scan: &PluginScan) {
+        (*self.plugins.borrow_mut()).clone_from(&scan.plugins);
+        self.active
+            .retain(|id| self.plugins.borrow().iter().any(|plugin| &plugin.id == id));
+        for plugin in self.plugins.borrow().iter() {
+            if plugin.activation == Activation::AtStartup
+                || (plugin.activation == Activation::AfterStartup
+                    && self.startup_ruling == Some(true))
+            {
+                self.active.insert(plugin.id.clone());
+            }
+        }
+    }
+
+    /// The first plugin in dir order whose manifest declares `name`
+    /// and whose script has not activated — the `RunCommand` gate's
+    /// lookup. Two plugins declaring one slug is not this module's
+    /// rejection: the first dir-order seat wins (the advertising
+    /// merge, PM3, rules the same).
+    fn lazy_plugin_declaring(&self, name: &str) -> Option<String> {
+        self.plugins
+            .borrow()
+            .iter()
+            .find(|plugin| {
+                plugin.activation == Activation::Lazy
+                    && !self.active.contains(&plugin.id)
+                    && plugin.commands.iter().any(|command| command.id == name)
+            })
+            .map(|plugin| plugin.id.clone())
+    }
+
+    /// Join every `AfterStartup` plugin to the active set, now and at
+    /// every later scan — the mark's at-window arrival or its idle
+    /// activation (past the window). The registry may still be empty
+    /// (the mark as the first work item): the ruling stands, and the
+    /// next scan's fold carries the set in.
+    fn activate_after_startup(&mut self) {
+        self.startup_ruling = Some(true);
+        for plugin in self.plugins.borrow().iter() {
+            if plugin.activation == Activation::AfterStartup {
+                self.active.insert(plugin.id.clone());
+            }
+        }
+    }
+}
+
+/// What [`pull_command`] found: one command, an idle queue observed
+/// while a deferred activation pends, or a dead channel (shutdown).
+enum Pulled {
+    Command(HostCommand),
+    Idle,
+    Dead,
+}
+
+/// Pull one command off the channel: a blocking recv while no
+/// deferred activation pends — the idle thread costs nothing — and a
+/// short poll while one does, so the queue-drain moment (the idle
+/// window the deferred mark's ruling waits for) is observable.
+fn pull_command(commands: &Receiver<HostCommand>, deferred: bool) -> Pulled {
+    if deferred {
+        match commands.recv_timeout(IDLE_POLL) {
+            Ok(command) => Pulled::Command(command),
+            Err(RecvTimeoutError::Timeout) => Pulled::Idle,
+            Err(RecvTimeoutError::Disconnected) => Pulled::Dead,
+        }
+    } else {
+        match commands.recv() {
+            Ok(command) => Pulled::Command(command),
+            Err(_) => Pulled::Dead,
+        }
+    }
+}
+
 /// The host thread's whole life: generations of interpreter, each
 /// built, ported, bounded, then served strictly in arrival order — one
 /// thread, one interpreter at a time, no dispatch racing another (spec
@@ -546,23 +770,41 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
     // Set by a `Reload` on a live generation: the next generation
     // loads eagerly at build (the rescan is the work).
     let mut rescan_now = false;
+    // The shared carries (plugin-manifest PM4): the owner stamp and
+    // the settings merge's two sources, shared between the state and
+    // every generation's port closures.
+    let current_plugin = Rc::new(std::cell::RefCell::new(None));
+    let settings: SharedSettings = Rc::new(std::cell::RefCell::new(StoreValues::new()));
+    let manifests: SharedManifests = Rc::new(std::cell::RefCell::new(Vec::new()));
+    // The activation machine's memory (plugin-manifest spec): the
+    // active set and the scan registry, living across generations.
+    let mut state = ActivationState::new(Rc::clone(&manifests), Rc::clone(&settings));
+    // Set by a past-the-window `StartupMark`: the AfterStartup
+    // plugins activate at the first idle window the queue drains
+    // into (the poll in [`pull_command`] observes it).
+    let mut deferred_activation = false;
     // An Emit found while folding a Reload burst: served first on
     // the reloaded generation — the host is serial, nothing
     // reorders, nothing drops.
     let mut held: Option<HostCommand> = None;
     loop {
-        let Some(generation) = Generation::build(events, &frame) else {
+        let Some(generation) =
+            Generation::build(events, &frame, &current_plugin, &settings, &manifests)
+        else {
             return;
         };
         if first_generation {
             log(events, "host thread up");
             first_generation = false;
         }
-        // Whether this generation's scripts have been loaded: a fresh
-        // generation scans before it first serves, so the spawn, the
-        // hard cap, and the wake all share one lazy path.
-        let mut scanned = false;
-        if rescan_now {
+        // A fresh interpreter is a fresh sheet registry (style-engine
+        // SE3): every runtime sheet died with the old generation —
+        // one marker per birth, before any script loads, and the
+        // shell drops all runtime sheets (manifest sheets stand).
+        let _ = events.send(HostEvent::StylesReset);
+        // The one load path: the same ten arguments every arm passes,
+        // a local closure over the generation's registry tables.
+        let load = |state: &mut ActivationState| {
             load_scripts(
                 &generation.lua,
                 &generation.segments,
@@ -572,7 +814,16 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 plugins_dir,
                 events,
                 &frame,
+                state,
+                &generation.current_plugin,
             );
+        };
+        // Whether this generation's scripts have been loaded: a fresh
+        // generation scans before it first serves, so the spawn, the
+        // hard cap, and the wake all share one lazy path.
+        let mut scanned = false;
+        if rescan_now {
+            load(&mut state);
             // The eager rescan IS this generation's load — mark it
             // scanned so the first dispatch never loads a second
             // copy beside it (found at status-segments SG1: a doubled
@@ -587,20 +838,36 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             }
         }
         let mut reload_requested = false;
-        while let Some(command) = held.take().or_else(|| commands.recv().ok()) {
+        loop {
+            let command = match held.take().map_or_else(
+                || pull_command(commands, deferred_activation),
+                Pulled::Command,
+            ) {
+                Pulled::Command(command) => command,
+                Pulled::Idle => {
+                    // The deferred mark's ruling, served the moment the
+                    // queue drains into the idle window: the
+                    // AfterStartup plugins join the active set, and the
+                    // ruled recreation unit carries them in.
+                    deferred_activation = false;
+                    state.activate_after_startup();
+                    if scanned {
+                        reload_requested = true;
+                        break;
+                    }
+                    load(&mut state);
+                    scanned = true;
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                    continue;
+                }
+                Pulled::Dead => break,
+            };
             match command {
                 HostCommand::Emit { event, payload } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -619,7 +886,16 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             {
                                 frame.ctx_tab.set(Some(tab));
                             }
-                            dispatch(events, &generation.registry, &event, &value, &frame);
+                            dispatch(
+                                &generation.lua,
+                                events,
+                                &generation.registry,
+                                &event,
+                                &value,
+                                &frame,
+                                &generation.settings,
+                                &generation.manifests,
+                            );
                         }
                         Err(err) => log(
                             events,
@@ -632,16 +908,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::QuerySegments { token, ctx } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -654,16 +921,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::QueryTabTitles { token, tabs } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -676,16 +934,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::PanelAsk { token, views } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -698,24 +947,57 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::RunCommand { name, tab } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
                         }
                     }
+                    // The activation gate (plugin-manifest spec): a
+                    // name a not-yet-active lazy plugin declares
+                    // activates that plugin — the ruled recreation
+                    // loads its script, and this press re-serves on
+                    // the fresh generation (first press pays the
+                    // load; fire-and-forget stands, the load happens
+                    // host-side).
+                    if let Some(plugin_id) = state.lazy_plugin_declaring(&name) {
+                        log(
+                            events,
+                            format!("{plugin_id}: activating for command '{name}'"),
+                        );
+                        state.active.insert(plugin_id);
+                        held = Some(HostCommand::RunCommand { name, tab });
+                        reload_requested = true;
+                        break;
+                    }
                     run_command(&generation, &name, tab, events, &frame);
                     if frame.hard_tripped.get() {
                         break;
+                    }
+                }
+                HostCommand::SettingsSync { values } => {
+                    // Passive data: the carry replaces, no load rides
+                    // it. The next dispatch resolves against it.
+                    *state.settings.borrow_mut() = values;
+                }
+                HostCommand::StartupMark { elapsed_ms } => {
+                    if elapsed_ms <= STARTUP_WINDOW_MS {
+                        // At or under the window: the AfterStartup
+                        // plugins activate at the mark.
+                        state.activate_after_startup();
+                        if scanned {
+                            reload_requested = true;
+                            break;
+                        }
+                        load(&mut state);
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    } else {
+                        // Past it: the activation defers to the idle
+                        // window (the poll observes the drain).
+                        deferred_activation = true;
                     }
                 }
                 HostCommand::Reload => {
@@ -742,11 +1024,15 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                                 held = Some(query);
                                 break;
                             }
-                            // A command press riding a reload burst is
-                            // held the same way — served on the
-                            // reloaded generation, whose registry is
-                            // the truth about who answers.
-                            Ok(run @ HostCommand::RunCommand { .. }) => {
+                            // A command press or a startup mark riding
+                            // a reload burst is held the same way —
+                            // served on the reloaded generation, whose
+                            // registry is the truth about who answers.
+                            Ok(
+                                run @ (HostCommand::RunCommand { .. }
+                                | HostCommand::StartupMark { .. }
+                                | HostCommand::SettingsSync { .. }),
+                            ) => {
                                 held = Some(run);
                                 break;
                             }
@@ -764,16 +1050,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     // The spawning wake itself: this generation has
                     // never loaded anything, so the scan IS the
                     // reload — no duplicate beside it.
-                    load_scripts(
-                        &generation.lua,
-                        &generation.segments,
-                        &generation.tab_title,
-                        &generation.commands,
-                        &generation.panel_views,
-                        plugins_dir,
-                        events,
-                        &frame,
-                    );
+                    load(&mut state);
                     scanned = true;
                     if frame.hard_tripped.get() {
                         break;
@@ -852,7 +1129,11 @@ impl TimeoutFrame {
 /// registries — the event-bus table behind `dropterm.on`/`emit`, the
 /// segment registry behind `dropterm.status_segment`, the
 /// tab-title provider seat behind `dropterm.tab_title`, and the
-/// command registry behind `dropterm.command`.
+/// command registry behind `dropterm.command` — plus the owner stamp
+/// the loader sets around each script's exec (every registration
+/// reads it into its entry's `owner` field: the ctx carry's routing,
+/// plugin-manifest PM4) and the shared carries the ctx merges resolve
+/// against.
 /// Generation 1 is born at spawn; every later one is a hard-cap
 /// recreate — fresh state, no registrations (spec assumption 7).
 struct Generation {
@@ -862,6 +1143,9 @@ struct Generation {
     tab_title: Table,
     commands: Table,
     panel_views: Table,
+    current_plugin: Rc<std::cell::RefCell<Option<String>>>,
+    settings: SharedSettings,
+    manifests: SharedManifests,
 }
 
 impl Generation {
@@ -869,7 +1153,13 @@ impl Generation {
     /// installed. `None` is the nothing-scriptable-remains case: the
     /// port or the bounds refusing to install costs one line and ends
     /// the host thread.
-    fn build(events: &Sender<HostEvent>, frame: &Rc<TimeoutFrame>) -> Option<Generation> {
+    fn build(
+        events: &Sender<HostEvent>,
+        frame: &Rc<TimeoutFrame>,
+        current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
+        settings: &SharedSettings,
+        manifests: &SharedManifests,
+    ) -> Option<Generation> {
         // SAFETY: `StdLib::ALL` loads the unsafe io/os/debug libraries.
         // That is the spec's ratified trust model (assumption 2):
         // plugins are the user's own config executing as the user, no
@@ -877,7 +1167,7 @@ impl Generation {
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
         let (registry, segments, tab_title, commands, panel_views) =
-            match install_port(&lua, events, frame) {
+            match install_port(&lua, events, frame, current_plugin, settings, manifests) {
                 Ok(registries) => registries,
                 Err(err) => {
                     log(
@@ -901,6 +1191,9 @@ impl Generation {
             tab_title,
             commands,
             panel_views,
+            current_plugin: Rc::clone(current_plugin),
+            settings: Rc::clone(settings),
+            manifests: Rc::clone(manifests),
         })
     }
 }
@@ -966,15 +1259,22 @@ fn install_bounds(
 /// spec), the module served to `require('dropterm')` through
 /// `package.loaded` (the stdlib's own module cache — no require-path
 /// widening), and the `print` forwarder. Returns the registries for
-/// host-side use.
+/// host-side use. Every registration stamps its entry's `owner` from
+/// the loader's current-plugin cell (plugin-manifest PM4): the ctx
+/// carry routes a handler's settings through the plugin that
+/// registered it.
 fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
+    current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
 ) -> mlua::Result<(Table, Table, Table, Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
+    let on_owner = Rc::clone(current_plugin);
     let on = lua.create_function(move |lua, (event, handler): (String, Function)| {
         let handlers: Table =
             if let Some(existing) = on_table.get::<Option<Table>>(event.clone())? {
@@ -985,15 +1285,21 @@ fn install_port(
                 fresh
             };
         // The sequence's next slot: registration order is dispatch
-        // order.
-        handlers.set(handlers.raw_len() + 1, handler)?;
+        // order. The entry carries its owner beside the handler — the
+        // ctx carry's routing.
+        let entry = lua.create_table()?;
+        entry.set("handler", handler)?;
+        entry.set("owner", on_owner.borrow().clone())?;
+        handlers.set(handlers.raw_len() + 1, entry)?;
         Ok(())
     })?;
 
     let emit_registry = registry.clone();
     let emit_events = events.clone();
     let emit_frame = frame.clone();
-    let emit = lua.create_function(move |_lua, (event, payload): (String, Value)| {
+    let emit_settings = Rc::clone(settings);
+    let emit_manifests = Rc::clone(manifests);
+    let emit = lua.create_function(move |lua, (event, payload): (String, Value)| {
         if event == STATUS_REFRESH_EVENT {
             // The reserved name is translated, not dispatched: the
             // dirty request the tick drains into a requery
@@ -1001,7 +1307,16 @@ fn install_port(
             let _ = emit_events.send(HostEvent::SegmentsDirty);
             return Ok(());
         }
-        dispatch(&emit_events, &emit_registry, &event, &payload, &emit_frame);
+        dispatch(
+            lua,
+            &emit_events,
+            &emit_registry,
+            &event,
+            &payload,
+            &emit_frame,
+            &emit_settings,
+            &emit_manifests,
+        );
         Ok(())
     })?;
 
@@ -1012,17 +1327,20 @@ fn install_port(
     // kept.
     let segment_table = lua.create_table()?;
     let segments_for_register = segment_table.clone();
+    let segment_owner = Rc::clone(current_plugin);
     let status_segment = lua.create_function(move |lua, (name, handler): (String, Function)| {
         for slot in 1..=segments_for_register.raw_len() {
             let entry: Table = segments_for_register.get(slot)?;
             if entry.get::<String>("name")? == name {
                 entry.set("handler", handler)?;
+                entry.set("owner", segment_owner.borrow().clone())?;
                 return Ok(());
             }
         }
         let entry = lua.create_table()?;
         entry.set("name", name)?;
         entry.set("handler", handler)?;
+        entry.set("owner", segment_owner.borrow().clone())?;
         segments_for_register.set(segments_for_register.raw_len() + 1, entry)?;
         Ok(())
     })?;
@@ -1035,9 +1353,13 @@ fn install_port(
     let tab_title_seat = lua.create_table()?;
     let seat_for_register = tab_title_seat.clone();
     let seat_events = events.clone();
-    let tab_title = lua.create_function(move |_lua, handler: Function| {
-        let replaced = seat_for_register.get::<Option<Function>>(1)?.is_some();
-        seat_for_register.set(1, handler)?;
+    let seat_owner = Rc::clone(current_plugin);
+    let tab_title = lua.create_function(move |lua, handler: Function| {
+        let replaced = seat_for_register.get::<Option<Table>>(1)?.is_some();
+        let entry = lua.create_table()?;
+        entry.set("handler", handler)?;
+        entry.set("owner", seat_owner.borrow().clone())?;
+        seat_for_register.set(1, entry)?;
         log(
             &seat_events,
             if replaced {
@@ -1057,6 +1379,7 @@ fn install_port(
     // an invalid name rejects with one line, never a raise.
     let command_table = lua.create_table()?;
     let commands_for_register = command_table.clone();
+    let command_owner = Rc::clone(current_plugin);
     let command_events = events.clone();
     let command = lua.create_function(
         move |lua, (name, description, handler): (String, String, Function)| {
@@ -1075,6 +1398,7 @@ fn install_port(
                 if entry.get::<String>("name")? == name {
                     entry.set("description", description)?;
                     entry.set("handler", handler)?;
+                    entry.set("owner", command_owner.borrow().clone())?;
                     log(&command_events, format!("command '{name}' replaced"));
                     return Ok(());
                 }
@@ -1083,6 +1407,7 @@ fn install_port(
             entry.set("name", name.clone())?;
             entry.set("description", description)?;
             entry.set("handler", handler)?;
+            entry.set("owner", command_owner.borrow().clone())?;
             commands_for_register.set(commands_for_register.raw_len() + 1, entry)?;
             log(&command_events, format!("command '{name}' registered"));
             Ok(())
@@ -1118,13 +1443,19 @@ fn install_port(
         // Validate at the port (dialog-slot DS1): the whole table
         // crosses via mlua's serde path into the contract's parser;
         // a bad shape costs one log line and opens nothing.
+        let mut drops = Vec::new();
         let parsed = match lua.from_value::<serde_json::Value>(spec) {
-            Ok(json) => crate::core::slots::parse_dialog(&json),
+            Ok(json) => crate::core::slots::parse_dialog(&json, &mut drops),
             Err(err) => {
                 log(&dialog_events, format!("dialog would not convert: {err}"));
                 return Ok(());
             }
         };
+        // The removed styling keys' one-line-each record (SE2): a
+        // dialog opens once, so the parse-time lines print once.
+        for line in &drops {
+            log(&dialog_events, line.clone());
+        }
         match parsed {
             Ok(spec) => {
                 let _ = dialog_events.send(HostEvent::OpenDialog { spec });
@@ -1142,6 +1473,7 @@ fn install_port(
     let panel_views = lua.create_table()?;
     let panel_events = events.clone();
     let panel_registry = panel_views.clone();
+    let panel_owner = Rc::clone(current_plugin);
     let panel_view = lua.create_function(
         move |lua, (id, config, handler): (String, Table, Function)| {
             // The port's own validation: the id's shape, the v1
@@ -1205,14 +1537,79 @@ fn install_port(
             entry.set("name", id.clone())?;
             entry.set("title", title.clone())?;
             entry.set("handler", handler)?;
-            panel_registry.push(entry)?;
+            entry.set("owner", panel_owner.borrow().clone())?;
+            // Two keys, one table: the array slot the sync's walk
+            // reads, and the id key the ask reads (the array's
+            // replacement hole above keeps the sync skipping the dead
+            // seat; the id key here is the live one, overwritten on
+            // every re-registration).
+            panel_registry.push(entry.clone())?;
+            panel_registry.set(id, entry)?;
             Ok(())
         },
     )?;
 
+    // The runtime style sheet (style-engine SE3): one call replaces
+    // the caller's whole sheet — the status_segment replacement-seat
+    // discipline. Each rule object parses by the engine's shared
+    // rule parse; the sheet flows shell-ward as one StylesSync
+    // report. A raise inside the table's construction follows the
+    // standing handler error path (the argument conversion).
+    let styles_events = events.clone();
+    let styles_owner = Rc::clone(current_plugin);
+    let styles = lua.create_function(move |lua, rules: Value| {
+        let plugin = styles_owner.borrow().clone().ok_or_else(|| {
+            mlua::Error::RuntimeError(
+                "dropterm.styles outside a plugin script has no owner".to_owned(),
+            )
+        })?;
+        let value = lua.from_value::<serde_json::Value>(rules)?;
+        let Some(array) = value.as_array() else {
+            log(
+                &styles_events,
+                format!("styles: the rules are not an array (plugin '{plugin}')"),
+            );
+            return Ok(());
+        };
+        let mut sheet = Vec::new();
+        for raw_rule in array {
+            let mut rule_logs = Vec::new();
+            let parsed = crate::core::style_engine::parse_rule_object(raw_rule, &mut rule_logs);
+            for line in rule_logs {
+                log(
+                    &styles_events,
+                    format!("styles (plugin '{plugin}'): {line}"),
+                );
+            }
+            if let Some((selector, declarations)) = parsed {
+                sheet.push(crate::core::style_engine::Rule {
+                    origin: crate::core::style_engine::RuleOrigin::Runtime {
+                        plugin: plugin.clone(),
+                    },
+                    selector,
+                    declarations,
+                });
+            }
+        }
+        log(
+            &styles_events,
+            format!(
+                "styles sheet for '{plugin}': {} rule{} applied",
+                sheet.len(),
+                if sheet.len() == 1 { "" } else { "s" }
+            ),
+        );
+        let _ = styles_events.send(HostEvent::StylesSync {
+            plugin,
+            rules: sheet,
+        });
+        Ok(())
+    })?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
+    module.set("styles", styles)?;
     module.set("status_segment", status_segment)?;
     module.set("tab_title", tab_title)?;
     module.set("command", command)?;
@@ -1241,12 +1638,19 @@ fn install_port(
 /// and which unwinds every nested dispatch: a scripted `emit` inside a
 /// handler shares the enclosing dispatch's frame, so the bounds
 /// measure the whole command's work, nested emits included.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per dispatch input: the payload, the frame, and the ctx carry's two sources"
+)]
 fn dispatch(
+    lua: &Lua,
     events: &Sender<HostEvent>,
     registry: &Table,
     event: &str,
     payload: &Value,
     frame: &TimeoutFrame,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
 ) {
     let handlers: Option<Table> = match registry.get(event) {
         Ok(handlers) => handlers,
@@ -1262,17 +1666,31 @@ fn dispatch(
         return;
     };
     for slot in 1..=handlers.raw_len() {
-        let handler: Function = match handlers.get(slot) {
-            Ok(handler) => handler,
-            Err(err) => {
-                log(
-                    events,
-                    format!("a handler for '{event}' would not read: {err}"),
-                );
-                continue;
-            }
+        let Ok(entry) = handlers.get::<Table>(slot) else {
+            log(events, format!("a handler for '{event}' would not read"));
+            continue;
         };
-        if let Err(err) = handler.call::<()>(payload.clone()) {
+        let Ok(handler) = entry.get::<Function>("handler") else {
+            log(events, format!("a handler for '{event}' would not read"));
+            continue;
+        };
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let settings_json = settings_object(owner.as_deref(), settings, manifests, events);
+        let Ok(settings_value) = lua.to_value(&serde_json::json!({ "settings": settings_json }))
+        else {
+            // Unreachable for JSON payloads; honest if it ever fires:
+            // the handler runs without the carry.
+            log(
+                events,
+                format!("the settings carry for '{event}' would not convert"),
+            );
+            continue;
+        };
+        // The payload stays the handler's first argument exactly as
+        // documented; the settings ctx rides the second — an existing
+        // one-parameter handler ignores it, a settings-aware one
+        // reads it (plugin-manifest PM4).
+        if let Err(err) = handler.call::<()>((payload.clone(), settings_value)) {
             if frame.hard_tripped.get() {
                 // The hook logged the reload line; this interpreter is
                 // about to be torn down and the abort unwinds silently.
@@ -1316,19 +1734,25 @@ fn display_value(lua: &Lua, value: Value) -> String {
     }
 }
 
-/// Scan `dir` for `.lua` plugin scripts and load each into the
-/// interpreter, sorted by file name so registration order is
-/// deterministic. The loader is read-only — nothing under the dir is
-/// written, moved, or renamed — and a missing dir is the silent
-/// first run. A script that fails to parse or raises at load costs
-/// one log line and never stops its siblings. Each file's load runs
-/// under the hard cap (never the soft bound — a load has no result to
-/// go stale); a tripped cap aborts the remaining files, which load
-/// with the recreated interpreter's deferred reload. Every completed
-/// pass — a reload into an empty dir included — ends with the
-/// registry-sync report (status-segments spec): the live id set is
-/// the asking surface's source of truth, and the tab-title seat's
-/// and command registry's own reports ride beside it (their specs).
+/// Load the active set's scripts (plugin-manifest spec): the scan
+/// folds into `state` — its log lines land verbatim, the fresh
+/// `AtStartup` plugins join the previously-active survivors (a lazy
+/// plugin that activated stays active for the session; a plugin the
+/// fresh scan no longer sees drops) — and each active plugin's
+/// `plugins/<id>/plugin.lua` loads into the interpreter in id order so
+/// registration order is deterministic. The loader is read-only —
+/// nothing under the dir is written, moved, or renamed — and a missing
+/// dir is the silent first run. A plugin dir without its script loads
+/// nothing silently (its manifest rows still advertise); a script that
+/// fails to parse or raises at load costs one log line and never stops
+/// its siblings. Each script's load runs under the hard cap (never the
+/// soft bound — a load has no result to go stale); a tripped cap
+/// aborts the remaining files, which load with the recreated
+/// interpreter's deferred reload. Every completed pass — a reload into
+/// an empty dir included — ends with the registry-sync report
+/// (status-segments spec): the live id set is the asking surface's
+/// source of truth, and the tab-title seat's and command registry's
+/// own reports ride beside it (their specs).
 #[expect(
     clippy::too_many_arguments,
     reason = "one registry table per script surface; the panel registry joins its peers"
@@ -1342,46 +1766,50 @@ fn load_scripts(
     dir: &Path,
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
+    state: &mut ActivationState,
+    current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
 ) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            sync_registry(segments, events);
-            sync_tab_title_provider(tab_title, events);
-            sync_commands(commands, events);
-            sync_panel_views(panel_views, events);
-            return;
-        }
-        Err(err) => {
-            log(events, format!("cannot read {}: {err}", dir.display()));
-            sync_registry(segments, events);
-            sync_tab_title_provider(tab_title, events);
-            sync_commands(commands, events);
-            sync_panel_views(panel_views, events);
-            return;
-        }
+    let scan = plugins_manifest::scan(dir);
+    for line in &scan.logs {
+        log(events, line);
+    }
+    state.apply_scan(&scan);
+    // The active set's loadable scripts, resolved against the fresh
+    // scan up front — a plugin dir without its script loads nothing
+    // silently (the manifest rows still advertise; the empty dir is a
+    // scaffold, not a failure).
+    let loadable: Vec<String> = {
+        let plugins = state.plugins.borrow();
+        state
+            .active
+            .iter()
+            .filter(|id| {
+                plugins
+                    .iter()
+                    .any(|plugin| &plugin.id == *id && plugin.has_script)
+            })
+            .cloned()
+            .collect()
     };
-    let mut scripts: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
-        .collect();
-    scripts.sort();
-    for path in scripts {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+    for id in &loadable {
+        let path = dir.join(id).join(SCRIPT_FILE_NAME);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) => {
-                log(events, format!("skipped {name}: unreadable: {err}"));
+                log(events, format!("skipped {id}: unreadable: {err}"));
                 continue;
             }
         };
-        frame.begin(false, format_args!("loading {name}"));
-        match lua.load(text).set_name(name.clone()).exec() {
-            Ok(()) => log(events, format!("loaded {name}")),
+        // The owner stamp: every registration inside this exec reads
+        // the plugin id into its entry's owner field — the ctx carry's
+        // routing (plugin-manifest PM4). The generation's cell, shared
+        // with the port closures.
+        *current_plugin.borrow_mut() = Some(id.clone());
+        frame.begin(false, format_args!("loading {id}"));
+        let result = lua.load(text).set_name(id.clone()).exec();
+        *current_plugin.borrow_mut() = None;
+        match result {
+            Ok(()) => log(events, format!("loaded {id}")),
             Err(err) => {
                 if frame.hard_tripped.get() {
                     // The hook logged the reload line already; this
@@ -1389,7 +1817,7 @@ fn load_scripts(
                     // carries the next sync.
                     return;
                 }
-                log(events, format!("skipped {name}: {err}"));
+                log(events, format!("skipped {id}: {err}"));
             }
         }
     }
@@ -1442,7 +1870,15 @@ fn sync_registry(segments: &Table, events: &Sender<HostEvent>) {
 /// registration stands (or the seat will not read, which costs one
 /// line and reads the same: nobody to call).
 fn read_provider(seat: &Table, events: &Sender<HostEvent>) -> Option<Function> {
-    match seat.get::<Option<Function>>(1) {
+    let entry: Option<Table> = match seat.get(1) {
+        Ok(entry) => entry,
+        Err(err) => {
+            log(events, format!("the tab title seat would not read: {err}"));
+            return None;
+        }
+    };
+    let entry = entry?;
+    match entry.get("handler") {
         Ok(provider) => provider,
         Err(err) => {
             log(events, format!("the tab title seat would not read: {err}"));
@@ -1504,11 +1940,26 @@ fn query_tab_titles(
     let Some(provider) = read_provider(&generation.tab_title, events) else {
         return;
     };
+    // The seat's owner resolves once: one provider, one settings carry
+    // for the whole trip (plugin-manifest PM4).
+    let owner = generation
+        .tab_title
+        .get::<Option<Table>>(1)
+        .ok()
+        .flatten()
+        .and_then(|entry| entry.get::<Option<String>>("owner").ok().flatten());
+    let settings_json = settings_object(
+        owner.as_deref(),
+        &generation.settings,
+        &generation.manifests,
+        events,
+    );
     frame.begin(true, format_args!("the tab title query"));
     let mut values = Vec::new();
     let mut raise_logged = false;
     for ask in tabs {
-        let ctx = serde_json::json!({ "tab": ask.tab, "title": ask.title });
+        let ctx =
+            serde_json::json!({ "tab": ask.tab, "title": ask.title, "settings": settings_json });
         let Ok(value) = generation.lua.to_value(&ctx) else {
             // Unreachable for JSON payloads; honest if it ever fires:
             // the tab omits, its prior title keeps.
@@ -1563,9 +2014,17 @@ fn query_panel_views(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
         let ctx = generation
             .lua
-            .to_value(&serde_json::json!({}))
+            .to_value(&serde_json::json!({
+                "settings": settings_object(
+                    owner.as_deref(),
+                    &generation.settings,
+                    &generation.manifests,
+                    events,
+                ),
+            }))
             .unwrap_or(mlua::Value::Nil);
         let answer = match handler.call::<Option<Table>>(ctx) {
             Ok(answer) => answer,
@@ -1593,18 +2052,26 @@ fn query_panel_views(
             .lua
             .from_value::<serde_json::Value>(mlua::Value::Table(answer))
         {
-            Ok(json) => match crate::core::slots::parse_panel_content(&json) {
-                Ok(content) => values.push(PanelAnswerRow {
-                    id: id.clone(),
-                    content: Some(content),
-                }),
-                Err(err) => {
-                    log(
-                        events,
-                        format!("panel view '{id}' answered without a usable value: {err}"),
-                    );
+            Ok(json) => {
+                let mut drops = Vec::new();
+                match crate::core::slots::parse_panel_content(&json, &mut drops) {
+                    Ok(content) => {
+                        for line in &drops {
+                            log(events, line.clone());
+                        }
+                        values.push(PanelAnswerRow {
+                            id: id.clone(),
+                            content: Some(content),
+                        });
+                    }
+                    Err(err) => {
+                        log(
+                            events,
+                            format!("panel view '{id}' answered without a usable value: {err}"),
+                        );
+                    }
                 }
-            },
+            }
             Err(err) => {
                 log(
                     events,
@@ -1648,7 +2115,16 @@ fn run_command(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
-        let ctx = serde_json::json!({ "tab": tab });
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let ctx = serde_json::json!({
+            "tab": tab,
+            "settings": settings_object(
+                owner.as_deref(),
+                &generation.settings,
+                &generation.manifests,
+                events,
+            ),
+        });
         let Ok(value) = generation.lua.to_value(&ctx) else {
             // Unreachable for JSON payloads; honest if it ever fires:
             // nobody runs, one line.
@@ -1686,15 +2162,6 @@ fn query_segments(
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
 ) {
-    let ctx = match generation.lua.to_value(ctx) {
-        Ok(value) => value,
-        Err(err) => {
-            // Unreachable for JSON payloads; honest if it ever fires:
-            // no reply, prior values kept.
-            log(events, format!("the segment ctx would not convert: {err}"));
-            return;
-        }
-    };
     frame.begin(true, format_args!("the segment query"));
     let mut values = Vec::new();
     for slot in 1..=generation.segments.raw_len() {
@@ -1707,7 +2174,33 @@ fn query_segments(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
-        let answer = match handler.call::<Option<Table>>(ctx.clone()) {
+        // The shell's status ctx carries the carry: the owning
+        // plugin's settings merge in under the `settings` key, per
+        // segment — two plugins' segments resolve differently in one
+        // trip (plugin-manifest PM4).
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let mut ctx_json = ctx.clone();
+        if let Some(object) = ctx_json.as_object_mut() {
+            object.insert(
+                "settings".to_owned(),
+                settings_object(
+                    owner.as_deref(),
+                    &generation.settings,
+                    &generation.manifests,
+                    events,
+                ),
+            );
+        }
+        let ctx = match generation.lua.to_value(&ctx_json) {
+            Ok(value) => value,
+            Err(err) => {
+                // Unreachable for JSON payloads; honest if it ever
+                // fires: the segment omits, its prior value keeps.
+                log(events, format!("the segment ctx would not convert: {err}"));
+                continue;
+            }
+        };
+        let answer = match handler.call::<Option<Table>>(ctx) {
             Ok(answer) => answer,
             Err(err) => {
                 if frame.hard_tripped.get() {
@@ -1723,8 +2216,16 @@ fn query_segments(
             values.push(SegmentAnswer::Hidden { id: name });
             continue;
         };
-        match read_answer(&generation.lua, &answer, &name) {
-            Ok(value) => values.push(value),
+        // The removed styling keys' one-line-each record (SE2): the
+        // pull's own reply cadence, the standing per-reply shape.
+        let mut drops = Vec::new();
+        match read_answer(&generation.lua, &answer, &name, &mut drops) {
+            Ok(value) => {
+                for line in &drops {
+                    log(events, line.clone());
+                }
+                values.push(value);
+            }
             Err(err) => {
                 log(
                     events,
@@ -1751,7 +2252,12 @@ fn query_segments(
 /// both fields required, the side's words the only two accepted,
 /// extra keys ignored. Anything else is an error the caller logs
 /// once: one line, the answer dropped, the prior text standing.
-fn read_answer(lua: &Lua, answer: &Table, name: &str) -> mlua::Result<SegmentAnswer> {
+fn read_answer(
+    lua: &Lua,
+    answer: &Table,
+    name: &str,
+    drops: &mut Vec<String>,
+) -> mlua::Result<SegmentAnswer> {
     if answer.contains_key("spans")? {
         let side = match answer.get::<Option<String>>("side")? {
             Some(side) => script_side(&side)?,
@@ -1765,7 +2271,7 @@ fn read_answer(lua: &Lua, answer: &Table, name: &str) -> mlua::Result<SegmentAns
         if let Some(map) = payload.as_object_mut() {
             map.remove("side");
         }
-        let content = slots::parse_content(&payload)
+        let content = slots::parse_content(&payload, drops)
             .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
         return Ok(SegmentAnswer::Shown {
             id: name.to_owned(),
@@ -1958,8 +2464,16 @@ mod tests {
     /// hard cap takes, so scheduling slack never flakes the suite.
     const LONG_WAIT: Duration = Duration::from_secs(5);
 
+    /// Write one fixture script as the dir-per-plugin layout: the
+    /// `name.lua` argument names the plugin (`hello.lua` is the
+    /// `hello` dir), the script lands at `plugins/<id>/plugin.lua` —
+    /// every fixture is a manifest-less dir, so it scans eager exactly
+    /// like the loose files did before the break.
     fn script(dir: &TempDir, name: &str, text: &str) {
-        fs::write(dir.join(name), text).expect("write fixture script");
+        let id = name.strip_suffix(".lua").unwrap_or(name);
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::write(plugin_dir.join("plugin.lua"), text).expect("write fixture script");
     }
 
     /// Collect the host's log lines until it goes quiet (200 ms with
@@ -2095,7 +2609,7 @@ mod tests {
         assert!(host.spawned());
         let lines = logs_until_quiet(&host);
         assert!(
-            lines.iter().any(|line| line.contains("loaded hello.lua")),
+            lines.iter().any(|line| line.contains("loaded hello")),
             "the scan must load the fixture: {lines:?}"
         );
         assert!(
@@ -2150,7 +2664,7 @@ mod tests {
         let host = LuaHost::new(&dir.0);
         emit(&host, "other");
         let lines = logs_until_quiet(&host);
-        assert!(lines.iter().any(|line| line.contains("loaded hello.lua")));
+        assert!(lines.iter().any(|line| line.contains("loaded hello")));
         assert!(
             !lines.iter().any(|line| line.contains("hi")),
             "an unregistered event dispatches to nobody, silently: {lines:?}"
@@ -2174,12 +2688,12 @@ mod tests {
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.contains("broken.lua"))
+                .filter(|line| line.contains("skipped broken"))
                 .count(),
             1,
             "a load error costs exactly one line: {lines:?}"
         );
-        assert!(lines.iter().any(|line| line.contains("loaded good.lua")));
+        assert!(lines.iter().any(|line| line.contains("loaded good")));
         assert!(
             lines.iter().any(|line| line.contains(" ok")),
             "the sibling script's handler still answers: {lines:?}"
@@ -2292,9 +2806,7 @@ mod tests {
         emit(&host, "x");
         let second = logs_until_quiet(&host);
         assert!(
-            second
-                .iter()
-                .any(|line| line.contains("loaded runaway.lua")),
+            second.iter().any(|line| line.contains("loaded runaway")),
             "the reload re-runs the registration scripts: {second:?}"
         );
         assert!(
@@ -2406,11 +2918,11 @@ mod tests {
             &format!("{PORT}\nd.on('x', function() print('v2') end)"),
         );
         host.send(HostCommand::Reload);
-        let second = logs_until(&host, |line| line.contains("loaded gen.lua"), LONG_WAIT);
+        let second = logs_until(&host, |line| line.contains("loaded gen"), LONG_WAIT);
         assert_eq!(
             second
                 .iter()
-                .filter(|line| line.contains("loaded gen.lua"))
+                .filter(|line| line.contains("loaded gen"))
                 .count(),
             1,
             "the reload rescans the edited script: {second:?}"
@@ -2436,7 +2948,10 @@ mod tests {
         let dir = TempDir::new("watch");
         script(&dir, "one.lua", &format!("{PORT}\nprint('one loaded')"));
         let host = LuaHost::new(&dir.0);
-        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        let (wake_tx, _wake_rx) = std::sync::mpsc::channel::<()>();
+        let _watcher = host
+            .watch_plugins_dir(wake_tx)
+            .expect("arm the plugins watcher");
         emit(&host, "boot");
         let _ = logs_until(&host, |line| line.contains("one loaded"), LONG_WAIT);
         // A script dropped into the running host's dir: the watcher
@@ -2470,7 +2985,10 @@ mod tests {
             &format!("{PORT}\nprint('awake')\nd.on('x', function() print('answered') end)"),
         );
         let host = LuaHost::new(&dir.0);
-        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        let (wake_tx, _wake_rx) = std::sync::mpsc::channel::<()>();
+        let _watcher = host
+            .watch_plugins_dir(wake_tx)
+            .expect("arm the plugins watcher");
         assert!(
             !host.spawned(),
             "arming the watcher alone spawns nothing — the lazy pin holds"
@@ -2489,13 +3007,13 @@ mod tests {
         // Wait for the load line (a script's own print lands before
         // it), then drain the quiet tail so a duplicate rescan — if
         // one existed — would be collected rather than cut off.
-        let mut lines = logs_until(&host, |line| line.contains("loaded hello.lua"), LONG_WAIT);
+        let mut lines = logs_until(&host, |line| line.contains("loaded hello"), LONG_WAIT);
         lines.extend(logs_until_quiet(&host));
         assert!(host.spawned(), "the wake must spawn the host: {lines:?}");
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.contains("loaded hello.lua"))
+                .filter(|line| line.contains("loaded hello"))
                 .count(),
             1,
             "the spawning wake is the one scan — no duplicate reload beside it: {lines:?}"
@@ -2543,9 +3061,9 @@ mod tests {
             &format!("{PORT}\nd.on('x', function() print('back') end)"),
         );
         host.send(HostCommand::Reload);
-        let second = logs_until(&host, |line| line.contains("loaded back.lua"), LONG_WAIT);
+        let second = logs_until(&host, |line| line.contains("loaded back"), LONG_WAIT);
         assert!(
-            second.iter().any(|line| line.contains("loaded back.lua")),
+            second.iter().any(|line| line.contains("loaded back")),
             "the host survives the removed-dir reload: {second:?}"
         );
         emit(&host, "x");
@@ -2929,7 +3447,7 @@ mod tests {
                  end)\n\
                  d.status_segment('mem', function()\n\
                    return {{ kind = 'styled', side = 'left', spans = {{\n\
-                     {{ icon = 'cpu', text = 'mem', color = 'accent' }},\n\
+                     {{ text = 'mem', style = {{ icon = 'cpu', color = 'accent' }} }},\n\
                      {{ text = ':512M' }},\n\
                    }} }}\n\
                  end)"
@@ -2969,7 +3487,15 @@ mod tests {
                 });
             }
         }
-        let vm = crate::core::status::band_vm(&segments, 2000.0, &eight_px, None, None, None);
+        let vm = crate::core::status::band_vm(
+            &segments,
+            2000.0,
+            &eight_px,
+            None,
+            None,
+            None,
+            &crate::core::style_engine::StyleSet::default(),
+        );
         let laid: Vec<(&str, String)> = vm
             .script_rows
             .iter()
@@ -3000,7 +3526,7 @@ mod tests {
             "dialog.lua",
             &format!(
                 "{PORT}\n\
-                 d.dialog {{ title = 'Build finished', body = {{ {{ text = 'done', color = 'green' }} }}, buttons = {{ {{ id = 'restart', label = 'Restart', accent = true }}, {{ id = 'dismiss', label = 'Dismiss' }} }} }}\n\
+                 d.dialog {{ title = 'Build finished', body = {{ {{ text = 'done', style = {{ color = 'green' }} }} }}, buttons = {{ {{ id = 'restart', label = 'Restart', class = 'accent' }}, {{ id = 'dismiss', label = 'Dismiss' }} }} }}\n\
                  d.dialog {{ title = 'Minimal', buttons = {{ {{ id = 'ok', label = 'OK' }} }} }}"
             ),
         );
@@ -3021,10 +3547,16 @@ mod tests {
         );
         assert_eq!(specs[0].title, "Build finished");
         assert_eq!(specs[0].buttons.len(), 2);
-        assert!(specs[0].buttons[0].accent);
         assert_eq!(
-            specs[0].body[0].color,
-            Some(SlotColor::Token("green".to_owned())),
+            specs[0].buttons[0].class,
+            Some("accent".to_owned()),
+            "the accent class parses"
+        );
+        assert_eq!(
+            specs[0].body[0].style,
+            vec![crate::core::style_engine::Declaration::Color(
+                SlotColor::Token("green".to_owned())
+            )],
             "the body's span parses whole"
         );
         assert!(specs[1].body.is_empty(), "an absent body parses empty");
@@ -3228,7 +3760,7 @@ mod tests {
         // The script unlinks first (the reload rescans current disk),
         // then the tests' reload lever (the resync test's own): the
         // host command, not the watcher's inotify timing.
-        std::fs::remove_file(dir.0.join("views.lua")).expect("the script unlinks");
+        std::fs::remove_file(dir.0.join("views").join("plugin.lua")).expect("the script unlinks");
         host.send(HostCommand::Reload);
         let events = events_until(
             &host,
@@ -3254,7 +3786,7 @@ mod tests {
                 "{PORT}\n\
                  d.status_segment('net', function()\n\
                    return {{ kind = 'styled', side = 'right', spans = {{\n\
-                     {{ icon = 'arrow-down', text = '▼', color = 'accent' }},\n\
+                     {{ text = '▼', style = {{ icon = 'arrow-down', color = 'accent' }} }},\n\
                      {{ text = ' 1.2 MB/s' }},\n\
                    }} }}\n\
                  end)\n\
@@ -3279,9 +3811,32 @@ mod tests {
                 _ => None,
             })
             .expect("the reply lands");
+        // The declarations' order is not observable (mlua's table
+        // crossing is not order-stable across runs) — each property
+        // stands alone in the cascade, so both sides sort before the
+        // compare.
+        let sort_style = |answers: &[SegmentAnswer]| -> Vec<SegmentAnswer> {
+            answers
+                .iter()
+                .map(|answer| {
+                    let mut owned = answer.clone();
+                    if let SegmentAnswer::Shown {
+                        content: SlotContent::Styled { spans, .. },
+                        ..
+                    } = &mut owned
+                    {
+                        for span in spans {
+                            span.style
+                                .sort_by(|a, b| std::format!("{a:?}").cmp(&std::format!("{b:?}")));
+                        }
+                    }
+                    owned
+                })
+                .collect()
+        };
         assert_eq!(
-            values,
-            vec![
+            sort_style(&values),
+            sort_style(&[
                 SegmentAnswer::Shown {
                     id: "net".to_owned(),
                     side: ScriptSide::Right,
@@ -3289,13 +3844,22 @@ mod tests {
                         spans: vec![
                             Span {
                                 text: "▼".to_owned(),
-                                color: Some(SlotColor::Token("accent".to_owned())),
-                                icon: Some("arrow-down".to_owned()),
+                                class: None,
+                                id: None,
+                                style: vec![
+                                    crate::core::style_engine::Declaration::Icon(
+                                        "arrow-down".to_owned()
+                                    ),
+                                    crate::core::style_engine::Declaration::Color(
+                                        SlotColor::Token("accent".to_owned())
+                                    ),
+                                ],
                             },
                             Span {
                                 text: " 1.2 MB/s".to_owned(),
-                                color: None,
-                                icon: None,
+                                class: None,
+                                id: None,
+                                style: Vec::new(),
                             },
                         ],
                     },
@@ -3306,12 +3870,13 @@ mod tests {
                     content: SlotContent::Styled {
                         spans: vec![Span {
                             text: "x".to_owned(),
-                            color: None,
-                            icon: None,
+                            class: None,
+                            id: None,
+                            style: Vec::new(),
                         }],
                     },
                 },
-            ],
+            ]),
             "the styled answer crosses typed; a side-less styled answer defaults left (the spec's own example shape)"
         );
     }
@@ -3888,6 +4453,127 @@ mod tests {
         );
     }
 
+    // --- the runtime sheet (style-engine SE3) ---
+
+    /// Every event until the host goes quiet (200 ms with no event):
+    /// the styles verb's whole reaction to one load, sync reports
+    /// included.
+    fn all_events_until_quiet(host: &LuaHost) -> Vec<HostEvent> {
+        let mut events = Vec::new();
+        loop {
+            match host.events.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => events.push(event),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return events,
+            }
+        }
+    }
+
+    /// The `StylesSync` reports from a drained event list, in arrival
+    /// order.
+    fn styles_syncs(events: &[HostEvent]) -> Vec<(String, Vec<crate::core::style_engine::Rule>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::StylesSync { plugin, rules } => Some((plugin.clone(), rules.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_styles_verb_reports_the_whole_sheet_per_call_and_drops_shapes() {
+        let dir = TempDir::new("stylesverb");
+        script(
+            &dir,
+            "styler.lua",
+            &format!(
+                "{PORT}\n\
+                 d.styles({{\n\
+                   {{ selector = 'band.right', declarations = {{ color = 'red' }} }},\n\
+                 }})\n\
+                 d.styles({{\n\
+                   {{ selector = '.warn', declarations = {{ color = 'red', frob = 'x' }} }},\n\
+                   {{ selector = 'tab.active', declarations = {{ color = 'accent' }} }},\n\
+                 }})\n\
+                 d.styles({{\n\
+                   {{ selector = '', declarations = {{ color = 'red' }} }},\n\
+                 }})\n\
+                 d.styles('not an array')"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = all_events_until_quiet(&host);
+        let syncs = styles_syncs(&events);
+        // Three usable calls, one report each; the fourth raised (the
+        // string argument crosses no table) — the standing error path.
+        assert_eq!(syncs.len(), 3, "{events:?}");
+        let (plugin, first) = &syncs[0];
+        assert_eq!(plugin, "styler");
+        assert_eq!(first.len(), 1);
+        // The second call's sheet replaces the caller's: the report
+        // carries the second call's rules, not the first's.
+        let (_, second) = &syncs[1];
+        assert_eq!(second.len(), 2);
+        // The bad rule dropped with its line; the good rule stands.
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("the selector '' does not parse")),
+            "the junk selector's drop line: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("ignoring unknown style property 'frob'")),
+            "the declaration drop line rides the report's logs: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_runtime_sheet_dies_with_its_interpreter() {
+        let dir = TempDir::new("sheetlife");
+        script(
+            &dir,
+            "styler.lua",
+            &format!(
+                "{PORT}\n\
+                 d.styles({{ {{ selector = '.live', declarations = {{ color = 'red' }} }} }})"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::StylesSync { .. }),
+            LONG_WAIT,
+        );
+        assert_eq!(styles_syncs(&events).len(), 1, "{events:?}");
+        // The reload: the interpreter dies, one StylesReset marker,
+        // and the reload's own re-run of the script re-reports the
+        // sheet (the script calls styles again from its top).
+        host.send(HostCommand::Reload);
+        let events = all_events_until_quiet(&host);
+        let reset = events
+            .iter()
+            .filter(|event| matches!(event, HostEvent::StylesReset))
+            .count();
+        assert!(reset >= 1, "the birth marker rides the reload: {events:?}");
+        // The fresh generation re-ran the script: a fresh report.
+        let syncs = styles_syncs(&events);
+        assert!(
+            !syncs.is_empty(),
+            "the re-run's own styles call re-reports: {events:?}"
+        );
+    }
+
     #[test]
     fn a_duplicate_command_registration_replaces_with_one_line() {
         let dir = TempDir::new("replaced");
@@ -4098,6 +4784,10 @@ mod tests {
                         | HostEvent::TabTitleProvider { .. }
                         | HostEvent::PanelViewsSync { .. }
                         | HostEvent::PanelAnswer { .. }
+                        // The generation births send one marker
+                        // each (SE3): a sync report, never a
+                        // dispatch answer.
+                        | HostEvent::StylesReset
                 ),
                 "a command dispatch has no reply arm: {event:?}"
             );
@@ -4291,6 +4981,558 @@ mod tests {
                 .count(),
             1,
             "the contextless call costs exactly one line: {lines:?}"
+        );
+    }
+    // --- the activation machine (plugin-manifest PM2) ---
+
+    /// Write one fixture manifest: `plugin.json` in the plugin dir the
+    /// same id the `script` helper builds.
+    fn manifest(dir: &TempDir, id: &str, json: &str) {
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::write(plugin_dir.join("plugin.json"), json).expect("write fixture manifest");
+    }
+
+    fn press(host: &LuaHost, name: &str) {
+        host.send(HostCommand::RunCommand {
+            name: name.to_owned(),
+            tab: 1,
+        });
+    }
+
+    fn mark(host: &LuaHost, elapsed_ms: u64) {
+        host.send(HostCommand::StartupMark { elapsed_ms });
+    }
+
+    #[test]
+    fn a_lazy_manifest_plugin_costs_zero_interpreter_work_until_its_dispatch() {
+        let dir = TempDir::new("lazy-manifest");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nd.command('go', 'Go', function() print('go ran') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        // The mark is a work item: it spawns the host and scans, but
+        // the lazy plugin joins nothing.
+        mark(&host, 10);
+        let lines = logs_until_quiet(&host);
+        assert!(host.spawned(), "the mark materialized the host");
+        assert!(
+            !lines.iter().any(|line| line.contains("loaded lazy")),
+            "a lazy plugin loads nothing at the mark: {lines:?}"
+        );
+        // The first press pays the load, then dispatches.
+        press(&host, "go");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("lazy: activating for command 'go'")),
+            "the gate names the activation: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("loaded lazy")),
+            "the recreation loads the activated plugin: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("go ran")),
+            "the press dispatches on the fresh generation: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_loads_at_the_first_work_item() {
+        let dir = TempDir::new("on-startup");
+        manifest(&dir, "eager", r#"{ "activation": ["on_startup"] }"#);
+        script(&dir, "eager.lua", &format!("{PORT}\nprint('eager up')"));
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("loaded eager")),
+            "on_startup loads at the mark with no dispatch: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_finished_under_the_window_activates_at_the_mark() {
+        let dir = TempDir::new("under-window");
+        manifest(
+            &dir,
+            "defer",
+            r#"{ "activation": ["on_startup_finished"] }"#,
+        );
+        script(&dir, "defer.lua", &format!("{PORT}\nprint('defer up')"));
+        let host = LuaHost::new(&dir.0);
+        // The mark loads at itself; the later press's own line lands
+        // after the load's — the ordering is the pin.
+        mark(&host, 10);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        let loaded = lines
+            .iter()
+            .position(|line| line.contains("loaded defer"))
+            .expect("the mark loaded the AfterStartup plugin");
+        let nobody = lines
+            .iter()
+            .position(|line| line.contains("dispatched to nobody"))
+            .expect("the press dispatched");
+        assert!(
+            loaded < nobody,
+            "under the window the load lands before the later press: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_finished_over_the_window_defers_to_the_idle_window() {
+        let dir = TempDir::new("over-window");
+        manifest(
+            &dir,
+            "defer",
+            r#"{ "activation": ["on_startup_finished"] }"#,
+        );
+        script(&dir, "defer.lua", &format!("{PORT}\nprint('defer up')"));
+        let host = LuaHost::new(&dir.0);
+        // Past the window the mark defers: the queued press serves
+        // first, the activation waits for the queue to drain.
+        mark(&host, 100);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        let loaded = lines
+            .iter()
+            .position(|line| line.contains("loaded defer"))
+            .expect("the idle window loaded the AfterStartup plugin");
+        let nobody = lines
+            .iter()
+            .position(|line| line.contains("dispatched to nobody"))
+            .expect("the press dispatched before the idle activation");
+        assert!(
+            nobody < loaded,
+            "over the window the activation waits for the idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_active_set_survives_a_forced_teardown_recreation() {
+        let dir = TempDir::new("survive-teardown");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{
+                "commands": [
+                    { "id": "spin", "description": "Runaway" },
+                    { "id": "hello", "description": "Prints" }
+                ]
+            }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('spin', 'Runaway', function() while true do end end)\n\
+                 d.command('hello', 'Prints', function() print('hello from active') end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        // The spin trips the hard cap: teardown, recreation.
+        press(&host, "spin");
+        let _ = logs_until(&host, |line| line.contains("hard cap"), LONG_WAIT);
+        // The successor generation loads the same active set: the
+        // press dispatches with no new activation.
+        press(&host, "hello");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("hello from active")),
+            "the activated plugin survived the teardown: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("activating for command 'hello'")),
+            "an active plugin's press never re-activates: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_declared_but_never_registered_slug_dispatches_to_nobody_with_one_line() {
+        let dir = TempDir::new("ghost");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "ghost", "description": "Nobody" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nprint('registered nothing')"),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("dispatched to nobody"))
+                .count(),
+            1,
+            "exactly one nobody line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn skip_shapes_flow_through_the_log_arm_exactly_once_each() {
+        let dir = TempDir::new("skips");
+        // The loose file is the break's subject: a raw top-level .lua,
+        // not a plugin dir.
+        fs::write(dir.0.join("stray.lua"), "print('never loads')")
+            .expect("write the loose fixture");
+        script(&dir, "Bad_Dir.lua", "print('never loads')");
+        script(&dir, "ok.lua", &format!("{PORT}\nprint('fine')"));
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let lines = logs_until_quiet(&host);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("skipped loose stray.lua"))
+                .count(),
+            1,
+            "exactly one loose-skip line: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("skipped Bad_Dir:"))
+                .count(),
+            1,
+            "exactly one non-slug skip line: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("loaded ok")),
+            "the slug dir still loads: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_reloaded_active_lazy_plugin_stays_active_for_the_session() {
+        let dir = TempDir::new("reload-active");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nd.command('go', 'Go', function() print('go ran') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "go");
+        let _ = logs_until_quiet(&host);
+        // The watcher's wake rides the same command channel in tests:
+        // the reload re-runs the scan and re-gates — the activated
+        // plugin stays in the active set and loads with the recreation.
+        host.send(HostCommand::Reload);
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("loaded lazy")),
+            "the reload carries the active set: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("activating for command")),
+            "staying active is not a re-activation: {lines:?}"
+        );
+    }
+    // --- the settings carry (plugin-manifest PM4) ---
+
+    /// Write one fixture manifest with two rows (a string and a
+    /// boolean), the ctx-carry tests' common shape.
+    fn settings_manifest(dir: &TempDir, extra_activation: &str) {
+        manifest(
+            dir,
+            "p",
+            &format!(
+                r#"{{ "commands": [ {{ "id": "show", "description": "Show" }} ],
+                    "settings": [
+                        {{ "key": "prefix", "type": "string", "label": "P", "default": "" }},
+                        {{ "key": "enabled", "type": "boolean", "label": "E", "default": false }}
+                    ]{extra_activation} }}"#
+            ),
+        );
+    }
+
+    fn sync(host: &LuaHost, prefix: &str) {
+        let mut values = StoreValues::new();
+        values.insert(
+            "p".to_owned(),
+            std::collections::BTreeMap::from([("prefix".to_owned(), serde_json::json!(prefix))]),
+        );
+        host.send(HostCommand::SettingsSync { values });
+    }
+
+    #[test]
+    fn settings_ride_the_command_ctx_with_defaults_for_unset_keys() {
+        let dir = TempDir::new("carry-command");
+        settings_manifest(&dir, "");
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   print('prefix=' .. tostring(p.settings.prefix) .. ' enabled=' .. tostring(p.settings.enabled))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "hello");
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("prefix=hello enabled=false")),
+            "the stored value rides and the unset key takes its default: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_without_declared_settings_carries_an_empty_table() {
+        let dir = TempDir::new("carry-empty");
+        // A manifest-less eager plugin: no rows at all.
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   local n = 0\n\
+                   for _ in pairs(p.settings or {{}}) do n = n + 1 end\n\
+                   print('settings=' .. n)\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("settings=0")),
+            "an empty table, never a missing key: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_typed_store_value_falls_to_the_default_with_one_line() {
+        let dir = TempDir::new("carry-wrong");
+        settings_manifest(&dir, "");
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   print('enabled=' .. tostring(p.settings.enabled))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        // The store's boolean row holds a string: fail-to-default at
+        // the merge, one line.
+        let mut values = StoreValues::new();
+        values.insert(
+            "p".to_owned(),
+            std::collections::BTreeMap::from([("enabled".to_owned(), serde_json::json!("yes"))]),
+        );
+        host.send(HostCommand::SettingsSync { values });
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("enabled=false")),
+            "the wrong-typed value fell to the declared default: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("is the wrong type; using the declared default"))
+                .count(),
+            1,
+            "exactly one wrong-type line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_event_ctx_beside_an_untouched_payload() {
+        let dir = TempDir::new("carry-event");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.on('x', function(payload, ctx)\n\
+                   print('evset=' .. tostring(ctx.settings.prefix) .. ' payload=' .. tostring(payload.mark))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "ev");
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        host.send(HostCommand::Emit {
+            event: "x".to_owned(),
+            payload: serde_json::json!({ "mark": "kept" }),
+        });
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("evset=ev payload=kept")),
+            "the carry rides the second argument, the payload verbatim: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_segment_ctx_per_owning_plugin() {
+        let dir = TempDir::new("carry-segment");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function(ctx)\n\
+                   return {{ text = 'seg:' .. tostring(ctx.settings.prefix), side = 'right' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "segval");
+        query(&host, 9);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 9, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::SegmentValues { token: 9, values, .. }
+                    if values.len() == 1
+                        && matches!(&values[0],
+                            SegmentAnswer::Shown { content, .. }
+                                if *content == SlotContent::Text("seg:segval".to_owned()))
+            )
+        });
+        assert!(
+            answered,
+            "the segment ctx carries the owning plugin's settings: {events:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_tab_title_ctx() {
+        let dir = TempDir::new("carry-titles");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function(p)\n\
+                   return 'title:' .. tostring(p.settings.prefix)\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "tt");
+        host.send(HostCommand::QueryTabTitles {
+            token: 3,
+            tabs: vec![TabTitleAsk {
+                tab: 1,
+                title: "osc".to_owned(),
+            }],
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 3, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::TabTitles { token: 3, values, .. }
+                    if values.len() == 1 && values[0].title == Some("title:tt".to_owned())
+            )
+        });
+        assert!(
+            answered,
+            "the provider ctx carries the seat owner's settings: {events:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_panel_ask_ctx() {
+        let dir = TempDir::new("carry-panel");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('v', {{ container = 'right-rail', title = 'T' }}, function(ctx)\n\
+                   return {{ rows = {{ {{ text = 'panel:' .. tostring(ctx.settings.prefix) }} }} }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "pv");
+        host.send(HostCommand::PanelAsk {
+            token: 4,
+            views: vec!["v".to_owned()],
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::PanelAnswer { token: 4, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::PanelAnswer { token: 4, values, .. }
+                    if values.len() == 1
+                        && matches!(
+                            &values[0].content,
+                            Some(crate::core::slots::PanelContent::Rows { rows })
+                                if rows.len() == 1
+                                    && rows[0].spans.len() == 1
+                                    && rows[0].spans[0].text == "panel:pv"
+                        )
+            )
+        });
+        assert!(
+            answered,
+            "the panel ctx carries the view owner's settings: {events:?}"
         );
     }
 }

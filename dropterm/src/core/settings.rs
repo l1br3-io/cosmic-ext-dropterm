@@ -378,6 +378,10 @@ pub enum SettingsPage {
     Keybindings,
     /// The power controls: the Advanced section.
     Advanced,
+    /// The plugin-declared rows — no sections, so it never perturbs
+    /// the section partition; the rows come from the manifest scan,
+    /// not from any config key (plugin-manifest PM5).
+    Plugins,
 }
 
 /// The [`Section`] a page hosts: exactly one for the seven section
@@ -395,14 +399,14 @@ pub const fn page_section(page: SettingsPage) -> Option<Section> {
         SettingsPage::Terminal => Some(Section::Terminal),
         SettingsPage::AutoComplete => Some(Section::AutoComplete),
         SettingsPage::Advanced => Some(Section::Advanced),
-        SettingsPage::Profiles | SettingsPage::Keybindings => None,
+        SettingsPage::Profiles | SettingsPage::Keybindings | SettingsPage::Plugins => None,
     }
 }
 
 /// The sidebar's two headers and their pages, in page order — the
 /// nav's single source, so no row can exist without a page to
 /// serve it. The palette's Settings rows follow the same order.
-pub const NAV_GROUPS: [(&str, &[SettingsPage]); 2] = [
+pub const NAV_GROUPS: [(&str, &[SettingsPage]); 3] = [
     (
         "Terminal",
         &[
@@ -420,6 +424,7 @@ pub const NAV_GROUPS: [(&str, &[SettingsPage]); 2] = [
         "Profiles & keys",
         &[SettingsPage::Profiles, SettingsPage::Keybindings],
     ),
+    ("Plugins", &[SettingsPage::Plugins]),
 ];
 
 /// The header a page sits under — [`NAV_GROUPS`]'s per-page view,
@@ -427,6 +432,7 @@ pub const NAV_GROUPS: [(&str, &[SettingsPage]); 2] = [
 pub const fn page_group(page: SettingsPage) -> &'static str {
     match page {
         SettingsPage::Profiles | SettingsPage::Keybindings => "Profiles & keys",
+        SettingsPage::Plugins => "Plugins",
         _ => "Terminal",
     }
 }
@@ -446,6 +452,7 @@ pub const fn page_title(page: SettingsPage) -> &'static str {
         SettingsPage::Advanced => Section::Advanced.title(),
         SettingsPage::Profiles => "Profiles",
         SettingsPage::Keybindings => "Keybindings",
+        SettingsPage::Plugins => "Plugins",
     }
 }
 
@@ -453,7 +460,7 @@ impl SettingsPage {
     /// Every page, in page order — the nav's rows come from this
     /// list and nothing else, and the palette's Settings rows
     /// follow it too.
-    pub const ALL: [SettingsPage; 10] = [
+    pub const ALL: [SettingsPage; 11] = [
         SettingsPage::Appearance,
         SettingsPage::Window,
         SettingsPage::Tabs,
@@ -464,6 +471,7 @@ impl SettingsPage {
         SettingsPage::Advanced,
         SettingsPage::Profiles,
         SettingsPage::Keybindings,
+        SettingsPage::Plugins,
     ];
 }
 

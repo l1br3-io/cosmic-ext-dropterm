@@ -17,6 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::style_engine::Declaration;
+
 /// The styled answer's span budget — the evolution constant capping
 /// one answer's spans so a runaway script cannot bloat the band's
 /// layout pass. Picked once at the contract's birth (spec ruling:
@@ -91,20 +93,26 @@ impl<'de> Deserialize<'de> for SlotColor {
 
 /// One span of styled slot content. Closed keyset: new keys join as
 /// additive releases, existing keys never change meaning
-/// (lua-declarative-ui-precedents, Neovim's contract).
+/// (lua-declarative-ui-precedents, Neovim's contract). The styling
+/// rides the hooks (style-engine spec): `class`, `id`, and the
+/// inline `style` table — the shipped `color`/`icon` keys are
+/// removed, one drop line each, the rest of the span renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     /// The span's text — the only part the contract guarantees to
     /// render (the styled band concatenates span texts).
     pub text: String,
-    /// Theme token name or `#rrggbb`; resolution is the painter's
-    /// job (`styled-status-slot`), never the contract's.
+    /// Space-separated class names — the selector's `.class` parts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<SlotColor>,
-    /// A Lucide icon name from the band's existing vocabulary
-    /// ([`ICON_VOCABULARY`]); rendered before the text.
+    pub class: Option<String>,
+    /// The span's id — the selector's `#id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
+    pub id: Option<String>,
+    /// The span's inline declarations (the `style` table), parsed by
+    /// the engine's validator at the boundary — one vocabulary for
+    /// the Lua tables and the manifest both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style: Vec<Declaration>,
 }
 
 /// One slot's typed answer. `Text` is the v1 shape and stays valid
@@ -181,13 +189,24 @@ impl std::fmt::Display for SlotError {
     }
 }
 
+/// The styling keys the break removed (style-engine spec): a script
+/// still carrying one costs one drop line and the key's effect —
+/// the rest of the span renders. The `style` hook and the rules
+/// replace them; there is no deprecation ladder (nothing released
+/// carried them).
+pub const REMOVED_STYLING_KEYS: [&str; 2] = ["color", "icon"];
+
 /// Parse one slot answer's typed payload from its serde form — the
 /// object a script returned for a styled answer (the `kind`/`spans`
 /// table, the port's own `side` word already lifted off), or a bare
 /// string for a text answer. Shape errors surface typed; the parsed
 /// content is validated ([`validate`]) before it returns, so a green
-/// parse is a green contract.
-pub fn parse_content(value: &serde_json::Value) -> Result<SlotContent, SlotError> {
+/// parse is a green contract. The removed styling keys' one-line
+/// drops land in `drops` (the caller logs; the rest renders).
+pub fn parse_content(
+    value: &serde_json::Value,
+    drops: &mut Vec<String>,
+) -> Result<SlotContent, SlotError> {
     match value {
         serde_json::Value::String(text) => Ok(SlotContent::Text(text.clone())),
         serde_json::Value::Object(map) => {
@@ -206,7 +225,7 @@ pub fn parse_content(value: &serde_json::Value) -> Result<SlotContent, SlotError
             let Some(spans) = map.get("spans") else {
                 return Err(SlotError::MissingSpans);
             };
-            let spans = parse_spans(spans)?;
+            let spans = parse_spans(spans, drops)?;
             let content = SlotContent::Styled { spans };
             validate(&content)?;
             Ok(content)
@@ -217,7 +236,10 @@ pub fn parse_content(value: &serde_json::Value) -> Result<SlotContent, SlotError
 
 /// Parse one spans array against the closed keyset — the styled
 /// answer's list and the dialog body's shared rule.
-pub fn parse_spans(value: &serde_json::Value) -> Result<Vec<Span>, SlotError> {
+pub fn parse_spans(
+    value: &serde_json::Value,
+    drops: &mut Vec<String>,
+) -> Result<Vec<Span>, SlotError> {
     // Lua's empty table serializes as an empty object — the only
     // empty list a script can write — so both empty forms parse as
     // the empty list, and a non-empty object stays a shape error.
@@ -230,20 +252,27 @@ pub fn parse_spans(value: &serde_json::Value) -> Result<Vec<Span>, SlotError> {
     };
     let mut parsed = Vec::with_capacity(spans.len().min(MAX_SPANS_PER_ANSWER));
     for span in spans {
-        parsed.push(parse_span(span)?);
+        parsed.push(parse_span(span, drops)?);
     }
     Ok(parsed)
 }
 
 /// Parse one span object against the closed keyset: `text` required
-/// and string, `color`/`icon` string when present, nothing else.
-fn parse_span(span: &serde_json::Value) -> Result<Span, SlotError> {
-    const SPAN_KEYS: [&str; 3] = ["text", "color", "icon"];
+/// and string, the hooks `class`/`id`/`style` when present,
+/// nothing else. The removed styling keys cost one drop line each
+/// and are ignored — the rest of the span renders.
+fn parse_span(span: &serde_json::Value, drops: &mut Vec<String>) -> Result<Span, SlotError> {
+    const SPAN_KEYS: [&str; 4] = ["text", "class", "id", "style"];
     let Some(map) = span.as_object() else {
         return Err(SlotError::WrongType("span"));
     };
     for key in map.keys() {
-        if !SPAN_KEYS.contains(&key.as_str()) {
+        if REMOVED_STYLING_KEYS.contains(&key.as_str()) {
+            drops.push(format!(
+                "ignoring the removed styling key '{key}' on a span; \
+                 the 'style' hook replaces it"
+            ));
+        } else if !SPAN_KEYS.contains(&key.as_str()) {
             return Err(SlotError::UnknownKey(key.clone()));
         }
     }
@@ -251,20 +280,32 @@ fn parse_span(span: &serde_json::Value) -> Result<Span, SlotError> {
         .get("text")
         .and_then(serde_json::Value::as_str)
         .ok_or(SlotError::WrongType("text"))?;
-    let color = match map.get("color") {
-        Some(raw) => Some(SlotColor::parse(
-            raw.as_str().ok_or(SlotError::WrongType("color"))?,
-        )?),
+    let class = match map.get("class") {
+        Some(raw) => Some(
+            raw.as_str()
+                .ok_or(SlotError::WrongType("class"))?
+                .to_owned(),
+        ),
         None => None,
     };
-    let icon = match map.get("icon") {
-        Some(raw) => Some(raw.as_str().ok_or(SlotError::WrongType("icon"))?.to_owned()),
+    let id = match map.get("id") {
+        Some(raw) => Some(raw.as_str().ok_or(SlotError::WrongType("id"))?.to_owned()),
         None => None,
     };
+    let mut style = Vec::new();
+    if let Some(table) = map.get("style") {
+        if table.as_object().is_none() {
+            return Err(SlotError::WrongType("style"));
+        }
+        let parsed = crate::core::style_engine::parse_declarations(table);
+        drops.extend(parsed.drops);
+        style = parsed.declarations;
+    }
     Ok(Span {
         text: text.to_owned(),
-        color,
-        icon,
+        class,
+        id,
+        style,
     })
 }
 
@@ -284,10 +325,15 @@ pub fn validate(content: &SlotContent) -> Result<(), SlotError> {
         return Err(SlotError::TooManySpans);
     }
     for span in spans {
-        if let Some(SlotColor::Hex(hex)) = span.color.as_ref() {
-            // Re-derive through the parser: the hex form is a
-            // validated shape, hand-built payloads included.
-            SlotColor::parse(hex)?;
+        for declaration in &span.style {
+            if let Declaration::Color(SlotColor::Hex(hex)) = declaration {
+                // Re-derive through the parser: the hex form is a
+                // validated shape, hand-built payloads included.
+                SlotColor::parse(hex)?;
+            }
+            if let Declaration::Background(SlotColor::Hex(hex)) = declaration {
+                SlotColor::parse(hex)?;
+            }
         }
     }
     Ok(())
@@ -313,17 +359,23 @@ pub struct DialogSpec {
     pub buttons: Vec<DialogButton>,
 }
 
-/// One dialog button. `accent` marks the primary action (the
-/// palette's accent key, one word).
+/// One dialog button. The id doubles as the style hook's `#id`; the
+/// primary action is the `accent` class now (the shipped `accent`
+/// flag is removed — the host builtin rule on `dialog-button.accent`
+/// carries the look).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DialogButton {
     /// The press event's `element_id` — the handler's address.
     pub id: String,
     /// The visible label.
     pub label: String,
-    /// The primary action's flag; absent parses false.
-    #[serde(default)]
-    pub accent: bool,
+    /// Space-separated class names — the selector's `.class` parts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// The button's inline declarations (the `style` table), parsed
+    /// by the engine's validator at the boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style: Vec<Declaration>,
 }
 
 /// One dialog spec's failure, typed — the script's bug, one log
@@ -365,10 +417,14 @@ impl std::fmt::Display for DialogError {
 
 /// Parse one dialog spec from its serde form (dialog-slot, DS1):
 /// the closed keyset, the one-to-three button rule, unique non-empty
-/// ids, the body's spans under the slot contract's own rules.
-pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError> {
+/// ids, the body's spans under the slot contract's own rules. The
+/// removed styling keys' drops land in `drops` (the caller logs).
+pub fn parse_dialog(
+    value: &serde_json::Value,
+    drops: &mut Vec<String>,
+) -> Result<DialogSpec, DialogError> {
     const DIALOG_KEYS: [&str; 3] = ["title", "body", "buttons"];
-    const BUTTON_KEYS: [&str; 3] = ["id", "label", "accent"];
+    const BUTTON_KEYS: [&str; 4] = ["id", "label", "class", "style"];
     let map = value.as_object().ok_or(DialogError::WrongType("dialog"))?;
     for key in map.keys() {
         if !DIALOG_KEYS.contains(&key.as_str()) {
@@ -383,7 +439,7 @@ pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError
         return Err(DialogError::WrongType("title"));
     }
     let body = match map.get("body") {
-        Some(raw) => parse_spans(raw).map_err(DialogError::Body)?,
+        Some(raw) => parse_spans(raw, drops).map_err(DialogError::Body)?,
         None => Vec::new(),
     };
     let Some(buttons) = map.get("buttons") else {
@@ -406,7 +462,13 @@ pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError
     for button in buttons {
         let map = button.as_object().ok_or(DialogError::WrongType("button"))?;
         for key in map.keys() {
-            if !BUTTON_KEYS.contains(&key.as_str()) {
+            if key == "accent" {
+                drops.push(
+                    "ignoring the removed styling key 'accent' on a button; \
+                     the 'accent' class replaces it"
+                        .to_owned(),
+                );
+            } else if !BUTTON_KEYS.contains(&key.as_str()) {
                 return Err(DialogError::UnknownKey(key.clone()));
             }
         }
@@ -424,14 +486,28 @@ pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError
             .get("label")
             .and_then(serde_json::Value::as_str)
             .ok_or(DialogError::WrongType("label"))?;
-        let accent = match map.get("accent") {
-            Some(raw) => raw.as_bool().ok_or(DialogError::WrongType("accent"))?,
-            None => false,
+        let class = match map.get("class") {
+            Some(raw) => Some(
+                raw.as_str()
+                    .ok_or(DialogError::WrongType("class"))?
+                    .to_owned(),
+            ),
+            None => None,
         };
+        let mut style = Vec::new();
+        if let Some(table) = map.get("style") {
+            if table.as_object().is_none() {
+                return Err(DialogError::WrongType("style"));
+            }
+            let parsed = crate::core::style_engine::parse_declarations(table);
+            drops.extend(parsed.drops);
+            style = parsed.declarations;
+        }
         parsed.push(DialogButton {
             id: id.to_owned(),
             label: label.to_owned(),
-            accent,
+            class,
+            style,
         });
     }
     Ok(DialogSpec {
@@ -444,8 +520,9 @@ pub fn parse_dialog(value: &serde_json::Value) -> Result<DialogSpec, DialogError
 /// One panel view's row (panel-slot spec): the row's spans — the
 /// spec example's own span-keys form parses as a single-span row,
 /// the richer `spans` array carries many — and the optional `id`
-/// key, the additive escape over the positional default. Closed
-/// keyset: new keys join as additive releases.
+/// key, the additive escape over the positional default. The style
+/// hooks ride the row (`class`, the inline `style` table); the
+/// row's numeric `id` doubles as the style hook's `#id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PanelRow {
     pub spans: Vec<Span>,
@@ -453,6 +530,13 @@ pub struct PanelRow {
     /// rides the positional index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u32>,
+    /// Space-separated class names — the selector's `.class` parts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// The row's inline declarations (the `style` table), parsed by
+    /// the engine's validator at the boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style: Vec<Declaration>,
 }
 
 /// One panel view's answer (panel-slot spec): the additive successor
@@ -498,19 +582,23 @@ impl std::fmt::Display for PanelError {
 /// Parse one panel answer from its serde form (panel-slot, PS1):
 /// the slot's own shapes pass through; a rows table parses each row
 /// in both its forms — the spec example's span-keys row (one span)
-/// and the spans-array row.
-pub fn parse_panel_content(value: &serde_json::Value) -> Result<PanelContent, PanelError> {
-    const ROW_KEYS: [&str; 5] = ["id", "spans", "text", "color", "icon"];
+/// and the spans-array row. The removed styling keys' drops land in
+/// `drops` (the caller logs).
+pub fn parse_panel_content(
+    value: &serde_json::Value,
+    drops: &mut Vec<String>,
+) -> Result<PanelContent, PanelError> {
+    const ROW_KEYS: [&str; 5] = ["id", "spans", "text", "class", "style"];
     let Some(map) = value.as_object() else {
         // A bare string (or anything non-table): the slot's own rules
         // decide, and the answer rides the Slot arm.
-        let content = parse_content(value).map_err(PanelError::Body)?;
+        let content = parse_content(value, drops).map_err(PanelError::Body)?;
         return Ok(PanelContent::Slot(content));
     };
     let Some(rows) = map.get("rows") else {
         // No rows key: the slot's own shapes (kind/spans/string) and
         // their own closed keyset decide.
-        let content = parse_content(value).map_err(PanelError::Body)?;
+        let content = parse_content(value, drops).map_err(PanelError::Body)?;
         return Ok(PanelContent::Slot(content));
     };
     for key in map.keys() {
@@ -524,12 +612,17 @@ pub fn parse_panel_content(value: &serde_json::Value) -> Result<PanelContent, Pa
     for row in rows {
         let map = row.as_object().ok_or(PanelError::WrongType("row"))?;
         for key in map.keys() {
-            if !ROW_KEYS.contains(&key.as_str()) {
+            if REMOVED_STYLING_KEYS.contains(&key.as_str()) {
+                drops.push(format!(
+                    "ignoring the removed styling key '{key}' on a row; \
+                     the 'style' hook replaces it"
+                ));
+            } else if !ROW_KEYS.contains(&key.as_str()) {
                 return Err(PanelError::UnknownKey(key.clone()));
             }
         }
         let spans = if let Some(raw) = map.get("spans") {
-            parse_spans(raw).map_err(PanelError::Body)?
+            parse_spans(raw, drops).map_err(PanelError::Body)?
         } else {
             // The spec example's form: span keys on the row
             // (plus the row's own `id`, which is no span's) —
@@ -545,24 +638,9 @@ pub fn parse_panel_content(value: &serde_json::Value) -> Result<PanelContent, Pa
                     .and_then(serde_json::Value::as_str)
                     .ok_or(PanelError::Body(SlotError::WrongType("text")))?
                     .to_owned(),
-                color: match map.get("color") {
-                    Some(raw) => Some(
-                        SlotColor::parse(
-                            raw.as_str()
-                                .ok_or(PanelError::Body(SlotError::WrongType("color")))?,
-                        )
-                        .map_err(PanelError::Body)?,
-                    ),
-                    None => None,
-                },
-                icon: match map.get("icon") {
-                    Some(raw) => Some(
-                        raw.as_str()
-                            .ok_or(PanelError::Body(SlotError::WrongType("icon")))?
-                            .to_owned(),
-                    ),
-                    None => None,
-                },
+                class: None,
+                id: None,
+                style: Vec::new(),
             };
             vec![span]
         };
@@ -578,7 +656,29 @@ pub fn parse_panel_content(value: &serde_json::Value) -> Result<PanelContent, Pa
         {
             return Err(PanelError::DuplicateRowId(id));
         }
-        parsed.push(PanelRow { spans, id });
+        let class = match map.get("class") {
+            Some(raw) => Some(
+                raw.as_str()
+                    .ok_or(PanelError::WrongType("class"))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let mut style = Vec::new();
+        if let Some(table) = map.get("style") {
+            if table.as_object().is_none() {
+                return Err(PanelError::WrongType("style"));
+            }
+            let parsed = crate::core::style_engine::parse_declarations(table);
+            drops.extend(parsed.drops);
+            style = parsed.declarations;
+        }
+        parsed.push(PanelRow {
+            spans,
+            id,
+            class,
+            style,
+        });
     }
     Ok(PanelContent::Rows { rows: parsed })
 }
@@ -716,13 +816,20 @@ end)";
             spans: vec![
                 Span {
                     text: " 1.2 MB/s".to_owned(),
-                    color: Some(SlotColor::parse("accent").expect("a token parses")),
-                    icon: Some("arrow-down".to_owned()),
+                    class: None,
+                    id: None,
+                    style: vec![
+                        Declaration::Color(SlotColor::parse("accent").expect("a token parses")),
+                        Declaration::Icon("arrow-down".to_owned()),
+                    ],
                 },
                 Span {
                     text: "↑".to_owned(),
-                    color: Some(SlotColor::parse("#1f9e7b").expect("a hex parses")),
-                    icon: None,
+                    class: None,
+                    id: None,
+                    style: vec![Declaration::Color(
+                        SlotColor::parse("#1f9e7b").expect("a hex parses"),
+                    )],
                 },
             ],
         };
@@ -739,8 +846,9 @@ end)";
         // docs pin.
         let bytes = serde_json::to_vec(&Span {
             text: "x".to_owned(),
-            color: None,
-            icon: None,
+            class: None,
+            id: None,
+            style: Vec::new(),
         })
         .expect("a bare span serializes");
         assert_eq!(bytes, br#"{"text":"x"}"#.as_slice());
@@ -789,74 +897,118 @@ end)";
 
     #[test]
     fn an_unknown_span_key_yields_unknown_key() {
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": [{ "text": "x", "bogus": 1 }],
-        }))
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x", "bogus": 1 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("an unknown span key rejects");
         assert_eq!(error, SlotError::UnknownKey("bogus".to_owned()));
     }
 
     #[test]
     fn an_unknown_content_key_yields_unknown_key() {
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": [{ "text": "x" }],
-            "bogus": true,
-        }))
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x" }],
+                "bogus": true,
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("an unknown content key rejects");
         assert_eq!(error, SlotError::UnknownKey("bogus".to_owned()));
     }
 
     #[test]
     fn a_non_string_text_yields_wrong_type() {
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": [{ "text": 3 }],
-        }))
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": 3 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("a numeric text rejects");
         assert_eq!(error, SlotError::WrongType("text"));
     }
 
     #[test]
-    fn a_wrong_shaped_color_and_icon_yield_wrong_type() {
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": [{ "text": "x", "color": ["accent"] }],
-        }))
-        .expect_err("a non-string color rejects");
-        assert_eq!(error, SlotError::WrongType("color"));
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": [{ "text": "x", "icon": { "name": "x" } }],
-        }))
-        .expect_err("a non-string icon rejects");
-        assert_eq!(error, SlotError::WrongType("icon"));
+    fn a_wrong_shaped_hook_yields_wrong_type() {
+        // The hooks' own shapes are strict: a non-string class, id,
+        // or non-table style is the standing type error. The removed
+        // styling keys have no shape rule — they drop with one line.
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x", "class": ["warn"] }],
+            }),
+            &mut Vec::new(),
+        )
+        .expect_err("a non-string class rejects");
+        assert_eq!(error, SlotError::WrongType("class"));
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x", "id": 7 }],
+            }),
+            &mut Vec::new(),
+        )
+        .expect_err("a non-string id rejects");
+        assert_eq!(error, SlotError::WrongType("id"));
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x", "style": "bold" }],
+            }),
+            &mut Vec::new(),
+        )
+        .expect_err("a non-table style rejects");
+        assert_eq!(error, SlotError::WrongType("style"));
+        // The removed keys: one line each, the rest renders.
+        let mut drops = Vec::new();
+        let content = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [{ "text": "x", "color": ["accent"], "icon": { "name": "x" } }],
+            }),
+            &mut drops,
+        )
+        .expect("the removed keys never reject");
+        assert!(drops.len() == 2, "{drops:?}");
+        assert!(matches!(content, SlotContent::Styled { .. }));
     }
 
     #[test]
     fn a_span_that_is_not_an_object_yields_wrong_type() {
-        let error = parse_content(&json!({
-            "kind": "styled",
-            "spans": ["plain"],
-        }))
+        let error = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": ["plain"],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("a non-object span rejects");
         assert_eq!(error, SlotError::WrongType("span"));
     }
 
     #[test]
     fn a_missing_or_wrong_shaped_spans_array_yields_wrong_type() {
-        let error =
-            parse_content(&json!({ "kind": "styled" })).expect_err("a missing spans key rejects");
+        let error = parse_content(&json!({ "kind": "styled" }), &mut Vec::new())
+            .expect_err("a missing spans key rejects");
         assert_eq!(error, SlotError::MissingSpans);
-        let error = parse_content(&json!({ "spans": "x" })).expect_err("a non-array spans rejects");
+        let error = parse_content(&json!({ "spans": "x" }), &mut Vec::new())
+            .expect_err("a non-array spans rejects");
         assert_eq!(error, SlotError::WrongType("spans"));
     }
 
     #[test]
     fn a_non_string_non_object_content_yields_wrong_type() {
         for raw in [json!(42), json!(true), json!([1, 2])] {
-            let error = parse_content(&raw).expect_err("a non-content shape rejects");
+            let error =
+                parse_content(&raw, &mut Vec::new()).expect_err("a non-content shape rejects");
             assert_eq!(error, SlotError::WrongType("content"), "for {raw}");
         }
     }
@@ -868,12 +1020,14 @@ end)";
         let error = validate(&SlotContent::Styled { spans: vec![] })
             .expect_err("an empty spans list rejects");
         assert_eq!(error, SlotError::EmptySpans);
-        let error = parse_content(&json!({ "spans": [] })).expect_err("and at the parse");
+        let error =
+            parse_content(&json!({ "spans": [] }), &mut Vec::new()).expect_err("and at the parse");
         assert_eq!(error, SlotError::EmptySpans);
         // Lua's empty table serializes as an empty object — the only
         // empty list a script can write — so it parses as the empty
         // list and lands on the same rule.
-        let error = parse_content(&json!({ "spans": {} })).expect_err("the Lua empty table");
+        let error = parse_content(&json!({ "spans": {} }), &mut Vec::new())
+            .expect_err("the Lua empty table");
         assert_eq!(error, SlotError::EmptySpans);
     }
 
@@ -883,8 +1037,9 @@ end)";
         let spans: Vec<Span> = (0..MAX_SPANS_PER_ANSWER as u64)
             .map(|n| Span {
                 text: n.to_string(),
-                color: None,
-                icon: None,
+                class: None,
+                id: None,
+                style: Vec::new(),
             })
             .collect();
         assert!(
@@ -899,8 +1054,9 @@ end)";
                 .into_iter()
                 .chain(std::iter::once(Span {
                     text: "over".to_owned(),
-                    color: None,
-                    icon: None,
+                    class: None,
+                    id: None,
+                    style: Vec::new(),
                 }))
                 .collect(),
         })
@@ -916,8 +1072,9 @@ end)";
         let content = SlotContent::Styled {
             spans: vec![Span {
                 text: "x".to_owned(),
-                color: Some(SlotColor::Hex("#gg".to_owned())),
-                icon: None,
+                class: None,
+                id: None,
+                style: vec![Declaration::Color(SlotColor::Hex("#gg".to_owned()))],
             }],
         };
         let error = validate(&content).expect_err("a bad hex rejects");
@@ -926,10 +1083,13 @@ end)";
 
     #[test]
     fn a_bad_kind_yields_bad_kind() {
-        let error = parse_content(&json!({
-            "kind": "fancy",
-            "spans": [{ "text": "x" }],
-        }))
+        let error = parse_content(
+            &json!({
+                "kind": "fancy",
+                "spans": [{ "text": "x" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("an unknown kind rejects");
         assert_eq!(error, SlotError::BadKind("fancy".to_owned()));
     }
@@ -947,8 +1107,12 @@ end)";
             validate(&SlotContent::Styled {
                 spans: vec![Span {
                     text: " 1.2 MB/s".to_owned(),
-                    color: Some(SlotColor::parse("accent").expect("parses")),
-                    icon: Some("arrow-down".to_owned()),
+                    class: None,
+                    id: None,
+                    style: vec![
+                        Declaration::Color(SlotColor::parse("accent").expect("parses")),
+                        Declaration::Icon("arrow-down".to_owned()),
+                    ],
                 }]
             }),
             Ok(()),
@@ -959,29 +1123,81 @@ end)";
     #[test]
     fn a_bare_string_parses_as_a_text_answer() {
         assert_eq!(
-            parse_content(&json!("cwd is /home/u/src")).expect("parses"),
+            parse_content(&json!("cwd is /home/u/src"), &mut Vec::new()).expect("parses"),
             SlotContent::Text("cwd is /home/u/src".to_owned())
         );
     }
 
     #[test]
     fn a_styled_payload_parses_to_the_typed_content() {
-        let content = parse_content(&json!({
-            "kind": "styled",
-            "spans": [
-                { "icon": "arrow-down", "text": " 1.2 MB/s", "color": "accent" },
-            ],
-        }))
+        // The hook model (style-engine SE2): the span's styling rides
+        // `class`/`id`/`style` — the engine's validator parsed the
+        // inline table at the boundary.
+        let mut drops = Vec::new();
+        let content = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [
+                    { "text": " 1.2 MB/s", "class": "net metric", "id": "rx",
+                      "style": { "font-weight": "bold", "color": "accent" } },
+                ],
+            }),
+            &mut drops,
+        )
         .expect("the spec's example parses");
+        assert!(drops.is_empty(), "{drops:?}");
         assert_eq!(
             content,
             SlotContent::Styled {
                 spans: vec![Span {
                     text: " 1.2 MB/s".to_owned(),
-                    color: Some(SlotColor::Token("accent".to_owned())),
-                    icon: Some("arrow-down".to_owned()),
+                    class: Some("net metric".to_owned()),
+                    id: Some("rx".to_owned()),
+                    style: vec![
+                        Declaration::Weight(crate::core::style_engine::FontWeight::Bold),
+                        Declaration::Color(SlotColor::Token("accent".to_owned())),
+                    ],
                 }]
             }
+        );
+    }
+
+    #[test]
+    fn a_span_carrying_a_removed_styling_key_costs_one_line_and_the_rest_renders() {
+        // The break (style-engine spec): `color`/`icon` on a span are
+        // removed keys — one line each, the key ignored, the rest of
+        // the span renders.
+        let mut drops = Vec::new();
+        let content = parse_content(
+            &json!({
+                "kind": "styled",
+                "spans": [
+                    { "text": " 1.2 MB/s", "color": "accent", "icon": "arrow-down" },
+                ],
+            }),
+            &mut drops,
+        )
+        .expect("the span parses by its hooks alone");
+        let SlotContent::Styled { spans } = content else {
+            panic!("parses");
+        };
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, " 1.2 MB/s");
+        assert_eq!(
+            spans[0].style,
+            Vec::new(),
+            "the removed keys leave no style"
+        );
+        assert_eq!(
+            drops,
+            vec![
+                "ignoring the removed styling key 'color' on a span; \
+                 the 'style' hook replaces it"
+                    .to_owned(),
+                "ignoring the removed styling key 'icon' on a span; \
+                 the 'style' hook replaces it"
+                    .to_owned(),
+            ]
         );
     }
 
@@ -996,8 +1212,12 @@ end)";
     #[test]
     fn the_slot_event_crosses_the_bus_with_exactly_its_documented_payload() {
         let dir = TempDir::new("slot-event");
-        fs::write(dir.0.join("listener.lua"), format!("{PORT}\n{LISTENER}"))
-            .expect("the fixture writes");
+        fs::create_dir_all(dir.0.join("listener")).expect("the plugin dir");
+        fs::write(
+            dir.0.join("listener").join("plugin.lua"),
+            format!("{PORT}\n{LISTENER}"),
+        )
+        .expect("the fixture writes");
         let host = LuaHost::new(&dir.0);
         let event = SlotEvent {
             surface: "status".to_owned(),
@@ -1028,35 +1248,57 @@ end)";
 
     #[test]
     fn a_dialog_spec_parses_with_its_defaults() {
-        let spec = parse_dialog(&json!({
-            "title": "Build finished",
-            "body": [{ "text": "done in 12.4s", "color": "green" }],
-            "buttons": [
-                { "id": "restart", "label": "Restart", "accent": true },
-                { "id": "dismiss", "label": "Dismiss" },
-            ],
-        }))
+        // The hook model (style-engine SE2): the primary action is
+        // the `accent` class; the shipped `accent` flag costs one
+        // line and is ignored.
+        let mut drops = Vec::new();
+        let spec = parse_dialog(
+            &json!({
+                "title": "Build finished",
+                "body": [{ "text": "done in 12.4s", "style": { "color": "green" } }],
+                "buttons": [
+                    { "id": "restart", "label": "Restart", "accent": true, "class": "accent" },
+                    { "id": "dismiss", "label": "Dismiss" },
+                ],
+            }),
+            &mut drops,
+        )
         .expect("the spec's example parses");
         assert_eq!(spec.title, "Build finished");
         assert_eq!(spec.body.len(), 1);
         assert_eq!(spec.body[0].text, "done in 12.4s");
         assert_eq!(
-            spec.body[0].color,
-            Some(SlotColor::Token("green".to_owned()))
+            spec.body[0].style,
+            vec![Declaration::Color(SlotColor::Token("green".to_owned()))]
         );
         assert_eq!(spec.buttons.len(), 2);
-        assert!(spec.buttons[0].accent, "the accent flag parses");
-        assert!(!spec.buttons[1].accent, "an absent accent defaults false");
+        assert_eq!(
+            spec.buttons[0].class,
+            Some("accent".to_owned()),
+            "the accent class parses"
+        );
+        assert!(spec.buttons[1].class.is_none());
+        assert_eq!(
+            drops,
+            vec![
+                "ignoring the removed styling key 'accent' on a button; \
+                 the 'accent' class replaces it"
+                    .to_owned()
+            ]
+        );
     }
 
     #[test]
     fn a_dialog_without_a_body_parses_empty() {
         // The minimal dialog: a title and one button. The body key is
         // optional; absent parses empty.
-        let spec = parse_dialog(&json!({
-            "title": "Ping",
-            "buttons": [{ "id": "ok", "label": "OK" }],
-        }))
+        let spec = parse_dialog(
+            &json!({
+                "title": "Ping",
+                "buttons": [{ "id": "ok", "label": "OK" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect("parses");
         assert!(spec.body.is_empty());
         assert_eq!(spec.buttons.len(), 1);
@@ -1065,65 +1307,89 @@ end)";
     #[test]
     fn every_dialog_bad_shape_yields_its_typed_error() {
         // 0 buttons and 4 buttons.
-        let error = parse_dialog(&json!({
-            "title": "t", "buttons": [],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t", "buttons": [],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("zero buttons");
         assert_eq!(error, DialogError::BadButtonCount(0));
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "buttons": [
-                { "id": "a", "label": "A" }, { "id": "b", "label": "B" },
-                { "id": "c", "label": "C" }, { "id": "d", "label": "D" },
-            ],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "buttons": [
+                    { "id": "a", "label": "A" }, { "id": "b", "label": "B" },
+                    { "id": "c", "label": "C" }, { "id": "d", "label": "D" },
+                ],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("four buttons");
         assert_eq!(error, DialogError::BadButtonCount(4));
 
         // An unknown key on the dialog table and on a button.
-        let error = parse_dialog(&json!({
-            "title": "t", "bogus": 1,
-            "buttons": [{ "id": "a", "label": "A" }],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t", "bogus": 1,
+                "buttons": [{ "id": "a", "label": "A" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("unknown dialog key");
         assert_eq!(error, DialogError::UnknownKey("bogus".to_owned()));
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "buttons": [{ "id": "a", "label": "A", "bogus": 1 }],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "buttons": [{ "id": "a", "label": "A", "bogus": 1 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("unknown button key");
         assert_eq!(error, DialogError::UnknownKey("bogus".to_owned()));
 
         // A non-string label and a missing title.
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "buttons": [{ "id": "a", "label": 3 }],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "buttons": [{ "id": "a", "label": 3 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("non-string label");
         assert_eq!(error, DialogError::WrongType("label"));
 
         // Duplicate and empty button ids.
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "buttons": [
-                { "id": "a", "label": "A" }, { "id": "a", "label": "B" },
-            ],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "buttons": [
+                    { "id": "a", "label": "A" }, { "id": "a", "label": "B" },
+                ],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("duplicate ids");
         assert_eq!(error, DialogError::DuplicateButton("a".to_owned()));
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "buttons": [{ "id": "", "label": "A" }],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "buttons": [{ "id": "", "label": "A" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("empty id");
         assert_eq!(error, DialogError::EmptyButtonId);
 
         // A body span failing the slot contract's own rules.
-        let error = parse_dialog(&json!({
-            "title": "t",
-            "body": [{ "text": "x", "bogus": 1 }],
-            "buttons": [{ "id": "a", "label": "A" }],
-        }))
+        let error = parse_dialog(
+            &json!({
+                "title": "t",
+                "body": [{ "text": "x", "bogus": 1 }],
+                "buttons": [{ "id": "a", "label": "A" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("bad body span");
         assert_eq!(
             error,
@@ -1132,23 +1398,29 @@ end)";
 
         // A non-object and a missing title.
         assert_eq!(
-            parse_dialog(&json!(42)).expect_err("non-object"),
+            parse_dialog(&json!(42), &mut Vec::new()).expect_err("non-object"),
             DialogError::WrongType("dialog")
         );
         assert_eq!(
-            parse_dialog(&json!({ "buttons": [{ "id": "a", "label": "A" }] }))
-                .expect_err("missing title"),
+            parse_dialog(
+                &json!({ "buttons": [{ "id": "a", "label": "A" }] }),
+                &mut Vec::new()
+            )
+            .expect_err("missing title"),
             DialogError::WrongType("title")
         );
     }
 
     #[test]
     fn a_dialog_spec_round_trips_through_serde() {
-        let spec = parse_dialog(&json!({
-            "title": "t",
-            "body": [{ "text": "b", "icon": "↓" }],
-            "buttons": [{ "id": "ok", "label": "OK", "accent": true }],
-        }))
+        let spec = parse_dialog(
+            &json!({
+                "title": "t",
+                "body": [{ "text": "b", "style": { "icon": "↓" } }],
+                "buttons": [{ "id": "ok", "label": "OK", "class": "accent" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect("parses");
         let back: DialogSpec =
             serde_json::from_slice(&serde_json::to_vec(&spec).expect("serializes"))
@@ -1161,13 +1433,19 @@ end)";
     #[test]
     fn a_rows_answer_parses_both_row_forms() {
         // The spec example's form: span keys directly on the row.
-        let content = parse_panel_content(&json!({
-            "kind": "panel",
-            "rows": [
-                { "icon": "◯", "text": "ship the spec review" },
-                { "icon": "◉", "text": "walk the dialog", "color": "green" },
-            ],
-        }))
+        // The removed styling keys cost one line each and are
+        // ignored (style-engine SE2).
+        let mut drops = Vec::new();
+        let content = parse_panel_content(
+            &json!({
+                "kind": "panel",
+                "rows": [
+                    { "text": "ship the spec review" },
+                    { "text": "walk the dialog", "color": "green", "icon": "◉" },
+                ],
+            }),
+            &mut drops,
+        )
         .expect("the spec's example parses");
         let PanelContent::Rows { rows } = content else {
             panic!("a rows table parses as Rows");
@@ -1175,26 +1453,68 @@ end)";
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].spans.len(), 1);
         assert_eq!(rows[0].spans[0].text, "ship the spec review");
-        assert_eq!(rows[0].spans[0].icon, Some("◯".to_owned()));
-        assert_eq!(
-            rows[1].spans[0].color,
-            Some(SlotColor::Token("green".to_owned()))
-        );
         assert_eq!(rows[0].id, None, "positional ids are the stood default");
+        assert_eq!(
+            drops,
+            vec![
+                "ignoring the removed styling key 'color' on a row; \
+                 the 'style' hook replaces it"
+                    .to_owned(),
+                "ignoring the removed styling key 'icon' on a row; \
+                 the 'style' hook replaces it"
+                    .to_owned(),
+            ]
+        );
 
         // The richer form: a spans array per row, with the optional
         // id key.
-        let content = parse_panel_content(&json!({
-            "rows": [
-                { "id": 7, "spans": [{ "text": "a" }, { "text": "b" }] },
-            ],
-        }))
+        let mut drops = Vec::new();
+        let content = parse_panel_content(
+            &json!({
+                "rows": [
+                    { "id": 7, "class": "task done",
+                      "spans": [{ "text": "a" }, { "text": "b" }] },
+                ],
+            }),
+            &mut drops,
+        )
         .expect("the spans-array form parses");
         let PanelContent::Rows { rows } = content else {
             panic!("rows");
         };
         assert_eq!(rows[0].id, Some(7));
+        assert_eq!(rows[0].class, Some("task done".to_owned()));
         assert_eq!(rows[0].spans.len(), 2);
+        assert!(drops.is_empty(), "{drops:?}");
+    }
+
+    #[test]
+    fn a_row_style_table_parses_by_the_shared_validator() {
+        // The row's inline `style` table parses by the engine's one
+        // validator; a bad entry drops its one line, the rest stands.
+        let mut drops = Vec::new();
+        let content = parse_panel_content(
+            &json!({
+                "rows": [
+                    { "text": "x", "style": { "font-weight": "bold", "frob": "y" } },
+                ],
+            }),
+            &mut drops,
+        )
+        .expect("parses");
+        let PanelContent::Rows { rows } = content else {
+            panic!("rows");
+        };
+        assert_eq!(
+            rows[0].style,
+            vec![Declaration::Weight(
+                crate::core::style_engine::FontWeight::Bold
+            )]
+        );
+        assert_eq!(
+            drops,
+            vec!["ignoring unknown style property 'frob'".to_owned()]
+        );
     }
 
     #[test]
@@ -1204,7 +1524,8 @@ end)";
             json!("plain"),
             json!({ "kind": "styled", "spans": [{ "text": "x" }] }),
         ] {
-            let content = parse_panel_content(&raw).expect("the slot shape parses");
+            let content =
+                parse_panel_content(&raw, &mut Vec::new()).expect("the slot shape parses");
             assert!(matches!(content, PanelContent::Slot(_)), "for {raw}");
         }
     }
@@ -1212,55 +1533,70 @@ end)";
     #[test]
     fn every_panel_bad_shape_yields_its_typed_error() {
         // An unknown key on the rows table and on a row.
-        let error = parse_panel_content(&json!({ "rows": [], "bogus": 1 }))
+        let error = parse_panel_content(&json!({ "rows": [], "bogus": 1 }), &mut Vec::new())
             .expect_err("unknown rows-table key");
         assert_eq!(error, PanelError::UnknownKey("bogus".to_owned()));
-        let error = parse_panel_content(&json!({
-            "rows": [{ "text": "x", "bogus": 1 }],
-        }))
+        let error = parse_panel_content(
+            &json!({
+                "rows": [{ "text": "x", "bogus": 1 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("unknown row key");
         assert_eq!(error, PanelError::UnknownKey("bogus".to_owned()));
 
         // A row with neither span keys nor a spans array.
-        let error =
-            parse_panel_content(&json!({ "rows": [{ "id": 3 }] })).expect_err("an empty row");
+        let error = parse_panel_content(&json!({ "rows": [{ "id": 3 }] }), &mut Vec::new())
+            .expect_err("an empty row");
         assert_eq!(error, PanelError::WrongType("row"));
 
         // Duplicate row ids.
-        let error = parse_panel_content(&json!({
-            "rows": [{ "id": 3, "text": "a" }, { "id": 3, "text": "b" }],
-        }))
+        let error = parse_panel_content(
+            &json!({
+                "rows": [{ "id": 3, "text": "a" }, { "id": 3, "text": "b" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("duplicate ids");
         assert_eq!(error, PanelError::DuplicateRowId(3));
 
         // A non-numeric id.
-        let error = parse_panel_content(&json!({
-            "rows": [{ "id": "x", "text": "a" }],
-        }))
+        let error = parse_panel_content(
+            &json!({
+                "rows": [{ "id": "x", "text": "a" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("non-numeric id");
         assert_eq!(error, PanelError::WrongType("id"));
 
         // A row span failing the slot rules.
-        let error = parse_panel_content(&json!({
-            "rows": [{ "text": 3 }],
-        }))
+        let error = parse_panel_content(
+            &json!({
+                "rows": [{ "text": 3 }],
+            }),
+            &mut Vec::new(),
+        )
         .expect_err("non-string text");
         assert_eq!(error, PanelError::Body(SlotError::WrongType("text")));
 
         // Neither content shape: the slot arm's error, wrapped (the
         // panel answer's body failure is one surface).
         assert_eq!(
-            parse_panel_content(&json!(42)).expect_err("non-content"),
+            parse_panel_content(&json!(42), &mut Vec::new()).expect_err("non-content"),
             PanelError::Body(SlotError::WrongType("content"))
         );
     }
 
     #[test]
     fn a_panel_content_round_trips_through_serde() {
-        let content = parse_panel_content(&json!({
-            "kind": "panel",
-            "rows": [{ "id": 2, "text": "row" }],
-        }))
+        let content = parse_panel_content(
+            &json!({
+                "kind": "panel",
+                "rows": [{ "id": 2, "text": "row" }],
+            }),
+            &mut Vec::new(),
+        )
         .expect("parses");
         let back: PanelContent =
             serde_json::from_slice(&serde_json::to_vec(&content).expect("serializes"))
@@ -1282,13 +1618,18 @@ end)";
                 spans: vec![
                     Span {
                         text: "▼".to_owned(),
-                        color: Some(SlotColor::Token("accent".to_owned())),
-                        icon: Some("arrow-down".to_owned()),
+                        class: None,
+                        id: None,
+                        style: vec![
+                            Declaration::Color(SlotColor::Token("accent".to_owned())),
+                            Declaration::Icon("arrow-down".to_owned()),
+                        ],
                     },
                     Span {
                         text: " 1.2 MB/s".to_owned(),
-                        color: None,
-                        icon: None,
+                        class: None,
+                        id: None,
+                        style: Vec::new(),
                     },
                 ],
             }
@@ -1329,13 +1670,16 @@ end)";
     /// fails the pin until the row follows. The backticked form is
     /// required, so a bare word elsewhere in the prose cannot
     /// satisfy the check.
-    const DOCUMENTED_KEYS: [&str; 22] = [
+    const DOCUMENTED_KEYS: [&str; 23] = [
         // the answer table's words
         "kind",
         "spans",
         "side",
-        // the span's words
+        // the span's words — the styling hooks (style-engine SE2);
+        // `color`/`icon` are removed keys, one line each
         "text",
+        "class",
+        "style",
         "color",
         "icon",
         // the color's two forms: a theme token's example and the hex escape
@@ -1352,7 +1696,6 @@ end)";
         "buttons",
         "id",
         "label",
-        "accent",
         // the panel's words (panel-slot)
         "panel_view",
         "container",
@@ -1394,7 +1737,8 @@ end)";
     const SPEC_EXAMPLE: &str = "\
 dropterm.status_segment('net', function(ctx)
   return { kind = 'styled', spans = {
-    { icon = 'arrow-down', text = ' 1.2 MB/s', color = 'accent' },
+    { text = ' 1.2 MB/s', class = 'net metric', id = 'rx',
+      style = { ['font-weight'] = 'bold', color = 'accent', icon = '↓' } },
   } }
 end)";
 
@@ -1410,9 +1754,10 @@ end)";
     /// spec's own shape, the docs teaching what the port parses.
     const DIALOG_EXAMPLE: &str = "dropterm.dialog({
   title = 'Build finished',
-  body  = { { text = 'release build done in 12.4s', color = 'green' } },
+  body  = { { text = 'release build done in 12.4s',
+             style = { color = 'green' } } },
   buttons = {
-    { id = 'restart', label = 'Restart', accent = true },
+    { id = 'restart', label = 'Restart', class = 'accent' },
     { id = 'dismiss', label = 'Dismiss' },
   },
 })";
@@ -1424,8 +1769,9 @@ end)";
   title = 'Tasks',
 }, function(ctx)
   return { kind = 'panel', rows = {
-    { icon = '◯', text = 'ship the spec review' },
-    { icon = '◉', text = 'walk the dialog', color = 'green' },
+    { text = 'ship the spec review' },
+    { text = 'walk the dialog', class = 'task done',
+      style = { color = 'green', icon = '◉' } },
   } }
 end)";
 

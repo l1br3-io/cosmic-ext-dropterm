@@ -1463,16 +1463,21 @@ pub struct DiscVm {
     pub attention: bool,
 }
 
-/// One painted run of a laid script-segment row
-/// (styled-status-slot): the span's text with its glyph prefix
-/// already composed (the builtin `"{icon} {value}"` idiom — the
-/// icon string verbatim, the band's sigil shape), and the span's
-/// color word riding whole — the painter resolves it (theme
-/// knowledge stays bin-side, the contract's own rule).
+/// One painted run of a laid script-segment row (styled-status-slot,
+/// style-engine SE2): the span's cascade-resolved style — the text
+/// with its `icon` declaration's glyph already composed (the builtin
+/// `"{icon} {value}"` idiom, so the measure pass sees the painted
+/// width), and the resolved color/background riding whole as their
+/// wire forms. Theme knowledge stays bin-side: the painter maps the
+/// words through the standing palette.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BandScriptRunVm {
     pub text: String,
     pub color: Option<SlotColor>,
+    pub background: Option<SlotColor>,
+    pub weight: Option<crate::core::style_engine::FontWeight>,
+    pub slant: Option<crate::core::style_engine::FontSlant>,
+    pub decoration: Option<crate::core::style_engine::TextDecoration>,
 }
 
 /// One laid script-segment row (status-segments spec) — the script
@@ -1489,9 +1494,6 @@ pub struct BandScriptRowVm {
     pub x: f32,
     pub width: f32,
     pub text_x: f32,
-    /// The side's cluster idiom: full alpha on the left, dimmed on
-    /// the right.
-    pub dimmed: bool,
 }
 
 /// The band's laid view-model: rows in x-order (left cluster then
@@ -1517,29 +1519,76 @@ pub struct BandVm {
     pub script_rows: Vec<BandScriptRowVm>,
 }
 
-/// One script answer's painted runs (styled-status-slot): a string
-/// answer is its own single run; a styled answer composes one run
-/// per span, its glyph prefix riding the builtin
-/// [`prefixed_display`]-shaped idiom — `{icon} {value}` with text,
-/// nothing without (a glyph alone narrates a span with nothing to
-/// say). The icon string rides verbatim: it is a glyph string, not
-/// a name.
-/// Public for the bin's painter: the bin composes a fixture's runs
-/// to pin the paint (styled-status-slot).
-pub fn script_runs(content: &SlotContent) -> Vec<BandScriptRunVm> {
+/// One script answer's painted runs (styled-status-slot, style-engine
+/// SE2): a string answer is its own single run; a styled answer
+/// resolves each span through the engine — the side node first (the
+/// band sides' builtin color is the spans' inherited base, the
+/// classic inheritance: color and the font properties inherit,
+/// background and icon do not), the `icon` declaration's glyph
+/// composed into the text by the standing idiom — `{icon} {value}`
+/// with text, nothing without (a glyph alone narrates a span with
+/// nothing to say) — so the measure pass sees the painted width.
+/// Public for the bin's painters: the band, the dialog body, and the
+/// rail all compose through it.
+pub fn script_runs(
+    content: &SlotContent,
+    engine: &crate::core::style_engine::StyleSet,
+    side: Option<ScriptSide>,
+) -> Vec<BandScriptRunVm> {
+    use crate::core::style_engine::StyleNode;
+    let parent = side.map(|side| {
+        let word = match side {
+            ScriptSide::Left => "left",
+            ScriptSide::Right => "right",
+        };
+        engine.resolve(&StyleNode {
+            element: "band",
+            classes: &[word],
+            id: None,
+            inline: &[],
+        })
+    });
     match content {
         SlotContent::Text(text) => vec![BandScriptRunVm {
             text: text.clone(),
             color: None,
+            background: None,
+            weight: None,
+            slant: None,
+            decoration: None,
         }],
         SlotContent::Styled { spans } => spans
             .iter()
-            .map(|span| BandScriptRunVm {
-                text: match span.icon.as_deref() {
+            .map(|span| {
+                let classes: Vec<&str> = span
+                    .class
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect();
+                let node = StyleNode {
+                    element: "span",
+                    classes: &classes,
+                    id: span.id.as_deref(),
+                    inline: &span.style,
+                };
+                let resolved = engine.resolve(&node);
+                let text = match resolved.icon.as_deref() {
                     Some(icon) if !span.text.is_empty() => format!("{icon} {}", span.text),
                     _ => span.text.clone(),
-                },
-                color: span.color.clone(),
+                };
+                BandScriptRunVm {
+                    text,
+                    color: resolved
+                        .color
+                        .or(parent.as_ref().and_then(|p| p.color.clone())),
+                    background: resolved.background.clone(),
+                    weight: resolved.weight.or(parent.as_ref().and_then(|p| p.weight)),
+                    slant: resolved.slant.or(parent.as_ref().and_then(|p| p.slant)),
+                    decoration: resolved
+                        .decoration
+                        .or(parent.as_ref().and_then(|p| p.decoration)),
+                }
             })
             .collect(),
     }
@@ -1564,6 +1613,7 @@ pub fn band_vm(
     copied: Option<SegmentId>,
     paste_refusal: Option<PasteRefusal>,
     hover: Option<(f32, f32)>,
+    engine: &crate::core::style_engine::StyleSet,
 ) -> BandVm {
     use crate::core::terminal::ProgressState;
 
@@ -1706,7 +1756,10 @@ pub fn band_vm(
         .script
         .iter()
         .filter_map(|slot| {
-            let runs = slot.content.as_ref().map(script_runs)?;
+            let runs = slot
+                .content
+                .as_ref()
+                .map(|content| script_runs(content, engine, Some(slot.side)))?;
             let painted = runs.iter().map(|run| run.text.as_str()).collect::<String>();
             if painted.is_empty() {
                 return None;
@@ -1868,7 +1921,6 @@ pub fn band_vm(
             x,
             width: *w,
             text_x: x,
-            dimmed: false,
         });
         prev_end = Some(x + w);
         x += w + SEGMENT_GAP;
@@ -1896,7 +1948,9 @@ pub fn band_vm(
     }
     // The right script group: hugging the builtin right cluster's own
     // left edge — seats in slot order laid right-to-left with the
-    // cluster, dimmed like the cluster they join.
+    // cluster. The cluster's own dim styling flows through the
+    // resolved runs (the builtin band.right color, the spans'
+    // inheritance).
     let mut next_start: Option<f32> = None;
     for (slot, runs, w) in script_seats[..kept_scripts]
         .iter()
@@ -1912,7 +1966,6 @@ pub fn band_vm(
             x: right,
             width: *w,
             text_x: right,
-            dimmed: true,
         });
         next_start = Some(right);
         right -= SEGMENT_GAP;
