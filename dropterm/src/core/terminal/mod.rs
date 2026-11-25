@@ -15,6 +15,11 @@
 
 mod engine;
 
+// The rich-input editor's pure model (rich-input RI-2): the owned
+// line's buffer machine, headless — the engine and the strip route
+// through it, nothing here knows gpui or the PTY.
+pub mod editor;
+
 // The app layer loads the spec table's data file (suggest-specs-data
 // spec) and hands it down through `TerminalOptions` — the model
 // itself never reads files.
