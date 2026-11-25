@@ -3,8 +3,13 @@
 //! cwd report, written from the public specs alone (the clean-room
 //! discipline: no bytes from any project's shell-integration text).
 //! The scripts are embedded here and materialized under the cache
-//! seat at spawn time; the injection decision (SI-6) is this
+//! seat at spawn time; the injection decision below is this
 //! module's other half.
+
+use crate::core::config::DropTermConfig;
+use crate::core::spawn::{SpawnCommand, SpawnParts};
+use std::collections::HashMap;
+use std::path::Path;
 
 /// The bash half: the `--rcfile` wrapper — sources the user's
 /// `~/.bashrc`, then chains the hooks around whatever it set.
@@ -77,6 +82,212 @@ pub fn materialize() -> Option<std::path::PathBuf> {
         std::fs::read(dir.join(rel)).is_ok_and(|standing| standing == bytes.as_bytes())
     });
     stands.then_some(dir)
+}
+
+/// The spawn's integration verdict — the one function the spawn seam
+/// needs.
+#[derive(Debug, PartialEq)]
+pub enum Injection {
+    /// The spawn's argv/env gain the integration; `parts` is the
+    /// integrated variant.
+    Injected(SpawnParts),
+    /// Untouched, and why — the skip log line's vocabulary.
+    Skipped(SkipReason),
+}
+
+/// Why a spawn stayed untouched (shell-integration spec): the skip's
+/// one-word story, the log line's vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The config's kill switch is off: the whole path — seat,
+    /// argv, env — never runs.
+    KillSwitch,
+    /// The program's basename is not bash, zsh, or fish — `sh` (the
+    /// default fallback), `nu`, `pwsh`, any program: spawn truth,
+    /// never a process-name heuristic.
+    UnsupportedShell,
+    /// The user's own setup already carries the choice this
+    /// injection would make (a `--rcfile`, fish's init flag, a
+    /// profile env's `ZDOTDIR`): never fight the user's file
+    /// choice.
+    UserFlagConflict,
+    /// A `--cmd` spawn: a line carries its own arguments and never
+    /// inherits — `DropTerm` does not decorate a user's explicit
+    /// program.
+    CommandSpawn,
+    /// The seat could not be materialized (no cache dir resolves, a
+    /// write failed): a missing emitter must never half-integrate.
+    Unmaterialized,
+}
+
+/// The shells this build integrates, from the spawn's program word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+impl Shell {
+    /// The basename discrimination — spawn truth, the pty program's
+    /// own file name, never a running-process guess.
+    fn of(program: &str) -> Option<Self> {
+        match Path::new(program).file_name()?.to_str()? {
+            "bash" => Some(Self::Bash),
+            "zsh" => Some(Self::Zsh),
+            "fish" => Some(Self::Fish),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the user's own setup already carries the choice injection
+/// would make — the never-fight rule's scan.
+fn flag_conflict(shell: Shell, trailing: &[String], env: &HashMap<String, String>) -> bool {
+    match shell {
+        Shell::Bash => trailing
+            .iter()
+            .any(|arg| arg == "--rcfile" || arg.starts_with("--rcfile=")),
+        Shell::Fish => trailing.iter().any(|arg| {
+            arg == "-C" || arg == "--init-command" || arg.starts_with("--init-command=")
+        }),
+        Shell::Zsh => env.contains_key("ZDOTDIR"),
+    }
+}
+
+/// The env a zsh integration adds: the bootstrap dir as ZDOTDIR, the
+/// original (the process's ZDOTDIR, else HOME) preserved for the
+/// chain to source from. A machine with neither keeps
+/// `DROPTERM_ZDOTDIR` unset — the bootstrap's own `:-$HOME` fallback
+/// then sources nothing, the honest degrade.
+fn zsh_env(seat: &Path, env: &mut HashMap<String, String>) {
+    env.insert("ZDOTDIR".to_owned(), seat.join("zsh").display().to_string());
+    if let Ok(original) = std::env::var("ZDOTDIR").or_else(|_| std::env::var("HOME")) {
+        env.insert("DROPTERM_ZDOTDIR".to_owned(), original);
+    }
+}
+
+/// The plain-spawn composition: bash gains the rcfile wrapper at the
+/// head of the trailing arguments (the config's own args standing
+/// behind it), zsh gains the bootstrap env with the argv untouched,
+/// fish gains the init flag sourcing the emitter.
+fn integrate_plain(shell: Shell, parts: &SpawnParts, seat: &Path) -> SpawnParts {
+    let mut integrated = SpawnParts {
+        program: parts.program.clone(),
+        trailing: parts.trailing.clone(),
+        profile_id: parts.profile_id.clone(),
+        env: parts.env.clone(),
+    };
+    match shell {
+        Shell::Bash => {
+            let mut trailing = vec![
+                "--rcfile".to_owned(),
+                seat.join("dropterm.bash").display().to_string(),
+            ];
+            trailing.append(&mut integrated.trailing);
+            integrated.trailing = trailing;
+        }
+        Shell::Zsh => zsh_env(seat, &mut integrated.env),
+        Shell::Fish => {
+            let mut trailing = vec![
+                "-C".to_owned(),
+                format!("source {}", seat.join("dropterm.fish").display()),
+            ];
+            trailing.append(&mut integrated.trailing);
+            integrated.trailing = trailing;
+        }
+    }
+    integrated
+}
+
+/// The profile-tail composition: the command-then-shell wrap's exec
+/// line becomes the integrated spawn — the rcfile wrapper / the fish
+/// flag on the exec'd shell itself, the ZDOTDIR env riding for the
+/// tail alone to read — so the preamble phase emits nothing and the
+/// status timer never sees a preamble's verdict.
+fn integrate_tail(shell: Shell, parts: &SpawnParts, seat: &Path) -> Option<SpawnParts> {
+    let mut integrated = SpawnParts {
+        program: parts.program.clone(),
+        trailing: parts.trailing.clone(),
+        profile_id: parts.profile_id.clone(),
+        env: parts.env.clone(),
+    };
+    let suffix = format!("; exec {}", parts.program);
+    let line = integrated.trailing.get(1)?;
+    let prefix = line.strip_suffix(&suffix)?;
+    let exec = match shell {
+        Shell::Bash => {
+            format!(
+                "; exec {} --rcfile {}",
+                parts.program,
+                seat.join("dropterm.bash").display()
+            )
+        }
+        Shell::Fish => {
+            format!(
+                "; exec {} -C 'source {}'",
+                parts.program,
+                seat.join("dropterm.fish").display()
+            )
+        }
+        Shell::Zsh => {
+            zsh_env(seat, &mut integrated.env);
+            suffix
+        }
+    };
+    integrated.trailing[1] = format!("{prefix}{exec}");
+    Some(integrated)
+}
+
+/// The decision, seat-resolved: the pure table the pins exercise.
+/// The kill switch is `decide`'s own first gate, so this table
+/// assumes the feature is on and the seat stands.
+fn decide_against_seat(command: &SpawnCommand, parts: &SpawnParts, seat: &Path) -> Injection {
+    // The `--cmd` rule reads across whole: never decorate a user's
+    // explicit program, whatever it resolves to.
+    if matches!(command, SpawnCommand::CommandLine(_)) {
+        return Injection::Skipped(SkipReason::CommandSpawn);
+    }
+    let Some(shell) = Shell::of(&parts.program) else {
+        return Injection::Skipped(SkipReason::UnsupportedShell);
+    };
+    if flag_conflict(shell, &parts.trailing, &parts.env) {
+        log::warn!(
+            "shell integration suppressed: the spawn's own arguments \
+             already carry its file choice"
+        );
+        return Injection::Skipped(SkipReason::UserFlagConflict);
+    }
+    // A profile spawn whose wrap stands (the id records it)
+    // integrates the interactive tail only; every degraded arm —
+    // the blank line, the unrunnable shell — lands on the plain
+    // shape and integrates as one.
+    let integrated = if parts.profile_id.is_some() {
+        integrate_tail(shell, parts, seat)
+    } else {
+        Some(integrate_plain(shell, parts, seat))
+    };
+    match integrated {
+        Some(parts) => Injection::Injected(parts),
+        // The wrap line did not end the way `spawn_parts` builds it
+        // — unreachable without a resolver change; untouched is the
+        // safe answer.
+        None => Injection::Skipped(SkipReason::UnsupportedShell),
+    }
+}
+
+/// The spawn's integration verdict (shell-integration spec): whether
+/// this spawn's argv/env gain the emitters. The kill switch gates
+/// whole — no materialization, no argv/env change, byte-identical to
+/// today — then the seat materializes, then the pure table decides.
+pub fn decide(command: &SpawnCommand, parts: &SpawnParts, config: &DropTermConfig) -> Injection {
+    if !config.shell_integration {
+        return Injection::Skipped(SkipReason::KillSwitch);
+    }
+    let Some(seat) = materialize() else {
+        return Injection::Skipped(SkipReason::Unmaterialized);
+    };
+    decide_against_seat(command, parts, &seat)
 }
 
 #[cfg(test)]
@@ -192,5 +403,289 @@ mod tests {
         assert!(ZSH_ZSHRC.contains("${__dropterm_path//[ ]/%20}"));
         assert!(FISH_EMITTER.contains("string replace --all -- '%' '%25'"));
         assert!(FISH_EMITTER.contains("string replace --all -- ' ' '%20'"));
+    }
+
+    // --- the injection decision (SI-6) ---
+
+    use crate::core::config::DropTermConfig;
+    use crate::core::spawn::{SpawnCommand, SpawnParts};
+    use std::collections::HashMap;
+
+    fn parts(program: &str, trailing: &[&str]) -> SpawnParts {
+        SpawnParts {
+            program: program.to_owned(),
+            trailing: trailing.iter().map(|s| (*s).to_owned()).collect(),
+            profile_id: None,
+            env: HashMap::new(),
+        }
+    }
+
+    fn profile_parts(program: &str, command: &str) -> SpawnParts {
+        SpawnParts {
+            trailing: vec!["-c".to_owned(), format!("{command}; exec {program}")],
+            profile_id: Some("named".to_owned()),
+            ..parts(program, &[])
+        }
+    }
+
+    fn shell_command(shell: &str) -> SpawnCommand {
+        SpawnCommand::Shell(shell.to_owned())
+    }
+
+    /// The original ZDOTDIR the spawn preserves — the same
+    /// resolution the decision reads (the process's ZDOTDIR, else
+    /// HOME), mirrored so the pin and the code cannot drift.
+    fn preserved_zdotdir() -> String {
+        std::env::var("ZDOTDIR")
+            .or_else(|_| std::env::var("HOME"))
+            .expect("a ZDOTDIR or HOME in the test environment")
+    }
+
+    #[test]
+    fn bash_gains_the_rcfile_wrapper_with_the_config_args_preserved() {
+        // The wrapper rides at the head of the trailing arguments,
+        // the config's own args standing behind it — `--login`
+        // composes.
+        let seat = seat_dir("decide-bash");
+        let verdict = decide_against_seat(
+            &shell_command("/bin/bash"),
+            &parts("/bin/bash", &["--login"]),
+            &seat,
+        );
+        match verdict {
+            Injection::Injected(parts) => {
+                assert_eq!(parts.program, "/bin/bash");
+                assert_eq!(
+                    parts.trailing,
+                    vec![
+                        "--rcfile".to_owned(),
+                        seat.join("dropterm.bash").display().to_string(),
+                        "--login".to_owned(),
+                    ]
+                );
+            }
+            Injection::Skipped(_) => panic!("a bash spawn integrates"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn zsh_gains_the_zdotdir_bootstrap_with_the_original_preserved() {
+        // The argv stands untouched; the env carries the bootstrap
+        // ZDOTDIR and the original the chain sources from.
+        let seat = seat_dir("decide-zsh");
+        let verdict = decide_against_seat(&shell_command("zsh"), &parts("zsh", &[]), &seat);
+        match verdict {
+            Injection::Injected(parts) => {
+                assert_eq!(parts.trailing, Vec::<String>::new());
+                assert_eq!(
+                    parts.env.get("ZDOTDIR").map(String::as_str),
+                    Some(seat.join("zsh").display().to_string().as_str())
+                );
+                assert_eq!(
+                    parts.env.get("DROPTERM_ZDOTDIR").map(String::as_str),
+                    Some(preserved_zdotdir().as_str())
+                );
+            }
+            Injection::Skipped(_) => panic!("a zsh spawn integrates"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn fish_gains_the_init_flag_with_the_config_args_preserved() {
+        // fish's own `-C` init command sources the emitter after
+        // fish's config has run; the config's own args stand behind
+        // the flag.
+        let seat = seat_dir("decide-fish");
+        let verdict = decide_against_seat(
+            &shell_command("/usr/bin/fish"),
+            &parts("/usr/bin/fish", &["--private"]),
+            &seat,
+        );
+        match verdict {
+            Injection::Injected(parts) => {
+                assert_eq!(
+                    parts.trailing,
+                    vec![
+                        "-C".to_owned(),
+                        format!("source {}", seat.join("dropterm.fish").display()),
+                        "--private".to_owned(),
+                    ]
+                );
+            }
+            Injection::Skipped(_) => panic!("a fish spawn integrates"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn unsupported_shells_and_programs_spawn_untouched() {
+        // Spawn truth, never a heuristic: sh (the default fallback),
+        // nu, pwsh, and any program a `--cmd` resolves to stay
+        // byte-for-byte — the same parts back, the skip naming why.
+        let seat = seat_dir("decide-unsupported");
+        for program in ["/bin/sh", "sh", "nu", "pwsh", "htop"] {
+            let original = parts(program, &["--login"]);
+            match decide_against_seat(&shell_command(program), &original, &seat) {
+                Injection::Skipped(reason) => {
+                    assert_eq!(reason, SkipReason::UnsupportedShell, "{program}");
+                }
+                Injection::Injected(_) => panic!("{program} must not integrate"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn a_cmd_spawn_never_integrates_whatever_it_resolves_to() {
+        // The CommandLine arm's own rule reads across: a line
+        // carries its own arguments and never inherits — not even a
+        // `--cmd bash` gets decorated.
+        let seat = seat_dir("decide-cmd");
+        for line in ["htop", "bash"] {
+            let original = parts("/bin/bash", &[]);
+            match decide_against_seat(
+                &SpawnCommand::CommandLine(line.to_owned()),
+                &original,
+                &seat,
+            ) {
+                Injection::Skipped(reason) => {
+                    assert_eq!(reason, SkipReason::CommandSpawn, "{line}");
+                }
+                Injection::Injected(_) => panic!("--cmd {line} must not integrate"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn a_user_flag_conflict_suppresses_the_injection() {
+        // Never fight the user's own file choice: their `--rcfile`,
+        // their fish init flag, their profile env's ZDOTDIR — the
+        // spawn stays byte-for-byte.
+        let seat = seat_dir("decide-conflict");
+        let bash_conflict = parts("/bin/bash", &["--rcfile", "/my/own/rc"]);
+        match decide_against_seat(&shell_command("/bin/bash"), &bash_conflict, &seat) {
+            Injection::Skipped(reason) => assert_eq!(reason, SkipReason::UserFlagConflict),
+            Injection::Injected(_) => panic!("a user --rcfile must suppress"),
+        }
+        let fish_conflict = parts("fish", &["--init-command=source /my/own.fish"]);
+        match decide_against_seat(&shell_command("fish"), &fish_conflict, &seat) {
+            Injection::Skipped(reason) => assert_eq!(reason, SkipReason::UserFlagConflict),
+            Injection::Injected(_) => panic!("a user fish init flag must suppress"),
+        }
+        let mut zsh_env = HashMap::new();
+        zsh_env.insert("ZDOTDIR".to_owned(), "/my/own/zdotdir".to_owned());
+        let zsh_conflict = SpawnParts {
+            env: zsh_env,
+            ..parts("zsh", &[])
+        };
+        match decide_against_seat(&shell_command("zsh"), &zsh_conflict, &seat) {
+            Injection::Skipped(reason) => assert_eq!(reason, SkipReason::UserFlagConflict),
+            Injection::Injected(_) => panic!("a user ZDOTDIR must suppress"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn a_profile_spawn_integrates_the_interactive_tail_only() {
+        // The command-then-shell wrap's exec line becomes the
+        // integrated spawn; the preamble phase emits nothing — no
+        // rcfile flag on the outer shell, the ZDOTDIR env riding
+        // for the tail alone to read, the fish flag on the exec
+        // line.
+        let seat = seat_dir("decide-profile");
+        let profile = SpawnCommand::Profile {
+            name: "watch".to_owned(),
+            command: "htop".to_owned(),
+            cwd: None,
+            env: None,
+        };
+
+        match decide_against_seat(&profile, &profile_parts("/bin/bash", "htop"), &seat) {
+            Injection::Injected(parts) => {
+                assert_eq!(parts.trailing[0], "-c");
+                assert_eq!(
+                    parts.trailing[1],
+                    format!(
+                        "htop; exec /bin/bash --rcfile {}",
+                        seat.join("dropterm.bash").display()
+                    )
+                );
+            }
+            Injection::Skipped(_) => panic!("a bash-tailed profile integrates"),
+        }
+
+        match decide_against_seat(&profile, &profile_parts("zsh", "htop"), &seat) {
+            Injection::Injected(parts) => {
+                // The wrap line stands untouched; the env carries
+                // the bootstrap for the exec'd tail.
+                assert_eq!(parts.trailing[1], "htop; exec zsh");
+                assert_eq!(
+                    parts.env.get("ZDOTDIR").map(String::as_str),
+                    Some(seat.join("zsh").display().to_string().as_str())
+                );
+            }
+            Injection::Skipped(_) => panic!("a zsh-tailed profile integrates"),
+        }
+
+        match decide_against_seat(&profile, &profile_parts("fish", "htop"), &seat) {
+            Injection::Injected(parts) => {
+                assert_eq!(
+                    parts.trailing[1],
+                    format!(
+                        "htop; exec fish -C 'source {}'",
+                        seat.join("dropterm.fish").display()
+                    )
+                );
+            }
+            Injection::Skipped(_) => panic!("a fish-tailed profile integrates"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn a_degraded_profile_line_integrates_as_a_plain_shell() {
+        // The blank-line degradation lands on the plain shell with
+        // no id — the wrap is gone, so the plain shape integrates
+        // (basename rules, argv), never a tail rewrite.
+        let seat = seat_dir("decide-degraded");
+        match decide_against_seat(
+            &SpawnCommand::Profile {
+                name: "broken".to_owned(),
+                command: "   ".to_owned(),
+                cwd: None,
+                env: None,
+            },
+            &parts("/bin/bash", &[]),
+            &seat,
+        ) {
+            Injection::Injected(parts) => {
+                assert_eq!(parts.trailing.len(), 2, "the plain rcfile shape");
+                assert_eq!(parts.trailing[0], "--rcfile");
+            }
+            Injection::Skipped(_) => panic!("a degraded profile line still integrates its shell"),
+        }
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
+    #[test]
+    fn the_kill_switch_skips_whole_before_any_seat_work() {
+        // The one `decide` pin: the switch is consulted before
+        // materialization, so an off config never writes a byte —
+        // and answers Skipped(KillSwitch) with no seat to read.
+        let config = DropTermConfig {
+            shell_integration: false,
+            ..DropTermConfig::default()
+        };
+        match decide(
+            &shell_command("/bin/bash"),
+            &parts("/bin/bash", &[]),
+            &config,
+        ) {
+            Injection::Skipped(reason) => assert_eq!(reason, SkipReason::KillSwitch),
+            Injection::Injected(_) => panic!("the kill switch skips whole"),
+        }
     }
 }

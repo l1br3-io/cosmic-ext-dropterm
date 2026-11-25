@@ -19,8 +19,35 @@ fn opacity_alpha_maps_the_band_and_clamps() {
 fn request_config() -> dropterm::core::config::DropTermConfig {
     dropterm::core::config::DropTermConfig {
         shell: Some("/bin/sh".to_string()),
+        // The fixture's spawns stay unintegrated (shell-integration
+        // SI-6): these pins own the boot shape's argv exactly, and a
+        // seat materializing into the real cache from the test suite
+        // is nobody's fixture. `/bin/sh` itself would skip anyway —
+        // this makes it the switch's skip, no fs touch at all; the
+        // routing pin below holds the seam.
+        shell_integration: false,
         ..dropterm::core::config::DropTermConfig::default()
     }
+}
+
+#[test]
+fn for_command_routes_every_spawn_through_the_injection_decision() {
+    // The seam pin (the chunk's own shape): the kill switch proves
+    // the routing inert — with it off, a bash spawn that would
+    // integrate keeps today's argv byte-for-byte, the whole decision
+    // path consulted and declined. The integrated shapes themselves
+    // pin at the decision table (core's SI-6 pins); the walks hold
+    // the live argv.
+    let config = request_config();
+    let request = PaneRequest::for_command(
+        &dropterm::core::spawn::SpawnCommand::Shell("/bin/bash".to_string()),
+        None,
+        &config,
+        &[],
+    );
+    assert_eq!(request.program, "/bin/bash");
+    assert_eq!(request.args, Vec::<String>::new());
+    assert!(request.env.is_empty());
 }
 
 fn profile_command(name: &str, command: &str) -> dropterm::core::spawn::SpawnCommand {

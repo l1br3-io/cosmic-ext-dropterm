@@ -3300,6 +3300,17 @@ impl PaneRequest {
         user_schemes: &[dropterm::core::theme_files::UserScheme],
     ) -> Self {
         let parts = dropterm::core::spawn::spawn_parts(command, config);
+        // The injection decision, applied once here (shell-integration
+        // spec, SI-6): this is the one construction path every spawn
+        // shares — the app shell and the walk harness alike — so the
+        // emitters ride whatever argv this request builds. A skip
+        // keeps the parts byte-for-byte; the unsupported shells'
+        // silence is the suite's default (`/bin/sh` never integrates,
+        // never logs).
+        let parts = match dropterm::core::shell_integration::decide(command, &parts, config) {
+            dropterm::core::shell_integration::Injection::Injected(parts) => parts,
+            dropterm::core::shell_integration::Injection::Skipped(_) => parts,
+        };
         let profile = parts
             .profile_id
             .as_deref()
