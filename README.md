@@ -90,6 +90,7 @@ The details live in the `docs/` directory:
 - [Configuration](docs/configuration.md) - all 54 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Command palette](docs/command-palette.md) - `Ctrl+Shift+P` over every app verb: fuzzy search, every action one keystroke away
+- [Rich input](docs/rich-input.md) - the Warp-behavior editor behind `input_mode`: DropTerm-owned prompt line with highlight, completion, and history, `native` (the bare shell) the default
 - [Settings window](docs/settings.md) - the nine pages and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves

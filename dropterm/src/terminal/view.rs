@@ -93,12 +93,6 @@ pub(crate) struct WalkLog {
     grid: Option<(usize, usize)>,
     caret: Option<(usize, usize)>,
     rows: Vec<String>,
-    /// The last logged ghost's visible string (the autosuggest
-    /// rows' evidence: one line per change the suggestion makes).
-    ghost: Option<String>,
-    /// The last logged menu shape (its row count and selection —
-    /// one line per change the menu makes).
-    menu: Option<(usize, usize)>,
     /// The image ids whose placement has been logged (the images
     /// rows' evidence: one line per placed image, not per frame).
     placed_images: Vec<u64>,
@@ -695,84 +689,6 @@ impl TerminalPane {
         .detach();
     }
 
-    /// The completion menu's routing for one press (the libcosmic
-    /// `menu_consumes_press` port): `true` — the menu consumed it (a
-    /// claimed key, or the soft chord that opened one); `false` —
-    /// nothing claims it, and the press flows through the normal
-    /// handling below, its bytes forwarded verbatim.
-    fn route_menu_press(
-        &mut self,
-        keystroke: &gpui::Keystroke,
-        trigger_chord: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let consumed;
-        {
-            let mut engine = self.terminal.lock().expect("engine lock");
-            // The two-stage Enter's pre-check (suggest-parity spec),
-            // scraped only for a bare Enter: the typed line already
-            // equals the selection — the routing closes-and-processes
-            // so the Enter bytes run the command.
-            let unmodified = !(keystroke.modifiers.control
-                || keystroke.modifiers.alt
-                || keystroke.modifiers.shift
-                || keystroke.modifiers.platform);
-            let equal_line = engine.menu_is_open()
-                && keystroke.key == "enter"
-                && unmodified
-                && engine.menu_selected_equals();
-            // The produced character is the printable test's honest
-            // input — the keystroke's first char, whatever produced it.
-            let key_char = keystroke
-                .key_char
-                .as_deref()
-                .and_then(|chars| chars.chars().next());
-            match suggest::menu_routing(
-                &keystroke.key,
-                keystroke.modifiers,
-                engine.menu_is_open(),
-                trigger_chord,
-                key_char,
-                equal_line,
-            ) {
-                Some(suggest::MenuRouting::Consume(key)) => {
-                    engine.menu_press(key);
-                    engine.needs_update = true;
-                    consumed = true;
-                }
-                Some(suggest::MenuRouting::KeepOpen) => {
-                    // The press is the shell's and the menu stays
-                    // (suggest-parity spec): the bytes flow through
-                    // the normal handling below, and the echo's
-                    // update recomputes the rows through the
-                    // auto-popup gate. No repaint here — the flowing
-                    // press brings its own.
-                    consumed = false;
-                }
-                Some(suggest::MenuRouting::CloseThenProcess) => {
-                    // The press closes the menu, then still processes
-                    // below (a claimed key's bytes, an action chord,
-                    // an accept, the equal line's Enter) — the
-                    // repaint now, the press next.
-                    engine.menu_close();
-                    engine.needs_update = true;
-                    consumed = false;
-                }
-                // The soft trigger: no menu, the chord pressed — try
-                // the open; a decline forwards the chord's own shell
-                // bytes through the normal handling below.
-                None if trigger_chord => {
-                    let opened = engine.menu_open();
-                    engine.needs_update = opened;
-                    consumed = opened;
-                }
-                None => return false,
-            }
-        }
-        cx.notify();
-        consumed
-    }
-
     /// The kit-inspector seat's answer (`ctrl-shift-i` in debug
     /// builds — the render-time registration beside this method is
     /// the whole story): the chord runs whatever our table owns on
@@ -1051,33 +967,8 @@ impl TerminalPane {
     fn route_overlay_and_claim(
         &mut self,
         keystroke: &gpui::Keystroke,
-        matched: Option<&TermAction>,
         cx: &mut Context<Self>,
     ) -> bool {
-        // The completion menu's routing (suggest-menu spec): a
-        // showing menu outranks the keybind swallow and every
-        // mapping; the soft trigger chord tries the open, its
-        // decline falling through with the chord's own shell bytes
-        // still to send. In rich mode the grid menu stands down and
-        // the soft trigger's chord is an app action that dies
-        // quietly until RI-5.
-        let rich = self.terminal.lock().expect("engine lock").rich_input();
-        let trigger_chord = matches!(matched, Some(&TermAction::ShowCompletions));
-        if !rich && self.route_menu_press(keystroke, trigger_chord, cx) {
-            return true;
-        }
-        // The Space special case (the libcosmic widget's own,
-        // verbatim): Ctrl+Space is the NUL press wherever it is not
-        // consumed above — the trigger's decline included, never a
-        // swallow.
-        if !rich && keystroke.key == "space" && keystroke.modifiers.control {
-            let mut engine = self.terminal.lock().expect("engine lock");
-            engine.input_scroll(b"\x00".to_vec());
-            engine.needs_update = true;
-            drop(engine);
-            cx.notify();
-            return true;
-        }
         // The rich-input claim (RI-4): the v1 chord table takes the
         // press ahead of the byte translation when the editor owns
         // the line — an unmapped chord falls through and forwards
@@ -1183,6 +1074,10 @@ impl TerminalPane {
         keystroke: &gpui::Keystroke,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The grid menu's key lane retired with its paint
+        // (rich-input RI-10): native mode's Ctrl+Space is the bare
+        // NUL byte through the translation, the editor's own menu
+        // rides the claim below.
         use dropterm::core::terminal::suggest::MenuKey;
         let (to_caret, _) = self.editor_to_caret();
         let equal_line = {
@@ -1619,7 +1514,20 @@ impl TerminalPane {
         // the Ctrl+Space special case rides behind it; then the
         // editor's v1 chord table takes its press when the line is
         // owned — each a fall-through, never a swallow.
-        if self.route_overlay_and_claim(keystroke, matched.as_ref(), cx) {
+        if self.route_overlay_and_claim(keystroke, cx) {
+            return;
+        }
+        // The Space special case (the libcosmic widget's own,
+        // verbatim): Ctrl+Space is the NUL press wherever nothing
+        // above consumed it — the translation's own arm (the
+        // control-character rule cannot see a space), never a
+        // swallow.
+        if keystroke.key == "space" && keystroke.modifiers.control {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            engine.input_scroll(b"\x00".to_vec());
+            engine.needs_update = true;
+            drop(engine);
+            cx.notify();
             return;
         }
         match input::translate(keystroke, &self.binds, modes) {
@@ -2645,71 +2553,9 @@ fn paint_pane(
         }
     }
 
-    // The ghost-text overlay (gpui-parity Task 1; the libcosmic
-    // widget's rule, same seat): the showing's visible string as dim
-    // glyphs starting one cell past the cursor — an overlay, never
-    // the grid and never the engine's own buffers, so selection,
-    // scrollback, and copy see nothing. The clip already guaranteed
-    // the fit, and an empty visible (below the three-column draw
-    // threshold) fills nothing while the showing still accepts.
-    // Scrolled back renders nothing (the offset gate).
-    let ghost_row = usize::try_from(cursor.line.0).unwrap_or(0) + display_offset;
-    if display_offset == 0
-        && !terminal.rich_input()
-        && let Some(visible) = terminal.suggestion().map(str::to_string)
-        && !visible.is_empty()
-    {
-        let tint = color_hsla(terminal.ghost_color());
-        let shaped = shape_overlay_line(&visible, &skin.font, tint, geometry.font_size, window);
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "cell indices < 2^24, exact in f32"
-        )]
-        let origin = point(
-            bounds.origin.x + geometry.cell_width * (cursor.column.0 + 1) as f32,
-            bounds.origin.y + geometry.cell_height * ghost_row as f32,
-        );
-        let _ = shaped.paint(
-            origin,
-            geometry.cell_height,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
-        let mut log = walk_log.lock().expect("walk log");
-        if log.ghost.as_deref() != Some(visible.as_str()) {
-            println!(
-                "dropterm: pane ghost now {:?} ({} cells past the caret)",
-                visible,
-                visible.chars().count()
-            );
-            log.ghost = Some(visible);
-        }
-    } else {
-        // The ghost's dismissal is evidence too — the dismissal rows
-        // (another keystroke, a resize, a focus loss) name it.
-        let mut log = walk_log.lock().expect("walk log");
-        if log.ghost.take().is_some() {
-            println!("dropterm: pane ghost cleared");
-        }
-    }
-
-    // The completion-menu overlay (gpui-parity Task 1; the libcosmic
-    // panel, same rules): a pure overlay anchored at the cursor's
-    // cell — dropping below it, flipping above at the floor, clamped
-    // into the view — carrying the visible window from the scroll
-    // offset, the selected row's highlight, and right-aligned
-    // descriptions in the ghost's own dim tint. The panel surface is
-    // the Kit's popover token (theme_gen keeps it on the scheme), an
-    // opaque elevated surface over the grid's window background.
-    // GPUI's scene interleaves quads and glyphs by paint order, so
-    // the panel quad and its rows issued after the grid float above
-    // it with no layering ceremony (the libcosmic build needed
-    // `with_layer` for the same effect — wgpu sorts by kind there).
     // The editor's own menu panel (rich-input RI-7): the chrome
-    // above the strip — the grid panel above stays dark in rich
-    // mode, this is the menu's rich-mode surface.
+    // above the strip — the grid's overlay paint retired (RI-10),
+    // this is the menu's one surface.
     if let Some(menu) = editor_menu {
         paint_editor_menu(
             menu,
@@ -2720,117 +2566,6 @@ fn paint_pane(
             window,
             cx,
         );
-    }
-
-    if display_offset == 0 && !terminal.rich_input() && terminal.menu_is_open() {
-        let all_rows = terminal.menu_rows();
-        let range = suggest::menu_visible_window(terminal.menu_scroll(), all_rows.len());
-        if !range.is_empty() {
-            let visible = &all_rows[range.clone()];
-            let selected = terminal.menu_selected();
-            let label_color = color_hsla(terminal.foreground_color());
-            let dim = color_hsla(terminal.ghost_color());
-            let mut shaped: Vec<(gpui::ShapedLine, Option<(gpui::ShapedLine, Pixels)>)> =
-                Vec::with_capacity(visible.len());
-            let mut rows_width = px(0.);
-            for row in visible {
-                let label = shape_overlay_line(
-                    &row.label,
-                    &skin.font,
-                    label_color,
-                    geometry.font_size,
-                    window,
-                );
-                let description = row.description.as_deref().map(|text| {
-                    shape_overlay_line(text, &skin.font, dim, geometry.font_size, window)
-                });
-                // The description right-aligns at the trailing pad
-                // with the ghost's own two-cell clip rhythm between.
-                let gap = geometry.cell_width * 2.;
-                let desc_width = description.as_ref().map_or(px(0.), |d| d.width);
-                rows_width = rows_width.max(label.width + gap + desc_width);
-                shaped.push((label, description.map(|d| (d, desc_width))));
-            }
-            let pad = px(4.);
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "cell indices < 2^24, exact in f32"
-            )]
-            let anchor = point(
-                bounds.origin.x + geometry.cell_width * cursor.column.0 as f32,
-                bounds.origin.y + geometry.cell_height * ghost_row as f32,
-            );
-            let panel = suggest::menu_panel_bounds(
-                anchor,
-                geometry.cell_height,
-                visible.len(),
-                rows_width + pad * 2.,
-                bounds,
-            );
-            window.paint_quad(gpui::PaintQuad {
-                bounds: panel,
-                background: cx.theme().popover.into(),
-                border_color: cx.theme().border,
-                corner_radii: gpui::Corners::all(cx.theme().radius),
-                border_widths: gpui::Edges::all(px(1.)),
-                border_style: gpui::BorderStyle::Solid,
-            });
-            if range.contains(&selected) {
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "a visible-row index < the eight-row budget: exact in f32"
-                )]
-                let row = (selected - range.start) as f32;
-                window.paint_quad(fill(
-                    gpui::Bounds {
-                        origin: point(panel.origin.x, panel.origin.y + geometry.cell_height * row),
-                        size: gpui::size(panel.size.width, geometry.cell_height),
-                    },
-                    cx.theme().secondary_hover,
-                ));
-            }
-            for (index, (label, description)) in shaped.into_iter().enumerate() {
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "a visible-row index < the eight-row budget: exact in f32"
-                )]
-                let row = index as f32;
-                let origin = point(
-                    panel.origin.x + pad,
-                    panel.origin.y + geometry.cell_height * row,
-                );
-                let _ = label.paint(
-                    origin,
-                    geometry.cell_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-                if let Some((description, width)) = description {
-                    let origin = point(panel.origin.x + panel.size.width - pad - width, origin.y);
-                    let _ = description.paint(
-                        origin,
-                        geometry.cell_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-            }
-            let mut log = walk_log.lock().expect("walk log");
-            let shape = (all_rows.len(), selected);
-            if log.menu != Some(shape) {
-                println!(
-                    "dropterm: pane menu now {} rows (selected {}) — {:?}",
-                    all_rows.len(),
-                    selected,
-                    visible.iter().map(|r| r.label.clone()).collect::<Vec<_>>()
-                );
-                log.menu = Some(shape);
-            }
-        }
     }
 }
 
