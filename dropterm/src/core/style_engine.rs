@@ -1000,6 +1000,80 @@ mod tests {
         }
     }
 
+    // --- the docs pin (the every_config_key_is_documented pattern,
+    // SE5) ---
+
+    /// The styling page's element+class words: the addressable
+    /// tree's names, the pin's second half.
+    const DOCUMENTED_TREE_WORDS: [&str; 25] = [
+        "band",
+        "band.left",
+        "band.right",
+        "tabstrip",
+        "tab",
+        "tab.active",
+        "settings",
+        "settings-page",
+        "appearance",
+        "window",
+        "tabs",
+        "status-bar",
+        "dropdown",
+        "terminal",
+        "advanced",
+        "profiles",
+        "keybindings",
+        "plugins",
+        "dialog",
+        "dialog-button",
+        "dialog-button.accent",
+        "panel",
+        "panel-view",
+        "span",
+        "row",
+    ];
+
+    fn styling_docs_section() -> &'static str {
+        include_str!("../../../docs/styling.md")
+    }
+
+    fn undocumented_styling_word(section: &str) -> Option<&'static str> {
+        STYLE_PROPERTIES
+            .iter()
+            .chain(DOCUMENTED_TREE_WORDS.iter())
+            .find(|word| !section.contains(&format!("`{word}`")))
+            .copied()
+    }
+
+    #[test]
+    fn every_style_property_and_tree_name_is_documented() {
+        let section = styling_docs_section();
+        assert_eq!(
+            undocumented_styling_word(section),
+            None,
+            "a style property or tree name ships undocumented in docs/styling.md"
+        );
+    }
+
+    #[test]
+    fn the_styling_pin_catches_an_undocumented_word() {
+        // The pin's own teeth, demonstrated once on a fixture: a
+        // section carrying every word but `icon` fails the same
+        // checker the real docs pass.
+        use std::fmt::Write as _;
+        let mut fixture = String::new();
+        for word in STYLE_PROPERTIES.iter().chain(DOCUMENTED_TREE_WORDS.iter()) {
+            if *word != "icon" {
+                let _ = writeln!(fixture, "`{word}` row");
+            }
+        }
+        assert_eq!(
+            undocumented_styling_word(&fixture),
+            Some("icon"),
+            "the checker must find a word the fixture omits"
+        );
+    }
+
     // --- the rule object (the sources' shared shape, SE3) ---
 
     #[test]

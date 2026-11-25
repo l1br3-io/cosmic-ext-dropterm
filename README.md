@@ -98,6 +98,8 @@ The details live in the `docs/` directory:
 - [Script status segments](docs/status-segments.md) - plugins' own band segments: `dropterm.status_segment`, the ctx table it receives, the refresh triggers, and the `status_script_segments` ordering key
 - [Script tab titles](docs/tab-titles.md) - plugins deriving the tabs' names: `dropterm.tab_title`, the `{ tab, title }` ctx, the change-gated asks, and the stale ladder; a manual rename still wins in every mode
 - [Script commands](docs/script-commands.md) - plugins registering keybindable commands: `dropterm.command` rows beside the built-ins in the Keybindings editor, fire-and-forget dispatch with `{ tab }`, and `dropterm.send_text` as v1's one host verb
+- [Styling](docs/styling.md) - the CSS-convention style engine: quoted-kebab declarations, compound selectors, the specificity cascade over the whole surface, and the two sources (manifest `styles`, the `dropterm.styles` verb)
+- [Styling](docs/styling.md) - the CSS-convention style engine: quoted-kebab declarations, compound selectors, the specificity cascade over the whole surface, and the two sources (manifest `styles`, the `dropterm.styles` verb)
 - [Script dialogs and panel views](docs/plugins.md) - the typed-slots surfaces: `dropterm.dialog` opens a host-owned modal and presses return as `slot-event`s, `dropterm.panel_view` docks a titled view into the right rail (`panel_rail_enabled`), and [the panel containers](docs/panel-containers.md) are the shell side
 - [Slide animation](docs/animation.md) - the 130 ms slide and its reversal rules
 - [Bell notifications](docs/bell.md) - hidden-terminal bells and the per-tab latch
