@@ -12,6 +12,23 @@ use dropterm::core::status::PAD_X;
 use dropterm::core::terminal::{ProgressState, ReportedProgress};
 use std::time::Duration;
 
+/// The fixture engine: the builtin layer's `band.right` dim — the
+/// break's rule shape, the base this suite's `band_vm` calls run
+/// against.
+fn fixture_engine() -> dropterm::core::style_engine::StyleSet {
+    use dropterm::core::style_engine::{Rule, RuleOrigin, StyleSet, parse_selector};
+    let mut engine = StyleSet::default();
+    engine.set_builtin(vec![Rule {
+        origin: RuleOrigin::Builtin,
+        selector: parse_selector("band.right").expect("parses"),
+        declarations: dropterm::core::style_engine::parse_declarations(&serde_json::json!(
+            { "color": "bright_black" }
+        ))
+        .declarations,
+    }]);
+    engine
+}
+
 /// The monospace fake: 8 px per character, 0 for the empty string.
 fn fake_measure(text: &str) -> f32 {
     #[expect(clippy::cast_precision_loss, reason = "test strings, exact in f32")]
@@ -42,7 +59,15 @@ fn rich() -> StatusSegments {
 
 #[test]
 fn rows_compose_in_cluster_order_with_the_disc_leftmost_and_clock_rightmost() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let ids: Vec<SegmentId> = vm.rows.iter().map(|row| row.id).collect();
     assert_eq!(
         ids,
@@ -90,7 +115,15 @@ fn rows_compose_in_cluster_order_with_the_disc_leftmost_and_clock_rightmost() {
 
 #[test]
 fn row_texts_carry_their_glyphs_and_owned_marks() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let text = |id: SegmentId| {
         vm.rows
             .iter()
@@ -113,7 +146,15 @@ fn row_texts_carry_their_glyphs_and_owned_marks() {
 
 #[test]
 fn the_disc_fills_with_the_foreground_and_tints_on_attention() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let disc = vm.disc.expect("a running foreground paints the disc");
     assert!(disc.filled);
     assert!(!disc.attention);
@@ -122,9 +163,17 @@ fn the_disc_fills_with_the_foreground_and_tints_on_attention() {
 
     let mut idle = rich();
     idle.running = false;
-    let disc = band_vm(&idle, 2000.0, &fake_measure, None, None, None)
-        .disc
-        .expect("idle disc");
+    let disc = band_vm(
+        &idle,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    )
+    .disc
+    .expect("idle disc");
     assert!(!disc.filled);
 }
 
@@ -135,7 +184,15 @@ fn absent_seats_never_compose_rows_or_hairlines() {
         path: Some("~/src".to_string()),
         ..StatusSegments::default()
     };
-    let vm = band_vm(&sparse, 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &sparse,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let ids: Vec<SegmentId> = vm.rows.iter().map(|row| row.id).collect();
     assert_eq!(ids, vec![SegmentId::Process, SegmentId::Path]);
     // Two left rows → exactly one separator, between them; none
@@ -148,13 +205,29 @@ fn absent_seats_never_compose_rows_or_hairlines() {
 
 #[test]
 fn the_fit_drops_lowest_value_seats_first_under_width_pressure() {
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(vm.rows.iter().any(|row| row.id == SegmentId::Pasted));
     // Tight: at 8 px/char the rich band consumes well over 300 px —
     // squeezing to 340 drops the paste chip (and only it if the
     // elided path absorbs the rest), the reference DROP_ORDER's
     // first present seat.
-    let tight = band_vm(&rich(), 340.0, &fake_measure, None, None, None);
+    let tight = band_vm(
+        &rich(),
+        340.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(
         !tight.rows.iter().any(|row| row.id == SegmentId::Pasted),
         "the paste chip yields first"
@@ -176,7 +249,15 @@ fn the_fit_drops_lowest_value_seats_first_under_width_pressure() {
 fn the_path_elides_from_the_left_under_squeeze() {
     let mut long = rich();
     long.path = Some("~/a-very-long-directory-name/src".to_string());
-    let roomy = band_vm(&long, 2000.0, &fake_measure, None, None, None);
+    let roomy = band_vm(
+        &long,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let path = roomy
         .rows
         .iter()
@@ -184,7 +265,15 @@ fn the_path_elides_from_the_left_under_squeeze() {
         .expect("path row");
     assert_eq!(path.text, "⌂ ~/a-very-long-directory-name/src");
 
-    let squeezed = band_vm(&long, 300.0, &fake_measure, None, None, None);
+    let squeezed = band_vm(
+        &long,
+        300.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let path = squeezed
         .rows
         .iter()
@@ -201,7 +290,15 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
     let mut failed = rich();
     failed.running_elapsed = None;
     failed.exit_code = Some(3);
-    let vm = band_vm(&failed, 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &failed,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let exit = vm
         .rows
         .iter()
@@ -222,7 +319,15 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
         value: None,
         refreshed_at: std::time::Instant::now(),
     });
-    let vm = band_vm(&errored, 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &errored,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let progress = vm
         .rows
         .iter()
@@ -236,7 +341,15 @@ fn the_exit_chip_and_error_progress_carry_the_attention_seat() {
 fn the_halo_rings_the_disc_or_stands_alone_at_the_edge() {
     let mut marked = rich();
     marked.missed_activity = true;
-    let vm = band_vm(&marked, 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &marked,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let disc = vm.disc.expect("disc present");
     assert_eq!(vm.halo_center_x, Some(disc.x + DISC_SIZE / 2.0));
 
@@ -245,13 +358,30 @@ fn the_halo_rings_the_disc_or_stands_alone_at_the_edge() {
     let mut alone = marked;
     alone.process = String::new();
     alone.running = false;
-    let vm = band_vm(&alone, 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &alone,
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(vm.disc.is_none());
     assert_eq!(vm.halo_center_x, Some(PAD_X / 2.0));
 
     // No news: no halo.
     assert_eq!(
-        band_vm(&rich(), 2000.0, &fake_measure, None, None, None).halo_center_x,
+        band_vm(
+            &rich(),
+            2000.0,
+            &fake_measure,
+            None,
+            None,
+            None,
+            &fixture_engine()
+        )
+        .halo_center_x,
         None
     );
 }
@@ -265,6 +395,7 @@ fn an_empty_band_composes_nothing() {
         None,
         None,
         None,
+        &fixture_engine(),
     );
     assert!(vm.rows.is_empty());
     assert!(vm.separators.is_empty());
@@ -285,6 +416,7 @@ fn the_flash_swaps_only_the_copied_rows_display() {
         Some(SegmentId::Path),
         None,
         None,
+        &fixture_engine(),
     );
     let path = vm
         .rows
@@ -370,7 +502,15 @@ fn narration_is_fit_accounted_so_the_clusters_never_overlap() {
     for width in [
         200.0_f32, 260.0, 300.0, 340.0, 420.0, 500.0, 600.0, 800.0, 1280.0,
     ] {
-        let vm = band_vm(&s, width, &fake_measure, None, None, None);
+        let vm = band_vm(
+            &s,
+            width,
+            &fake_measure,
+            None,
+            None,
+            None,
+            &fixture_engine(),
+        );
         let mut spans: Vec<(f32, f32, SegmentId)> =
             vm.rows.iter().map(|r| (r.x, r.x + r.width, r.id)).collect();
         spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -399,6 +539,7 @@ fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
         None,
         Some(PasteRefusal::OverCap),
         None,
+        &fixture_engine(),
     );
     let row = vm
         .rows
@@ -418,6 +559,7 @@ fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
         None,
         Some(PasteRefusal::Failed),
         None,
+        &fixture_engine(),
     );
     let row = vm
         .rows
@@ -428,7 +570,15 @@ fn the_refusal_verdict_takes_the_pasted_seat_and_wears_attention() {
     assert!(row.attention);
 
     // The steady values return once the verdict expires.
-    let vm = band_vm(&rich(), 2000.0, &fake_measure, None, None, None);
+    let vm = band_vm(
+        &rich(),
+        2000.0,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let row = vm
         .rows
         .iter()
@@ -454,7 +604,7 @@ fn fixture_palette() -> ScriptPalette {
     set(NamedColor::Red, 200, 40, 40);
     set(NamedColor::Green, 40, 200, 40);
     let fg = tab_bar::hsla(245, 245, 245);
-    ScriptPalette::resolve(&colors, fg)
+    ScriptPalette::resolve(&colors, fg, tab_bar::hsla(10, 10, 10))
 }
 
 #[test]
@@ -476,34 +626,41 @@ fn the_palette_resolves_the_scheme_words_and_the_accent() {
 }
 
 #[test]
-fn paint_script_segment_resolves_tokens_hex_glyph_and_alpha() {
+fn paint_script_segment_maps_the_resolved_cascade() {
     use dropterm::core::slots::{SlotColor, SlotContent, Span};
-    use dropterm::core::status::ScriptSide;
+    use dropterm::core::style_engine::Declaration;
 
     let palette = fixture_palette();
     let styled = SlotContent::Styled {
         spans: vec![
             Span {
                 text: "▼".to_owned(),
-                color: Some(SlotColor::Token("red".to_owned())),
-                icon: Some("↓".to_owned()),
+                class: None,
+                id: None,
+                style: vec![
+                    Declaration::Color(SlotColor::Token("red".to_owned())),
+                    Declaration::Icon("↓".to_owned()),
+                ],
             },
             Span {
                 text: " 1.2 MB/s".to_owned(),
-                color: Some(SlotColor::Hex("#1f9e7b".to_owned())),
-                icon: None,
+                class: None,
+                id: None,
+                style: vec![Declaration::Color(SlotColor::Hex("#1f9e7b".to_owned()))],
             },
             Span {
                 text: " plain".to_owned(),
-                color: None,
-                icon: None,
+                class: None,
+                id: None,
+                style: Vec::new(),
             },
         ],
     };
 
-    // Left side: full alpha, per-run colors resolved.
-    let runs = dropterm::core::status::script_runs(&styled);
-    let painted = paint_script_segment(&runs, ScriptSide::Left, &palette);
+    // Per-run colors resolve through the palette; the glyph prefix
+    // rode the composition (script_runs).
+    let runs = dropterm::core::status::script_runs(&styled, &fixture_engine(), None);
+    let painted = paint_script_segment(&runs, &palette);
     assert_eq!(painted.len(), 3, "one styled run per span, none dropped");
     assert_eq!(painted[0].text, "↓ ▼", "the glyph prefix rides the run");
     assert_eq!(painted[0].color, tab_bar::hsla(200, 40, 40), "token red");
@@ -516,35 +673,26 @@ fn paint_script_segment_resolves_tokens_hex_glyph_and_alpha() {
     assert_eq!(painted[2].text, " plain");
     assert_eq!(painted[2].color, palette.fg, "an uncolored span is fg");
 
-    // Right side: the band's dim alpha applies to every run.
-    let dimmed = paint_script_segment(&runs, ScriptSide::Right, &palette);
-    for run in &dimmed {
-        assert!(
-            (run.color.a - crate::status_bar::DIM_ALPHA).abs() < 1e-6,
-            "side alpha is the band's, applied to every run"
-        );
-    }
-    assert_eq!(dimmed[0].color.h, painted[0].color.h, "hue unchanged");
-
     // An unknown token renders the span unstyled (fg) and never
     // drops it.
     let unknown = SlotContent::Styled {
         spans: vec![
             Span {
                 text: "a".to_owned(),
-                color: Some(SlotColor::Token("nope".to_owned())),
-                icon: None,
+                class: None,
+                id: None,
+                style: vec![Declaration::Color(SlotColor::Token("nope".to_owned()))],
             },
             Span {
                 text: "b".to_owned(),
-                color: None,
-                icon: None,
+                class: None,
+                id: None,
+                style: Vec::new(),
             },
         ],
     };
     let painted = paint_script_segment(
-        &dropterm::core::status::script_runs(&unknown),
-        ScriptSide::Left,
+        &dropterm::core::status::script_runs(&unknown, &fixture_engine(), None),
         &palette,
     );
     assert_eq!(painted.len(), 2, "no span drops for a color failure");
@@ -555,13 +703,106 @@ fn paint_script_segment_resolves_tokens_hex_glyph_and_alpha() {
 
     // The string arm: one run, the row's own fg — today's paint.
     let painted = paint_script_segment(
-        &dropterm::core::status::script_runs(&SlotContent::Text("git:1".to_owned())),
-        ScriptSide::Left,
+        &dropterm::core::status::script_runs(
+            &SlotContent::Text("git:1".to_owned()),
+            &fixture_engine(),
+            None,
+        ),
         &palette,
     );
     assert_eq!(painted.len(), 1);
     assert_eq!(painted[0].text, "git:1");
     assert_eq!(painted[0].color, palette.fg);
+}
+
+#[test]
+fn the_side_dim_is_the_builtin_band_right_color_and_a_rule_replaces_it() {
+    use dropterm::core::slots::{SlotContent, Span};
+    use dropterm::core::style_engine::{Declaration, Rule, RuleOrigin, parse_selector};
+
+    let palette = fixture_palette();
+
+    // The builtin dim: a right-side span with no color inherits the
+    // side's builtin color; a span with its own color keeps it (the
+    // ruled break — the dim is a color declaration, never alpha).
+    let plain = SlotContent::Styled {
+        spans: vec![Span {
+            text: "idle".to_owned(),
+            class: None,
+            id: None,
+            style: Vec::new(),
+        }],
+    };
+    let right = dropterm::core::status::script_runs(
+        &plain,
+        &fixture_engine(),
+        Some(dropterm::core::status::ScriptSide::Right),
+    );
+    let painted = paint_script_segment(&right, &palette);
+    assert_eq!(
+        painted[0].color,
+        palette
+            .color("bright_black")
+            .expect("the fixture's dim word"),
+        "the right side's runs inherit the builtin band.right color"
+    );
+    let left = dropterm::core::status::script_runs(
+        &plain,
+        &fixture_engine(),
+        Some(dropterm::core::status::ScriptSide::Left),
+    );
+    let painted = paint_script_segment(&left, &palette);
+    assert_eq!(painted[0].color, palette.fg, "the left side is fg");
+
+    // A span's own color paints whole on the right side (no alpha
+    // multiplies on top — the spec's dim story is the builtin color).
+    let colored = SlotContent::Styled {
+        spans: vec![Span {
+            text: "on".to_owned(),
+            class: None,
+            id: None,
+            style: vec![Declaration::Color(SlotColor::Token("red".to_owned()))],
+        }],
+    };
+    let runs = dropterm::core::status::script_runs(
+        &colored,
+        &fixture_engine(),
+        Some(dropterm::core::status::ScriptSide::Right),
+    );
+    let painted = paint_script_segment(&runs, &palette);
+    assert_eq!(
+        painted[0].color,
+        tab_bar::hsla(200, 40, 40),
+        "the span's color wins over the side's, undimmed"
+    );
+
+    // A fixture rule on band.right replaces the builtin dim by
+    // ordinary cascade (equal specificity, later source order).
+    let mut engine = fixture_engine();
+    engine.replace_runtime_sheet(
+        "plugin",
+        vec![Rule {
+            origin: RuleOrigin::Runtime {
+                plugin: "plugin".to_owned(),
+            },
+            selector: parse_selector("band.right").expect("parses"),
+            declarations: dropterm::core::style_engine::parse_declarations(&serde_json::json!(
+                { "color": "green" }
+            ))
+            .declarations,
+        }],
+    );
+    let runs = dropterm::core::status::script_runs(
+        &plain,
+        &engine,
+        Some(dropterm::core::status::ScriptSide::Right),
+    );
+    let painted = paint_script_segment(&runs, &palette);
+    assert_eq!(
+        painted[0].color,
+        tab_bar::hsla(40, 200, 40),
+        "the plugin's band.right color replaced the builtin dim"
+    );
 }
 
 #[test]
@@ -577,18 +818,27 @@ fn unknown_tokens_name_themselves_once_per_segment_and_reply() {
                 spans: vec![
                     Span {
                         text: "a".to_owned(),
-                        color: Some(SlotColor::Token("nope".to_owned())),
-                        icon: None,
+                        class: None,
+                        id: None,
+                        style: vec![dropterm::core::style_engine::Declaration::Color(
+                            SlotColor::Token("nope".to_owned()),
+                        )],
                     },
                     Span {
                         text: "b".to_owned(),
-                        color: Some(SlotColor::Token("nope".to_owned())),
-                        icon: None,
+                        class: None,
+                        id: None,
+                        style: vec![dropterm::core::style_engine::Declaration::Color(
+                            SlotColor::Token("nope".to_owned()),
+                        )],
                     },
                     Span {
                         text: "c".to_owned(),
-                        color: Some(SlotColor::Token("nah".to_owned())),
-                        icon: None,
+                        class: None,
+                        id: None,
+                        style: vec![dropterm::core::style_engine::Declaration::Color(
+                            SlotColor::Token("nah".to_owned()),
+                        )],
                     },
                 ],
             },

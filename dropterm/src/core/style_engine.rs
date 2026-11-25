@@ -24,21 +24,21 @@ pub const STYLE_PROPERTIES: [&str; 6] = [
 ];
 
 /// The glyph weight a `font-weight` declaration carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FontWeight {
     Normal,
     Bold,
 }
 
 /// The slant a `font-style` declaration carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FontSlant {
     Normal,
     Italic,
 }
 
 /// The decoration a `text-decoration` declaration carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TextDecoration {
     None,
     Underline,
@@ -50,7 +50,7 @@ pub enum TextDecoration {
 /// validator both sources share (the manifest's JSON and the verb's
 /// Lua table cross as the same serde object), so the vocabulary
 /// cannot drift between them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Declaration {
     Color(SlotColor),
     Background(SlotColor),

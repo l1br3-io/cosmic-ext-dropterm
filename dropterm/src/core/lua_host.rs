@@ -1425,13 +1425,19 @@ fn install_port(
         // Validate at the port (dialog-slot DS1): the whole table
         // crosses via mlua's serde path into the contract's parser;
         // a bad shape costs one log line and opens nothing.
+        let mut drops = Vec::new();
         let parsed = match lua.from_value::<serde_json::Value>(spec) {
-            Ok(json) => crate::core::slots::parse_dialog(&json),
+            Ok(json) => crate::core::slots::parse_dialog(&json, &mut drops),
             Err(err) => {
                 log(&dialog_events, format!("dialog would not convert: {err}"));
                 return Ok(());
             }
         };
+        // The removed styling keys' one-line-each record (SE2): a
+        // dialog opens once, so the parse-time lines print once.
+        for line in &drops {
+            log(&dialog_events, line.clone());
+        }
         match parsed {
             Ok(spec) => {
                 let _ = dialog_events.send(HostEvent::OpenDialog { spec });
@@ -1970,18 +1976,26 @@ fn query_panel_views(
             .lua
             .from_value::<serde_json::Value>(mlua::Value::Table(answer))
         {
-            Ok(json) => match crate::core::slots::parse_panel_content(&json) {
-                Ok(content) => values.push(PanelAnswerRow {
-                    id: id.clone(),
-                    content: Some(content),
-                }),
-                Err(err) => {
-                    log(
-                        events,
-                        format!("panel view '{id}' answered without a usable value: {err}"),
-                    );
+            Ok(json) => {
+                let mut drops = Vec::new();
+                match crate::core::slots::parse_panel_content(&json, &mut drops) {
+                    Ok(content) => {
+                        for line in &drops {
+                            log(events, line.clone());
+                        }
+                        values.push(PanelAnswerRow {
+                            id: id.clone(),
+                            content: Some(content),
+                        });
+                    }
+                    Err(err) => {
+                        log(
+                            events,
+                            format!("panel view '{id}' answered without a usable value: {err}"),
+                        );
+                    }
                 }
-            },
+            }
             Err(err) => {
                 log(
                     events,
@@ -2126,8 +2140,16 @@ fn query_segments(
             values.push(SegmentAnswer::Hidden { id: name });
             continue;
         };
-        match read_answer(&generation.lua, &answer, &name) {
-            Ok(value) => values.push(value),
+        // The removed styling keys' one-line-each record (SE2): the
+        // pull's own reply cadence, the standing per-reply shape.
+        let mut drops = Vec::new();
+        match read_answer(&generation.lua, &answer, &name, &mut drops) {
+            Ok(value) => {
+                for line in &drops {
+                    log(events, line.clone());
+                }
+                values.push(value);
+            }
             Err(err) => {
                 log(
                     events,
@@ -2154,7 +2176,12 @@ fn query_segments(
 /// both fields required, the side's words the only two accepted,
 /// extra keys ignored. Anything else is an error the caller logs
 /// once: one line, the answer dropped, the prior text standing.
-fn read_answer(lua: &Lua, answer: &Table, name: &str) -> mlua::Result<SegmentAnswer> {
+fn read_answer(
+    lua: &Lua,
+    answer: &Table,
+    name: &str,
+    drops: &mut Vec<String>,
+) -> mlua::Result<SegmentAnswer> {
     if answer.contains_key("spans")? {
         let side = match answer.get::<Option<String>>("side")? {
             Some(side) => script_side(&side)?,
@@ -2168,7 +2195,7 @@ fn read_answer(lua: &Lua, answer: &Table, name: &str) -> mlua::Result<SegmentAns
         if let Some(map) = payload.as_object_mut() {
             map.remove("side");
         }
-        let content = slots::parse_content(&payload)
+        let content = slots::parse_content(&payload, drops)
             .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
         return Ok(SegmentAnswer::Shown {
             id: name.to_owned(),
@@ -3344,7 +3371,7 @@ mod tests {
                  end)\n\
                  d.status_segment('mem', function()\n\
                    return {{ kind = 'styled', side = 'left', spans = {{\n\
-                     {{ icon = 'cpu', text = 'mem', color = 'accent' }},\n\
+                     {{ text = 'mem', style = {{ icon = 'cpu', color = 'accent' }} }},\n\
                      {{ text = ':512M' }},\n\
                    }} }}\n\
                  end)"
@@ -3384,7 +3411,15 @@ mod tests {
                 });
             }
         }
-        let vm = crate::core::status::band_vm(&segments, 2000.0, &eight_px, None, None, None);
+        let vm = crate::core::status::band_vm(
+            &segments,
+            2000.0,
+            &eight_px,
+            None,
+            None,
+            None,
+            &crate::core::style_engine::StyleSet::default(),
+        );
         let laid: Vec<(&str, String)> = vm
             .script_rows
             .iter()
@@ -3415,7 +3450,7 @@ mod tests {
             "dialog.lua",
             &format!(
                 "{PORT}\n\
-                 d.dialog {{ title = 'Build finished', body = {{ {{ text = 'done', color = 'green' }} }}, buttons = {{ {{ id = 'restart', label = 'Restart', accent = true }}, {{ id = 'dismiss', label = 'Dismiss' }} }} }}\n\
+                 d.dialog {{ title = 'Build finished', body = {{ {{ text = 'done', style = {{ color = 'green' }} }} }}, buttons = {{ {{ id = 'restart', label = 'Restart', class = 'accent' }}, {{ id = 'dismiss', label = 'Dismiss' }} }} }}\n\
                  d.dialog {{ title = 'Minimal', buttons = {{ {{ id = 'ok', label = 'OK' }} }} }}"
             ),
         );
@@ -3436,10 +3471,16 @@ mod tests {
         );
         assert_eq!(specs[0].title, "Build finished");
         assert_eq!(specs[0].buttons.len(), 2);
-        assert!(specs[0].buttons[0].accent);
         assert_eq!(
-            specs[0].body[0].color,
-            Some(SlotColor::Token("green".to_owned())),
+            specs[0].buttons[0].class,
+            Some("accent".to_owned()),
+            "the accent class parses"
+        );
+        assert_eq!(
+            specs[0].body[0].style,
+            vec![crate::core::style_engine::Declaration::Color(
+                SlotColor::Token("green".to_owned())
+            )],
             "the body's span parses whole"
         );
         assert!(specs[1].body.is_empty(), "an absent body parses empty");
@@ -3669,7 +3710,7 @@ mod tests {
                 "{PORT}\n\
                  d.status_segment('net', function()\n\
                    return {{ kind = 'styled', side = 'right', spans = {{\n\
-                     {{ icon = 'arrow-down', text = '▼', color = 'accent' }},\n\
+                     {{ text = '▼', style = {{ icon = 'arrow-down', color = 'accent' }} }},\n\
                      {{ text = ' 1.2 MB/s' }},\n\
                    }} }}\n\
                  end)\n\
@@ -3694,9 +3735,32 @@ mod tests {
                 _ => None,
             })
             .expect("the reply lands");
+        // The declarations' order is not observable (mlua's table
+        // crossing is not order-stable across runs) — each property
+        // stands alone in the cascade, so both sides sort before the
+        // compare.
+        let sort_style = |answers: &[SegmentAnswer]| -> Vec<SegmentAnswer> {
+            answers
+                .iter()
+                .map(|answer| {
+                    let mut owned = answer.clone();
+                    if let SegmentAnswer::Shown {
+                        content: SlotContent::Styled { spans, .. },
+                        ..
+                    } = &mut owned
+                    {
+                        for span in spans {
+                            span.style
+                                .sort_by(|a, b| std::format!("{a:?}").cmp(&std::format!("{b:?}")));
+                        }
+                    }
+                    owned
+                })
+                .collect()
+        };
         assert_eq!(
-            values,
-            vec![
+            sort_style(&values),
+            sort_style(&[
                 SegmentAnswer::Shown {
                     id: "net".to_owned(),
                     side: ScriptSide::Right,
@@ -3704,13 +3768,22 @@ mod tests {
                         spans: vec![
                             Span {
                                 text: "▼".to_owned(),
-                                color: Some(SlotColor::Token("accent".to_owned())),
-                                icon: Some("arrow-down".to_owned()),
+                                class: None,
+                                id: None,
+                                style: vec![
+                                    crate::core::style_engine::Declaration::Icon(
+                                        "arrow-down".to_owned()
+                                    ),
+                                    crate::core::style_engine::Declaration::Color(
+                                        SlotColor::Token("accent".to_owned())
+                                    ),
+                                ],
                             },
                             Span {
                                 text: " 1.2 MB/s".to_owned(),
-                                color: None,
-                                icon: None,
+                                class: None,
+                                id: None,
+                                style: Vec::new(),
                             },
                         ],
                     },
@@ -3721,12 +3794,13 @@ mod tests {
                     content: SlotContent::Styled {
                         spans: vec![Span {
                             text: "x".to_owned(),
-                            color: None,
-                            icon: None,
+                            class: None,
+                            id: None,
+                            style: Vec::new(),
                         }],
                     },
                 },
-            ],
+            ]),
             "the styled answer crosses typed; a side-less styled answer defaults left (the spec's own example shape)"
         );
     }

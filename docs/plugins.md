@@ -195,22 +195,25 @@ nothing, and its channel stays empty.
 Every slot's answer is one plain string, and a plain string stays
 valid forever. The typed-answers contract adds one more shape: a
 styled answer - an ordered list of flat spans, no nesting - which the
-band paints span by span, each span's color and icon rendered:
+painters resolve through the style engine: each span's
+classes, id, and inline declarations compete by the CSS cascade, the
+glyph rides as an `icon` declaration:
 
 ```lua
 dropterm.status_segment('net', function(ctx)
   return { kind = 'styled', spans = {
-    { icon = 'arrow-down', text = ' 1.2 MB/s', color = 'accent' },
+    { text = ' 1.2 MB/s', class = 'net metric', id = 'rx',
+      style = { ['font-weight'] = 'bold', color = 'accent', icon = '↓' } },
   } }
 end)
 ```
 
-A span's `icon` is a glyph string, prepended like the band's builtin
+The `icon` declaration's glyph is prepended like the band's builtin
 sigils (`{icon} {text}` - the band's ⎇ ⊞ ◉ shapes, not an icon
 font); a glyph works:
 
 ```lua
-{ icon = '↓', text = ' 1.2 MB/s', color = 'green' }
+{ text = ' 1.2 MB/s', style = { color = 'green', icon = '↓' } }
 ```
 
 The vocabulary is closed - every key it declares:
@@ -221,20 +224,24 @@ The vocabulary is closed - every key it declares:
 | `spans` | the answer table | the ordered span list; required for a styled answer, 16 spans at most |
 | `side` | the answer table | the side word - required for a text answer exactly as before; a styled answer may omit it and takes `left` |
 | `text` | inside each span | the span's text - the part the band renders |
-| `color` | inside each span | optional; a color word or a `#rrggbb` literal |
-| `icon` | inside each span | optional; a glyph string, prepended like the band's builtin sigils |
+| `class` | inside each span | optional; space-separated class names, the rules' `.class` parts |
+| `id` | inside each span | optional; the span's `#id` |
+| `style` | inside each span | optional; the inline declarations table - one kebab-case property with one value, the engine's closed vocabulary (`color`, `background`, `font-weight`, `font-style`, `text-decoration`, `icon`) |
+| `color` | (removed) | was a span key; one `dropterm:` line and ignored - `style = { color = ... }` or a rule now |
+| `icon` | (removed) | was a span key; one `dropterm:` line and ignored - the `icon` declaration now |
 
-A `color` word resolves against the band's palette: `accent` (the
-scheme's BrightBlue), `fg` (the pane's foreground), and the ANSI
-words - `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
-`cyan`, `white`, and their `bright_black`, `bright_red`,
-`bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`,
-`bright_cyan`, `bright_white` forms. An unknown word costs one
-`dropterm:` log line and renders unstyled (the span still paints its
-text, in the row's own color); a `#rrggbb` literal paints directly.
-The right side's dim styling is the band's, applied on top - never
-the script's. A plain-string answer renders exactly as it always
-did.
+The `style` table's words resolve against the band's palette:
+`accent` (the scheme's BrightBlue), `fg` (the pane's foreground),
+`bg` (the worn scheme's background), and the ANSI words - `black`,
+`red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, and
+their `bright_black`, `bright_red`, `bright_green`,
+`bright_yellow`, `bright_blue`, `bright_magenta`, `bright_cyan`,
+`bright_white` forms. An unknown word costs one `dropterm:` log line
+and renders unstyled (the span still paints its text, in the row's
+own color); a `#rrggbb` literal paints directly. The right side's
+dim styling is the host builtin layer's `band.right` rule now - a
+plugin overriding `color` there replaces it by ordinary cascade.
+A plain-string answer renders exactly as it always did.
 
 The evolution rule, stated plainly: the keyset grows additive-only -
 a new key arrives as a release, an existing key never changes meaning.
@@ -258,9 +265,10 @@ on the next drain (its script died with its interpreter).
 ```lua
 dropterm.dialog({
   title = 'Build finished',
-  body  = { { text = 'release build done in 12.4s', color = 'green' } },
+  body  = { { text = 'release build done in 12.4s',
+             style = { color = 'green' } } },
   buttons = {
-    { id = 'restart', label = 'Restart', accent = true },
+    { id = 'restart', label = 'Restart', class = 'accent' },
     { id = 'dismiss', label = 'Dismiss' },
   },
 })
@@ -276,9 +284,10 @@ The spec is closed - every key it declares:
 | `title` | the dialog table | the panel's title bar text |
 | `body` | the dialog table | optional; the message, styled spans under the typed-answers rules |
 | `buttons` | the dialog table | one to three, unique non-empty ids; a dialog with zero or four opens nothing |
-| `id` | inside each button | the press event's `element_id` |
+| `id` | inside each button | the press event's `element_id`, and the button's `#id` for the cascade |
 | `label` | inside each button | the visible label |
-| `accent` | inside each button | optional; the primary action's flag, absent parses false |
+| `class` | inside each button | optional; the `accent` class marks the primary action - the host builtin rule on `dialog-button.accent` carries the look, and a plugin's own rule out-styling it replaces it by cascade |
+| `accent` | (removed) | was a button flag; one `dropterm:` line and ignored - `class = 'accent'` now |
 
 A wrong shape costs the call one `dropterm:` log line and opens
 nothing. A button press emits `slot-event` with
@@ -316,8 +325,9 @@ dropterm.panel_view('tasks', {
   title = 'Tasks',
 }, function(ctx)
   return { kind = 'panel', rows = {
-    { icon = '◯', text = 'ship the spec review' },
-    { icon = '◉', text = 'walk the dialog', color = 'green' },
+    { text = 'ship the spec review' },
+    { text = 'walk the dialog', class = 'task done',
+      style = { color = 'green', icon = '◉' } },
   } }
 end)
 dropterm.on('slot-event', function(p)

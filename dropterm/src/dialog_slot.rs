@@ -13,13 +13,13 @@
 
 use std::rc::Rc;
 
-use dropterm::core::slots::DialogSpec;
+use dropterm::core::slots::{DialogSpec, SlotColor};
 use gpui::{
     Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, div,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::Sizable as _;
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 
 use crate::app_shell::DismissDialog;
 use crate::status_bar;
@@ -52,6 +52,10 @@ pub(crate) struct DialogSlot {
     /// The body's resolved runs (styled-status-slot's painter): the
     /// shell builds the palette beside the band's, one color source.
     body_runs: Vec<status_bar::StyledRun>,
+    /// Each button's resolved paint (SE2): the cascade's background
+    /// and color, palette-mapped at construction — the Kit custom
+    /// variant when anything resolves, the Kit secondary otherwise.
+    button_paints: Vec<ButtonPaint>,
     /// The first paint's repair — focus applied at open races the
     /// element's first mount (the palette's own pattern).
     painted_once: bool,
@@ -59,32 +63,77 @@ pub(crate) struct DialogSlot {
     on_dismiss: DialogDismissFn,
 }
 
+/// One button's resolved paint (SE2): the cascade's background and
+/// color through the palette — the Kit custom variant when anything
+/// resolves, the Kit secondary otherwise (today's quiet look).
+#[derive(Debug, Clone, Copy)]
+struct ButtonPaint {
+    background: Option<gpui::Hsla>,
+    color: Option<gpui::Hsla>,
+}
+
 impl DialogSlot {
     /// The dialog over the script's spec. The shell hands in the two
     /// callbacks every path ends in — the press (with its button id)
     /// and the dismissal — so the surface holds no shell reference
-    /// and the same construction mounts it headless.
+    /// and the same construction mounts it headless. The engine is
+    /// the shell's one `StyleSet`: the body and the buttons resolve
+    /// at construction (an open dialog keeps the look it opened
+    /// with, the standing body-runs shape).
     pub(crate) fn new(
         spec: DialogSpec,
         palette: &status_bar::ScriptPalette,
+        engine: &dropterm::core::style_engine::StyleSet,
         on_press: DialogPressFn,
         on_dismiss: DialogDismissFn,
         cx: &mut Context<Self>,
     ) -> Self {
+        use dropterm::core::style_engine::StyleNode;
         let container_focus = cx.focus_handle();
         let body_runs = status_bar::paint_script_segment(
-            &dropterm::core::status::script_runs(&dropterm::core::slots::SlotContent::Styled {
-                spans: spec.body.clone(),
-            }),
-            dropterm::core::status::ScriptSide::Left,
+            &dropterm::core::status::script_runs(
+                &dropterm::core::slots::SlotContent::Styled {
+                    spans: spec.body.clone(),
+                },
+                engine,
+                None,
+            ),
             palette,
         );
+        let button_paints = spec
+            .buttons
+            .iter()
+            .map(|button| {
+                let classes: Vec<&str> = button
+                    .class
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect();
+                let resolved = engine.resolve(&StyleNode {
+                    element: "dialog-button",
+                    classes: &classes,
+                    id: Some(&button.id),
+                    inline: &button.style,
+                });
+                let paint = |value: Option<&SlotColor>| match value {
+                    Some(SlotColor::Token(token)) => palette.color(token),
+                    Some(SlotColor::Hex(hex)) => status_bar::parse_hex(hex),
+                    None => None,
+                };
+                ButtonPaint {
+                    background: paint(resolved.background.as_ref()),
+                    color: paint(resolved.color.as_ref()),
+                }
+            })
+            .collect();
         Self {
             spec,
             container_focus,
             focused: None,
             escaped: false,
             body_runs,
+            button_paints,
             painted_once: false,
             on_press,
             on_dismiss,
@@ -213,15 +262,18 @@ impl Render for DialogSlot {
                     // The buttons: one Kit Button each, the accent
                     // flag the primary variant, the focused one
                     // hairlined for the keyboard's hand.
-                    .child(self.button_row(fg)),
+                    .child(self.button_row(cx, fg)),
             )
     }
 }
 
 impl DialogSlot {
     /// The dialog's button row: one Kit Button per spec button, the
-    /// press sinking through the shell's slot-event emit.
-    fn button_row(&self, fg: gpui::Hsla) -> gpui::AnyElement {
+    /// press sinking through the shell's slot-event emit. The paint
+    /// is the resolved cascade (SE2): anything resolved rides the
+    /// Kit's custom variant, the rest keep the Kit secondary — the
+    /// accent look is the builtin `dialog-button.accent` rule now.
+    fn button_row(&self, cx: &mut Context<Self>, fg: gpui::Hsla) -> gpui::AnyElement {
         gpui::div()
             .flex()
             .flex_row()
@@ -231,14 +283,20 @@ impl DialogSlot {
                 let id = button.id.clone();
                 let press = Rc::clone(&self.on_press);
                 let focused = self.focused == Some(index);
+                let paint = self.button_paints[index];
                 let verb = Button::new(id.clone())
                     .label(button.label.clone())
                     .small()
                     .on_click(move |_: &gpui::ClickEvent, window, cx| {
                         press(&id, window, cx);
                     });
-                let verb = if button.accent {
-                    verb.primary()
+                let verb = if paint.background.is_some() || paint.color.is_some() {
+                    let mut variant = ButtonCustomVariant::new(cx);
+                    if let Some(background) = paint.background {
+                        variant = variant.color(background);
+                    }
+                    variant = variant.foreground(paint.color.unwrap_or(fg));
+                    verb.custom(variant)
                 } else {
                     verb.secondary()
                 };
@@ -254,6 +312,24 @@ impl DialogSlot {
             }))
             .into_any_element()
     }
+}
+
+/// The dialog's builtin style rules (style-engine SE2): today's
+/// accent look as an ordinary rule in the host's lowest layer — the
+/// `dialog-button.accent` class's background and color, the `accent`
+/// flag's successor. A plugin out-specifying or out-ordering it
+/// replaces it by ordinary cascade.
+pub(crate) fn builtin_rules() -> Vec<dropterm::core::style_engine::Rule> {
+    use dropterm::core::style_engine::{Rule, RuleOrigin, parse_declarations, parse_selector};
+    let rule = |selector: &str, declarations: serde_json::Value| Rule {
+        origin: RuleOrigin::Builtin,
+        selector: parse_selector(selector).expect("the builtin selector parses — pinned by test"),
+        declarations: parse_declarations(&declarations).declarations,
+    };
+    vec![rule(
+        "dialog-button.accent",
+        serde_json::json!({ "background": "accent", "color": "fg" }),
+    )]
 }
 
 #[cfg(test)]
@@ -272,12 +348,14 @@ mod tests {
                 DialogButton {
                     id: "restart".to_owned(),
                     label: "Restart".to_owned(),
-                    accent: true,
+                    class: Some("accent".to_owned()),
+                    style: Vec::new(),
                 },
                 DialogButton {
                     id: "dismiss".to_owned(),
                     label: "Dismiss".to_owned(),
-                    accent: false,
+                    class: None,
+                    style: Vec::new(),
                 },
             ],
         }
@@ -317,10 +395,12 @@ mod tests {
                         let palette = status_bar::ScriptPalette::resolve(
                             &alacritty_terminal::term::color::Colors::default(),
                             gpui::hsla(0., 0., 0.9, 1.),
+                            gpui::hsla(0., 0., 0.1, 1.),
                         );
                         DialogSlot::new(
                             fixture_spec(),
                             &palette,
+                            &dropterm::core::style_engine::StyleSet::default(),
                             Rc::new(move |button_id, _window, _cx| {
                                 press_log.borrow_mut().push(format!("press {button_id}"));
                             }),

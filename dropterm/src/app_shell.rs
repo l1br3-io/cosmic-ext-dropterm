@@ -658,6 +658,12 @@ pub(crate) struct Shell {
     /// `(plugin id, row key)` → the message, set by a rejected write
     /// and cleared by the next accepted one. Pure display state.
     plugin_setting_errors: std::collections::BTreeMap<(String, String), String>,
+    /// The style engine (style-engine SE2): the one `StyleSet` every
+    /// painter resolves through — the builtin layer set here at boot,
+    /// the manifest and runtime sheets fed from SE3 on. The views
+    /// borrow it per frame; the sources mutate it between frames.
+    pub(crate) style_engine:
+        std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
     /// The watcher's shell-side wake (plugin-manifest): the same
     /// notify callback that queues the host's `Reload` pings this
     /// channel; the pump drains it into [`Self::rescan_manifests`].
@@ -996,6 +1002,15 @@ impl Shell {
             runtime_script_commands: Vec::new(),
             plugin_settings_values,
             plugin_setting_errors: std::collections::BTreeMap::new(),
+            style_engine: {
+                let engine = std::rc::Rc::new(std::cell::RefCell::new(
+                    dropterm::core::style_engine::StyleSet::default(),
+                ));
+                let mut builtins = crate::dialog_slot::builtin_rules();
+                builtins.extend(crate::status_bar::builtin_rules());
+                engine.borrow_mut().set_builtin(builtins);
+                engine
+            },
             manifest_wake,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
@@ -3034,7 +3049,8 @@ impl Shell {
         let pane_background =
             colors[alacritty_terminal::vte::ansi::NamedColor::Background].unwrap_or(fallback);
         let (_, fg) = tab_bar::strip_pair(Some(pane_background));
-        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
+        let bg = tab_bar::hsla(pane_background.r, pane_background.g, pane_background.b);
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let shell = cx.entity();
         let on_press: crate::dialog_slot::DialogPressFn = std::rc::Rc::new({
             let shell = shell.clone();
@@ -3064,8 +3080,9 @@ impl Shell {
                 });
             }
         });
+        let engine = self.style_engine.borrow();
         let dialog = cx.new(|cx| {
-            crate::dialog_slot::DialogSlot::new(spec, &palette, on_press, on_dismiss, cx)
+            crate::dialog_slot::DialogSlot::new(spec, &palette, &engine, on_press, on_dismiss, cx)
         });
         // The close path's repair handle, captured while the read is
         // safe (the palette's own shape).
@@ -5426,8 +5443,12 @@ impl Shell {
         let (strip, fg) = tab_bar::strip_pair(pane_background);
         // The styled runs' palette (styled-status-slot): resolved
         // beside the strip pair, same scheme, same render — one
-        // color source, no second theme path.
-        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
+        // color source, no second theme path. `bg` is the worn
+        // scheme's background (the strip's undimmed base).
+        let bg = pane_background.map_or(tab_bar::hsla(0, 0, 0), |rgb| {
+            tab_bar::hsla(rgb.r, rgb.g, rgb.b)
+        });
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let width = self
             .last_bounds
             .map_or(0.0, |bounds| bounds.size.width.as_f32());
@@ -5461,6 +5482,7 @@ impl Shell {
         status_bar::StatusBandView::new(self.status.clone(), strip, fg)
             .font(self.band_font.clone())
             .palette(palette)
+            .engine(std::rc::Rc::clone(&self.style_engine))
             .show_border(self.config.status_bar_border)
             .at_bottom(self.inputs.geometry.edge == Edge::Top)
             .width(width)
@@ -6374,43 +6396,50 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(gpui::px(8.))
-            .children(self.panel_rail.sections_laid().iter().map(|section| {
-                let title = gpui::div()
-                    .text_size(gpui::px(11.))
-                    .text_color(theme.muted_foreground)
-                    .child(section.title.clone());
-                let shell = cx.entity();
-                let view_id = section.id.clone();
-                let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
-                    section.rows.iter().map(|(press_id, runs)| {
-                        // The row is the press target (panel-slot
-                        // PS3): the hand gets the pointer and the
-                        // hover, the press routes the slot-event
-                        // through the shell's one emit.
-                        let shell = shell.clone();
-                        let view_id = view_id.clone();
-                        let press_id = press_id.clone();
+            .children(
+                self.panel_rail
+                    .sections_laid(&self.style_engine.borrow())
+                    .iter()
+                    .map(|section| {
+                        let title = gpui::div()
+                            .text_size(gpui::px(11.))
+                            .text_color(theme.muted_foreground)
+                            .child(section.title.clone());
+                        let shell = cx.entity();
+                        let view_id = section.id.clone();
+                        let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
+                            section.rows.iter().map(|(press_id, runs)| {
+                                // The row is the press target (panel-slot
+                                // PS3): the hand gets the pointer and the
+                                // hover, the press routes the slot-event
+                                // through the shell's one emit.
+                                let shell = shell.clone();
+                                let view_id = view_id.clone();
+                                let press_id = press_id.clone();
+                                gpui::div()
+                                    .id(gpui::ElementId::Name(
+                                        format!("panel-row-{view_id}-{press_id}").into(),
+                                    ))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.secondary))
+                                    .on_click(move |_: &gpui::ClickEvent, _window, cx| {
+                                        shell.update(cx, |shell, _cx| {
+                                            shell.panel_row_pressed(&view_id, &press_id);
+                                        });
+                                    })
+                                    .children(
+                                        runs.iter().map(|run| gpui::div().child(run.text.clone())),
+                                    )
+                            }),
+                        );
                         gpui::div()
-                            .id(gpui::ElementId::Name(
-                                format!("panel-row-{view_id}-{press_id}").into(),
-                            ))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme.secondary))
-                            .on_click(move |_: &gpui::ClickEvent, _window, cx| {
-                                shell.update(cx, |shell, _cx| {
-                                    shell.panel_row_pressed(&view_id, &press_id);
-                                });
-                            })
-                            .children(runs.iter().map(|run| gpui::div().child(run.text.clone())))
+                            .flex()
+                            .flex_col()
+                            .gap(gpui::px(4.))
+                            .child(title)
+                            .child(rows)
                     }),
-                );
-                gpui::div()
-                    .flex()
-                    .flex_col()
-                    .gap(gpui::px(4.))
-                    .child(title)
-                    .child(rows)
-            }));
+            );
         div()
             .size_full()
             .flex()
