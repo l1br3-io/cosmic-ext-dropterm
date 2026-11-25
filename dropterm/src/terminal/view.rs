@@ -527,16 +527,21 @@ impl TerminalPane {
                     .expect("engine lock")
                     .note_apc_payload(&payload);
             }
-            // SI-3 stopgaps (the PromptExit-at-status-exit precedent):
-            // the fork's two new zone events parse and arrive, but
-            // their engine seat — the PromptZone machine and the
-            // prompt-detection arm — is SI-4; until it lands the
-            // arms forward nothing.
-            #[expect(
-                clippy::match_same_arms,
-                reason = "a stopgap pair, not the surface arms' twin: SI-4 gives each its engine note"
-            )]
-            TermEvent::PromptStart | TermEvent::CommandStart => {}
+            // The zone marks' engine notes (shell-integration spec,
+            // SI-4): engine only, no lua-bus forward — event-hooks'
+            // vocabulary is not this module's.
+            TermEvent::PromptStart => {
+                self.terminal
+                    .lock()
+                    .expect("engine lock")
+                    .note_prompt_start();
+            }
+            TermEvent::CommandStart => {
+                self.terminal
+                    .lock()
+                    .expect("engine lock")
+                    .note_command_start();
+            }
             TermEvent::PromptExit(code) => {
                 self.terminal
                     .lock()

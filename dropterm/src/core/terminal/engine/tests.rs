@@ -5425,6 +5425,101 @@ fn an_unknown_prompt_maps_to_unsure_and_a_read_one_to_live() {
 }
 
 #[test]
+fn the_prompt_zone_starts_unfed_and_the_grid_read_decides() {
+    // The integration's inertness before any mark arrives (the
+    // fallback pin): a fresh terminal is Unfed, and the gates read
+    // exactly today's verdict — the grid-read's Unsure, no anchor
+    // adopted, nothing reported.
+    let terminal = rich_terminal();
+    assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Unsure
+    );
+}
+
+#[test]
+fn a_prompt_start_mark_flips_the_zone_and_lives_without_a_grid_read() {
+    // The integration arm's whole point (the spec's OQ-4 narrowing):
+    // one 133;A — the shell's own word, no grid-read at all — and
+    // the previously-unsure verdict flips to Live. The terminal
+    // never drives to a prompt, so no suggest anchor exists; only
+    // the zone can be speaking.
+    let mut terminal = rich_terminal();
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Unsure
+    );
+    terminal.note_prompt_start();
+    assert_eq!(terminal.prompt_zone(), PromptZone::InPrompt);
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Live
+    );
+}
+
+#[test]
+fn a_command_start_mark_stands_aside_to_the_grid_read() {
+    // C means a program runs: the zone stands the integration arm
+    // down and the verdict returns to the grid-read's — Unsure
+    // without an anchor, byte-identical to today.
+    let mut terminal = rich_terminal();
+    terminal.note_prompt_start();
+    terminal.note_command_start();
+    assert_eq!(terminal.prompt_zone(), PromptZone::InCommand);
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Unsure
+    );
+}
+
+#[test]
+fn a_command_start_after_a_grid_read_leaves_the_read_verdict_standing() {
+    // InCommand does not force Unsure either — the arm defers to
+    // the grid-read verdict whatever it is (the byte-identical
+    // fallback): a grid-read Live stays Live until the marks say
+    // otherwise. Driven to a real prompt first, so the anchor
+    // stands.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Live
+    );
+    terminal.note_command_start();
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Live
+    );
+}
+
+#[test]
+fn a_prompt_exit_mark_flips_nothing() {
+    // D is a report, not a transition (the spec's rule): the
+    // command finished, and the next A confirms the prompt — the
+    // zone keeps InPrompt through the exit report.
+    let mut terminal = rich_terminal();
+    terminal.note_prompt_start();
+    terminal.note_prompt_exit(7);
+    assert_eq!(terminal.prompt_zone(), PromptZone::InPrompt);
+}
+
+#[test]
+fn a_terminal_reset_returns_the_zone_to_unfed() {
+    // RIS clears the shell's marks with everything else (the
+    // 7501-status discipline): back to Unfed, the grid-read
+    // deciding again exactly as at boot.
+    let mut terminal = rich_terminal();
+    terminal.note_prompt_start();
+    terminal.note_terminal_reset();
+    assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
+    assert_eq!(
+        terminal.editor_gates().prompt_detection,
+        editor::PromptDetection::Unsure
+    );
+}
+
+#[test]
 fn a_foreground_child_stands_the_rich_editor_aside() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);

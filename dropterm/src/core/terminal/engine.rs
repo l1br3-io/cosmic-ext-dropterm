@@ -591,6 +591,27 @@ impl Metadata {
     }
 }
 
+/// The shell's prompt zone, from the shell's own OSC 133 marks
+/// (shell-integration spec) — the one state the rich-input
+/// prompt-detection gate reads beside the grid-read. Written only by
+/// the event surface ([`Terminal::note_prompt_start`],
+/// [`Terminal::note_command_start`]); a `133;D` report flips nothing
+/// (the next `A` confirms the prompt), and RIS returns it to `Unfed`
+/// with everything else the reset clears.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PromptZone {
+    /// No mark seen yet — no integration on this shell, or nothing
+    /// reported: the grid-read decides, exactly as today.
+    #[default]
+    Unfed,
+    /// `133;A` seen with no `C` since — the shell is printing its
+    /// prompt; the editor may own the line.
+    InPrompt,
+    /// `133;C` seen — the entered command is running; the
+    /// integration arm stands aside to the grid-read.
+    InCommand,
+}
+
 /// One terminal: the `alacritty_terminal` grid behind a `FairMutex`,
 /// its cosmic-text buffer, the PTY notifier, and the state that
 /// renders one grid into the other.
@@ -772,6 +793,12 @@ pub struct Terminal {
     /// ignored whole, a newer one replaces whatever stood. Dies with
     /// the terminal, so a respawn starts clean by construction.
     reported_cwd: Option<ReportedCwd>,
+    /// The shell's prompt zone (shell-integration spec) — the
+    /// `133;A`/`133;C` marks' state machine, written only by the
+    /// event surface and read by the rich-input prompt-detection
+    /// gate. Dies with the terminal, so a respawn starts `Unfed` by
+    /// construction.
+    prompt_zone: PromptZone,
     /// The running command's own progress report (osc94-progress
     /// spec) — the OSC 9;4 state and last value, written only by
     /// the event surface ([`Self::note_progress_report`]) and
@@ -1687,6 +1714,7 @@ impl Terminal {
             command_finished: None,
             missed_activity: Cell::new(false),
             reported_cwd: None,
+            prompt_zone: PromptZone::default(),
             settle_prompt_pending: false,
             suggest: {
                 // The history seed (history-seed spec): read once at
@@ -1943,8 +1971,11 @@ impl Terminal {
 
     /// The editor's live-prompt gates (rich-input spec, RI-3): the
     /// same facts the ghost lane reads — focus, a fresh foreground
-    /// check, the viewport's bottom — plus the grid-read's prompt
-    /// truth: an adopted suggest anchor is a prompt the grid can see
+    /// check, the viewport's bottom — plus the prompt truth: the
+    /// shell's own mark first (shell-integration spec — zone
+    /// `InPrompt` is `Live` with no grid-read at all, the OQ-4
+    /// narrowing), and otherwise the grid-read's verdict unchanged —
+    /// an adopted suggest anchor is a prompt the grid can see
     /// (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
     pub fn editor_gates(&self) -> editor::Gates {
         let at_bottom = {
@@ -1952,15 +1983,21 @@ impl Terminal {
             let grid = term.grid();
             grid.display_offset() == 0 && grid.cursor.point.line == grid.bottommost_line()
         };
+        let prompt_detection = match self.prompt_zone {
+            PromptZone::InPrompt => editor::PromptDetection::Live,
+            PromptZone::InCommand | PromptZone::Unfed => {
+                if self.suggest.anchored() {
+                    editor::PromptDetection::Live
+                } else {
+                    editor::PromptDetection::Unsure
+                }
+            }
+        };
         editor::Gates {
             focused: self.is_focused,
             no_foreground_child: !self.foreground_child_running(),
             at_bottom,
-            prompt_detection: if self.suggest.anchored() {
-                editor::PromptDetection::Live
-            } else {
-                editor::PromptDetection::Unsure
-            },
+            prompt_detection,
         }
     }
 
@@ -2057,6 +2094,30 @@ impl Terminal {
         self.timer.last_duration()
     }
 
+    /// Records the shell's prompt-start mark (shell-integration
+    /// spec): the OSC 133;A report forwarded from the event surface —
+    /// the shell is about to print its prompt, so the zone flips to
+    /// `InPrompt` and the rich-input gate may claim without any
+    /// grid-read.
+    pub fn note_prompt_start(&mut self) {
+        self.prompt_zone = PromptZone::InPrompt;
+    }
+
+    /// Records the shell's command-start mark (shell-integration
+    /// spec): the OSC 133;C report forwarded from the event surface —
+    /// the entered command is running, so the zone flips to
+    /// `InCommand` and the integration arm stands aside to the
+    /// grid-read.
+    pub fn note_command_start(&mut self) {
+        self.prompt_zone = PromptZone::InCommand;
+    }
+
+    /// The shell's prompt zone (shell-integration spec) — the marks'
+    /// state as the prompt-detection gate reads it.
+    pub fn prompt_zone(&self) -> PromptZone {
+        self.prompt_zone
+    }
+
     /// Records the shell's own verdict for the finished command
     /// (status-exit spec): the OSC 133;D report forwarded from the
     /// event surface, held by the command timer on the frozen pair's
@@ -2148,9 +2209,12 @@ impl Terminal {
 
     /// The terminal was fully reset (osc7501-status spec): RIS
     /// removes every record — the fork's `FullReset` event's seat,
-    /// clearing even the persistent `done`/`error`.
+    /// clearing even the persistent `done`/`error` and the shell's
+    /// prompt-zone marks (shell-integration spec: the reset wipes the
+    /// marks the shell would have to re-emit).
     pub fn note_terminal_reset(&mut self) {
         self.program_status = None;
+        self.prompt_zone = PromptZone::Unfed;
     }
 
     /// Records one OSC 1337 arrival (iterm-images spec): the fork's
