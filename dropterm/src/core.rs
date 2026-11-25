@@ -51,6 +51,7 @@ pub mod slide;
 pub mod slots;
 pub mod spawn;
 pub mod status;
+pub mod style_engine;
 pub mod surface_lifecycle;
 pub mod system_mode;
 pub mod tabs;
