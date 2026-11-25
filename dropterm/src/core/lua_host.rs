@@ -65,7 +65,9 @@ use notify::Watcher as _;
 
 use crate::core::keybinds::{CommandRow, MAX_COMMAND_NAME_LEN, valid_command_name};
 use crate::core::plugins_manifest;
-use crate::core::plugins_manifest::{Activation, PluginScan, SCRIPT_FILE_NAME, ScannedPlugin};
+use crate::core::plugins_manifest::{
+    Activation, PluginScan, SCRIPT_FILE_NAME, ScannedPlugin, StoreValues,
+};
 use crate::core::slots::{self, SlotContent};
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use crate::core::tabs::{TabTitleAsk, TabTitleValue};
@@ -192,6 +194,16 @@ pub enum HostCommand {
     StartupMark {
         /// Boot-to-first-frame milliseconds at the mark.
         elapsed_ms: u64,
+    },
+    /// The shell's settings push (plugin-manifest PM4): the store's
+    /// current per-plugin values, sent at boot and on every settings
+    /// save. The host holds them and merges the dispatching plugin's
+    /// values-with-defaults into every ctx. Passive data — no load
+    /// rides it; the external-edit ruling stands (the host never
+    /// watches the file, the next launch reads it).
+    SettingsSync {
+        /// The whole store's values, keyed by plugin id.
+        values: StoreValues,
     },
 }
 
@@ -563,16 +575,74 @@ impl LuaHostHandle {
     }
 }
 
+/// The settings values the shell pushed (plugin-manifest PM4), shared
+/// between the host thread's state and the interpreter's port
+/// closures — a scripted `emit`'s dispatch resolves like the
+/// host-driven ones. Single-threaded host: interior mutability, no
+/// locks (the `TimeoutFrame` rule).
+type SharedSettings = std::rc::Rc<std::cell::RefCell<StoreValues>>;
+
+/// The scan's declared registry, shared the same way — the ctx carry
+/// resolves against the rows it holds.
+type SharedManifests = std::rc::Rc<std::cell::RefCell<Vec<ScannedPlugin>>>;
+
+/// The owner plugin's settings as a JSON object (plugin-manifest
+/// PM4): the declared rows' keys, each the stored value when it
+/// matches the row's type and the row's default otherwise — a
+/// missing key and a wrong-typed store value both fail-to-default,
+/// the latter costing one line (the store is user-writable config:
+/// untrusted at the merge, validated at it). A plugin with no
+/// declared rows is an empty object — never a missing key; an owner
+/// no scan declares (a handler whose script loaded before any scan
+/// saw it) the same.
+fn settings_object(
+    owner: Option<&str>,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
+    events: &Sender<HostEvent>,
+) -> serde_json::Value {
+    let Some(owner) = owner else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let manifests = manifests.borrow();
+    let Some(plugin) = manifests.iter().find(|plugin| plugin.id == owner) else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let values = settings.borrow();
+    let stored = values.get(owner);
+    let mut object = serde_json::Map::new();
+    for row in &plugin.settings {
+        let value = stored.and_then(|rows| rows.get(&row.key));
+        let value = match value {
+            Some(value) if plugins_manifest::value_matches_kind(&row.kind, value) => value.clone(),
+            Some(_) => {
+                log(
+                    events,
+                    format!(
+                        "setting '{}.{}' is the wrong type; using the declared default",
+                        owner, row.key
+                    ),
+                );
+                row.kind.default_value()
+            }
+            None => row.kind.default_value(),
+        };
+        object.insert(row.key.clone(), value);
+    }
+    serde_json::Value::Object(object)
+}
+
 /// The host thread's activation state, living across generations
 /// (plugin-manifest spec): the active set — the plugin ids whose
-/// `plugin.lua` loads on every interpreter build — and the latest
-/// scan's registry, the `RunCommand` gate's source of truth about who
-/// declares a slug. A lazy plugin that activated stays active for the
-/// session (the set survives teardown and the watcher's recreate);
+/// `plugin.lua` loads on every interpreter build — and the shared
+/// carries (the scan's declared registry, the shell-pushed settings)
+/// the ctx merge reads. A lazy plugin that activated stays active for
+/// the session (the set survives teardown and the watcher's recreate);
 /// a plugin the fresh scan no longer sees drops from it.
 struct ActivationState {
     active: BTreeSet<String>,
-    plugins: Vec<ScannedPlugin>,
+    plugins: SharedManifests,
+    settings: SharedSettings,
     /// The startup mark's ruling, once it arrives: `true` — at or
     /// under the 50 ms window, the `AfterStartup` set joins at every
     /// scan from here on (the first one included, so a mark that
@@ -583,10 +653,11 @@ struct ActivationState {
 }
 
 impl ActivationState {
-    fn new() -> Self {
+    fn new(plugins: SharedManifests, settings: SharedSettings) -> Self {
         Self {
             active: BTreeSet::new(),
-            plugins: Vec::new(),
+            plugins,
+            settings,
             startup_ruling: None,
         }
     }
@@ -594,12 +665,12 @@ impl ActivationState {
     /// Fold one scan into the state: the fresh `AtStartup` set joins,
     /// the previously active plugins still present stay active, the
     /// `AfterStartup` set joins under the mark's at-window ruling, and
-    /// the registry replaces.
+    /// the shared registry replaces.
     fn apply_scan(&mut self, scan: &PluginScan) {
-        self.plugins.clone_from(&scan.plugins);
+        (*self.plugins.borrow_mut()).clone_from(&scan.plugins);
         self.active
-            .retain(|id| self.plugins.iter().any(|plugin| &plugin.id == id));
-        for plugin in &self.plugins {
+            .retain(|id| self.plugins.borrow().iter().any(|plugin| &plugin.id == id));
+        for plugin in self.plugins.borrow().iter() {
             if plugin.activation == Activation::AtStartup
                 || (plugin.activation == Activation::AfterStartup
                     && self.startup_ruling == Some(true))
@@ -614,15 +685,16 @@ impl ActivationState {
     /// lookup. Two plugins declaring one slug is not this module's
     /// rejection: the first dir-order seat wins (the advertising
     /// merge, PM3, rules the same).
-    fn lazy_plugin_declaring(&self, name: &str) -> Option<&str> {
+    fn lazy_plugin_declaring(&self, name: &str) -> Option<String> {
         self.plugins
+            .borrow()
             .iter()
             .find(|plugin| {
                 plugin.activation == Activation::Lazy
                     && !self.active.contains(&plugin.id)
                     && plugin.commands.iter().any(|command| command.id == name)
             })
-            .map(|plugin| plugin.id.as_str())
+            .map(|plugin| plugin.id.clone())
     }
 
     /// Join every `AfterStartup` plugin to the active set, now and at
@@ -632,7 +704,7 @@ impl ActivationState {
     /// next scan's fold carries the set in.
     fn activate_after_startup(&mut self) {
         self.startup_ruling = Some(true);
-        for plugin in &self.plugins {
+        for plugin in self.plugins.borrow().iter() {
             if plugin.activation == Activation::AfterStartup {
                 self.active.insert(plugin.id.clone());
             }
@@ -685,9 +757,15 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
     // Set by a `Reload` on a live generation: the next generation
     // loads eagerly at build (the rescan is the work).
     let mut rescan_now = false;
+    // The shared carries (plugin-manifest PM4): the owner stamp and
+    // the settings merge's two sources, shared between the state and
+    // every generation's port closures.
+    let current_plugin = Rc::new(std::cell::RefCell::new(None));
+    let settings: SharedSettings = Rc::new(std::cell::RefCell::new(StoreValues::new()));
+    let manifests: SharedManifests = Rc::new(std::cell::RefCell::new(Vec::new()));
     // The activation machine's memory (plugin-manifest spec): the
     // active set and the scan registry, living across generations.
-    let mut state = ActivationState::new();
+    let mut state = ActivationState::new(Rc::clone(&manifests), Rc::clone(&settings));
     // Set by a past-the-window `StartupMark`: the AfterStartup
     // plugins activate at the first idle window the queue drains
     // into (the poll in [`pull_command`] observes it).
@@ -697,7 +775,9 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
     // reorders, nothing drops.
     let mut held: Option<HostCommand> = None;
     loop {
-        let Some(generation) = Generation::build(events, &frame) else {
+        let Some(generation) =
+            Generation::build(events, &frame, &current_plugin, &settings, &manifests)
+        else {
             return;
         };
         if first_generation {
@@ -717,6 +797,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 events,
                 &frame,
                 state,
+                &generation.current_plugin,
             );
         };
         // Whether this generation's scripts have been loaded: a fresh
@@ -787,7 +868,16 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             {
                                 frame.ctx_tab.set(Some(tab));
                             }
-                            dispatch(events, &generation.registry, &event, &value, &frame);
+                            dispatch(
+                                &generation.lua,
+                                events,
+                                &generation.registry,
+                                &event,
+                                &value,
+                                &frame,
+                                &generation.settings,
+                                &generation.manifests,
+                            );
                         }
                         Err(err) => log(
                             events,
@@ -857,7 +947,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             events,
                             format!("{plugin_id}: activating for command '{name}'"),
                         );
-                        state.active.insert(plugin_id.to_owned());
+                        state.active.insert(plugin_id);
                         held = Some(HostCommand::RunCommand { name, tab });
                         reload_requested = true;
                         break;
@@ -866,6 +956,11 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     if frame.hard_tripped.get() {
                         break;
                     }
+                }
+                HostCommand::SettingsSync { values } => {
+                    // Passive data: the carry replaces, no load rides
+                    // it. The next dispatch resolves against it.
+                    *state.settings.borrow_mut() = values;
                 }
                 HostCommand::StartupMark { elapsed_ms } => {
                     if elapsed_ms <= STARTUP_WINDOW_MS {
@@ -917,7 +1012,8 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                             // registry is the truth about who answers.
                             Ok(
                                 run @ (HostCommand::RunCommand { .. }
-                                | HostCommand::StartupMark { .. }),
+                                | HostCommand::StartupMark { .. }
+                                | HostCommand::SettingsSync { .. }),
                             ) => {
                                 held = Some(run);
                                 break;
@@ -1015,7 +1111,11 @@ impl TimeoutFrame {
 /// registries — the event-bus table behind `dropterm.on`/`emit`, the
 /// segment registry behind `dropterm.status_segment`, the
 /// tab-title provider seat behind `dropterm.tab_title`, and the
-/// command registry behind `dropterm.command`.
+/// command registry behind `dropterm.command` — plus the owner stamp
+/// the loader sets around each script's exec (every registration
+/// reads it into its entry's `owner` field: the ctx carry's routing,
+/// plugin-manifest PM4) and the shared carries the ctx merges resolve
+/// against.
 /// Generation 1 is born at spawn; every later one is a hard-cap
 /// recreate — fresh state, no registrations (spec assumption 7).
 struct Generation {
@@ -1025,6 +1125,9 @@ struct Generation {
     tab_title: Table,
     commands: Table,
     panel_views: Table,
+    current_plugin: Rc<std::cell::RefCell<Option<String>>>,
+    settings: SharedSettings,
+    manifests: SharedManifests,
 }
 
 impl Generation {
@@ -1032,7 +1135,13 @@ impl Generation {
     /// installed. `None` is the nothing-scriptable-remains case: the
     /// port or the bounds refusing to install costs one line and ends
     /// the host thread.
-    fn build(events: &Sender<HostEvent>, frame: &Rc<TimeoutFrame>) -> Option<Generation> {
+    fn build(
+        events: &Sender<HostEvent>,
+        frame: &Rc<TimeoutFrame>,
+        current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
+        settings: &SharedSettings,
+        manifests: &SharedManifests,
+    ) -> Option<Generation> {
         // SAFETY: `StdLib::ALL` loads the unsafe io/os/debug libraries.
         // That is the spec's ratified trust model (assumption 2):
         // plugins are the user's own config executing as the user, no
@@ -1040,7 +1149,7 @@ impl Generation {
         // Nothing untrusted crosses this state from the host's side.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
         let (registry, segments, tab_title, commands, panel_views) =
-            match install_port(&lua, events, frame) {
+            match install_port(&lua, events, frame, current_plugin, settings, manifests) {
                 Ok(registries) => registries,
                 Err(err) => {
                     log(
@@ -1064,6 +1173,9 @@ impl Generation {
             tab_title,
             commands,
             panel_views,
+            current_plugin: Rc::clone(current_plugin),
+            settings: Rc::clone(settings),
+            manifests: Rc::clone(manifests),
         })
     }
 }
@@ -1129,15 +1241,22 @@ fn install_bounds(
 /// spec), the module served to `require('dropterm')` through
 /// `package.loaded` (the stdlib's own module cache — no require-path
 /// widening), and the `print` forwarder. Returns the registries for
-/// host-side use.
+/// host-side use. Every registration stamps its entry's `owner` from
+/// the loader's current-plugin cell (plugin-manifest PM4): the ctx
+/// carry routes a handler's settings through the plugin that
+/// registered it.
 fn install_port(
     lua: &Lua,
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
+    current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
 ) -> mlua::Result<(Table, Table, Table, Table, Table)> {
     let registry = lua.create_table()?;
 
     let on_table = registry.clone();
+    let on_owner = Rc::clone(current_plugin);
     let on = lua.create_function(move |lua, (event, handler): (String, Function)| {
         let handlers: Table =
             if let Some(existing) = on_table.get::<Option<Table>>(event.clone())? {
@@ -1148,15 +1267,21 @@ fn install_port(
                 fresh
             };
         // The sequence's next slot: registration order is dispatch
-        // order.
-        handlers.set(handlers.raw_len() + 1, handler)?;
+        // order. The entry carries its owner beside the handler — the
+        // ctx carry's routing.
+        let entry = lua.create_table()?;
+        entry.set("handler", handler)?;
+        entry.set("owner", on_owner.borrow().clone())?;
+        handlers.set(handlers.raw_len() + 1, entry)?;
         Ok(())
     })?;
 
     let emit_registry = registry.clone();
     let emit_events = events.clone();
     let emit_frame = frame.clone();
-    let emit = lua.create_function(move |_lua, (event, payload): (String, Value)| {
+    let emit_settings = Rc::clone(settings);
+    let emit_manifests = Rc::clone(manifests);
+    let emit = lua.create_function(move |lua, (event, payload): (String, Value)| {
         if event == STATUS_REFRESH_EVENT {
             // The reserved name is translated, not dispatched: the
             // dirty request the tick drains into a requery
@@ -1164,7 +1289,16 @@ fn install_port(
             let _ = emit_events.send(HostEvent::SegmentsDirty);
             return Ok(());
         }
-        dispatch(&emit_events, &emit_registry, &event, &payload, &emit_frame);
+        dispatch(
+            lua,
+            &emit_events,
+            &emit_registry,
+            &event,
+            &payload,
+            &emit_frame,
+            &emit_settings,
+            &emit_manifests,
+        );
         Ok(())
     })?;
 
@@ -1175,17 +1309,20 @@ fn install_port(
     // kept.
     let segment_table = lua.create_table()?;
     let segments_for_register = segment_table.clone();
+    let segment_owner = Rc::clone(current_plugin);
     let status_segment = lua.create_function(move |lua, (name, handler): (String, Function)| {
         for slot in 1..=segments_for_register.raw_len() {
             let entry: Table = segments_for_register.get(slot)?;
             if entry.get::<String>("name")? == name {
                 entry.set("handler", handler)?;
+                entry.set("owner", segment_owner.borrow().clone())?;
                 return Ok(());
             }
         }
         let entry = lua.create_table()?;
         entry.set("name", name)?;
         entry.set("handler", handler)?;
+        entry.set("owner", segment_owner.borrow().clone())?;
         segments_for_register.set(segments_for_register.raw_len() + 1, entry)?;
         Ok(())
     })?;
@@ -1198,9 +1335,13 @@ fn install_port(
     let tab_title_seat = lua.create_table()?;
     let seat_for_register = tab_title_seat.clone();
     let seat_events = events.clone();
-    let tab_title = lua.create_function(move |_lua, handler: Function| {
-        let replaced = seat_for_register.get::<Option<Function>>(1)?.is_some();
-        seat_for_register.set(1, handler)?;
+    let seat_owner = Rc::clone(current_plugin);
+    let tab_title = lua.create_function(move |lua, handler: Function| {
+        let replaced = seat_for_register.get::<Option<Table>>(1)?.is_some();
+        let entry = lua.create_table()?;
+        entry.set("handler", handler)?;
+        entry.set("owner", seat_owner.borrow().clone())?;
+        seat_for_register.set(1, entry)?;
         log(
             &seat_events,
             if replaced {
@@ -1220,6 +1361,7 @@ fn install_port(
     // an invalid name rejects with one line, never a raise.
     let command_table = lua.create_table()?;
     let commands_for_register = command_table.clone();
+    let command_owner = Rc::clone(current_plugin);
     let command_events = events.clone();
     let command = lua.create_function(
         move |lua, (name, description, handler): (String, String, Function)| {
@@ -1238,6 +1380,7 @@ fn install_port(
                 if entry.get::<String>("name")? == name {
                     entry.set("description", description)?;
                     entry.set("handler", handler)?;
+                    entry.set("owner", command_owner.borrow().clone())?;
                     log(&command_events, format!("command '{name}' replaced"));
                     return Ok(());
                 }
@@ -1246,6 +1389,7 @@ fn install_port(
             entry.set("name", name.clone())?;
             entry.set("description", description)?;
             entry.set("handler", handler)?;
+            entry.set("owner", command_owner.borrow().clone())?;
             commands_for_register.set(commands_for_register.raw_len() + 1, entry)?;
             log(&command_events, format!("command '{name}' registered"));
             Ok(())
@@ -1305,6 +1449,7 @@ fn install_port(
     let panel_views = lua.create_table()?;
     let panel_events = events.clone();
     let panel_registry = panel_views.clone();
+    let panel_owner = Rc::clone(current_plugin);
     let panel_view = lua.create_function(
         move |lua, (id, config, handler): (String, Table, Function)| {
             // The port's own validation: the id's shape, the v1
@@ -1368,7 +1513,14 @@ fn install_port(
             entry.set("name", id.clone())?;
             entry.set("title", title.clone())?;
             entry.set("handler", handler)?;
-            panel_registry.push(entry)?;
+            entry.set("owner", panel_owner.borrow().clone())?;
+            // Two keys, one table: the array slot the sync's walk
+            // reads, and the id key the ask reads (the array's
+            // replacement hole above keeps the sync skipping the dead
+            // seat; the id key here is the live one, overwritten on
+            // every re-registration).
+            panel_registry.push(entry.clone())?;
+            panel_registry.set(id, entry)?;
             Ok(())
         },
     )?;
@@ -1404,12 +1556,19 @@ fn install_port(
 /// and which unwinds every nested dispatch: a scripted `emit` inside a
 /// handler shares the enclosing dispatch's frame, so the bounds
 /// measure the whole command's work, nested emits included.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per dispatch input: the payload, the frame, and the ctx carry's two sources"
+)]
 fn dispatch(
+    lua: &Lua,
     events: &Sender<HostEvent>,
     registry: &Table,
     event: &str,
     payload: &Value,
     frame: &TimeoutFrame,
+    settings: &SharedSettings,
+    manifests: &SharedManifests,
 ) {
     let handlers: Option<Table> = match registry.get(event) {
         Ok(handlers) => handlers,
@@ -1425,17 +1584,31 @@ fn dispatch(
         return;
     };
     for slot in 1..=handlers.raw_len() {
-        let handler: Function = match handlers.get(slot) {
-            Ok(handler) => handler,
-            Err(err) => {
-                log(
-                    events,
-                    format!("a handler for '{event}' would not read: {err}"),
-                );
-                continue;
-            }
+        let Ok(entry) = handlers.get::<Table>(slot) else {
+            log(events, format!("a handler for '{event}' would not read"));
+            continue;
         };
-        if let Err(err) = handler.call::<()>(payload.clone()) {
+        let Ok(handler) = entry.get::<Function>("handler") else {
+            log(events, format!("a handler for '{event}' would not read"));
+            continue;
+        };
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let settings_json = settings_object(owner.as_deref(), settings, manifests, events);
+        let Ok(settings_value) = lua.to_value(&serde_json::json!({ "settings": settings_json }))
+        else {
+            // Unreachable for JSON payloads; honest if it ever fires:
+            // the handler runs without the carry.
+            log(
+                events,
+                format!("the settings carry for '{event}' would not convert"),
+            );
+            continue;
+        };
+        // The payload stays the handler's first argument exactly as
+        // documented; the settings ctx rides the second — an existing
+        // one-parameter handler ignores it, a settings-aware one
+        // reads it (plugin-manifest PM4).
+        if let Err(err) = handler.call::<()>((payload.clone(), settings_value)) {
             if frame.hard_tripped.get() {
                 // The hook logged the reload line; this interpreter is
                 // about to be torn down and the abort unwinds silently.
@@ -1512,23 +1685,31 @@ fn load_scripts(
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
     state: &mut ActivationState,
+    current_plugin: &Rc<std::cell::RefCell<Option<String>>>,
 ) {
     let scan = plugins_manifest::scan(dir);
     for line in &scan.logs {
         log(events, line);
     }
     state.apply_scan(&scan);
-    for id in &state.active {
-        let Some(plugin) = state.plugins.iter().find(|plugin| &plugin.id == id) else {
-            continue;
-        };
-        if !plugin.has_script {
-            // Nothing to load; the manifest rows still advertise (the
-            // Plugins page and the command rows ride the scan, not
-            // the interpreter). The empty dir is a scaffold, not a
-            // failure — silent.
-            continue;
-        }
+    // The active set's loadable scripts, resolved against the fresh
+    // scan up front — a plugin dir without its script loads nothing
+    // silently (the manifest rows still advertise; the empty dir is a
+    // scaffold, not a failure).
+    let loadable: Vec<String> = {
+        let plugins = state.plugins.borrow();
+        state
+            .active
+            .iter()
+            .filter(|id| {
+                plugins
+                    .iter()
+                    .any(|plugin| &plugin.id == *id && plugin.has_script)
+            })
+            .cloned()
+            .collect()
+    };
+    for id in &loadable {
         let path = dir.join(id).join(SCRIPT_FILE_NAME);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -1537,8 +1718,15 @@ fn load_scripts(
                 continue;
             }
         };
+        // The owner stamp: every registration inside this exec reads
+        // the plugin id into its entry's owner field — the ctx carry's
+        // routing (plugin-manifest PM4). The generation's cell, shared
+        // with the port closures.
+        *current_plugin.borrow_mut() = Some(id.clone());
         frame.begin(false, format_args!("loading {id}"));
-        match lua.load(text).set_name(id.clone()).exec() {
+        let result = lua.load(text).set_name(id.clone()).exec();
+        *current_plugin.borrow_mut() = None;
+        match result {
             Ok(()) => log(events, format!("loaded {id}")),
             Err(err) => {
                 if frame.hard_tripped.get() {
@@ -1600,7 +1788,15 @@ fn sync_registry(segments: &Table, events: &Sender<HostEvent>) {
 /// registration stands (or the seat will not read, which costs one
 /// line and reads the same: nobody to call).
 fn read_provider(seat: &Table, events: &Sender<HostEvent>) -> Option<Function> {
-    match seat.get::<Option<Function>>(1) {
+    let entry: Option<Table> = match seat.get(1) {
+        Ok(entry) => entry,
+        Err(err) => {
+            log(events, format!("the tab title seat would not read: {err}"));
+            return None;
+        }
+    };
+    let entry = entry?;
+    match entry.get("handler") {
         Ok(provider) => provider,
         Err(err) => {
             log(events, format!("the tab title seat would not read: {err}"));
@@ -1662,11 +1858,26 @@ fn query_tab_titles(
     let Some(provider) = read_provider(&generation.tab_title, events) else {
         return;
     };
+    // The seat's owner resolves once: one provider, one settings carry
+    // for the whole trip (plugin-manifest PM4).
+    let owner = generation
+        .tab_title
+        .get::<Option<Table>>(1)
+        .ok()
+        .flatten()
+        .and_then(|entry| entry.get::<Option<String>>("owner").ok().flatten());
+    let settings_json = settings_object(
+        owner.as_deref(),
+        &generation.settings,
+        &generation.manifests,
+        events,
+    );
     frame.begin(true, format_args!("the tab title query"));
     let mut values = Vec::new();
     let mut raise_logged = false;
     for ask in tabs {
-        let ctx = serde_json::json!({ "tab": ask.tab, "title": ask.title });
+        let ctx =
+            serde_json::json!({ "tab": ask.tab, "title": ask.title, "settings": settings_json });
         let Ok(value) = generation.lua.to_value(&ctx) else {
             // Unreachable for JSON payloads; honest if it ever fires:
             // the tab omits, its prior title keeps.
@@ -1721,9 +1932,17 @@ fn query_panel_views(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
         let ctx = generation
             .lua
-            .to_value(&serde_json::json!({}))
+            .to_value(&serde_json::json!({
+                "settings": settings_object(
+                    owner.as_deref(),
+                    &generation.settings,
+                    &generation.manifests,
+                    events,
+                ),
+            }))
             .unwrap_or(mlua::Value::Nil);
         let answer = match handler.call::<Option<Table>>(ctx) {
             Ok(answer) => answer,
@@ -1806,7 +2025,16 @@ fn run_command(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
-        let ctx = serde_json::json!({ "tab": tab });
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let ctx = serde_json::json!({
+            "tab": tab,
+            "settings": settings_object(
+                owner.as_deref(),
+                &generation.settings,
+                &generation.manifests,
+                events,
+            ),
+        });
         let Ok(value) = generation.lua.to_value(&ctx) else {
             // Unreachable for JSON payloads; honest if it ever fires:
             // nobody runs, one line.
@@ -1844,15 +2072,6 @@ fn query_segments(
     events: &Sender<HostEvent>,
     frame: &Rc<TimeoutFrame>,
 ) {
-    let ctx = match generation.lua.to_value(ctx) {
-        Ok(value) => value,
-        Err(err) => {
-            // Unreachable for JSON payloads; honest if it ever fires:
-            // no reply, prior values kept.
-            log(events, format!("the segment ctx would not convert: {err}"));
-            return;
-        }
-    };
     frame.begin(true, format_args!("the segment query"));
     let mut values = Vec::new();
     for slot in 1..=generation.segments.raw_len() {
@@ -1865,7 +2084,33 @@ fn query_segments(
         let Ok(handler) = entry.get::<Function>("handler") else {
             continue;
         };
-        let answer = match handler.call::<Option<Table>>(ctx.clone()) {
+        // The shell's status ctx carries the carry: the owning
+        // plugin's settings merge in under the `settings` key, per
+        // segment — two plugins' segments resolve differently in one
+        // trip (plugin-manifest PM4).
+        let owner = entry.get::<Option<String>>("owner").ok().flatten();
+        let mut ctx_json = ctx.clone();
+        if let Some(object) = ctx_json.as_object_mut() {
+            object.insert(
+                "settings".to_owned(),
+                settings_object(
+                    owner.as_deref(),
+                    &generation.settings,
+                    &generation.manifests,
+                    events,
+                ),
+            );
+        }
+        let ctx = match generation.lua.to_value(&ctx_json) {
+            Ok(value) => value,
+            Err(err) => {
+                // Unreachable for JSON payloads; honest if it ever
+                // fires: the segment omits, its prior value keeps.
+                log(events, format!("the segment ctx would not convert: {err}"));
+                continue;
+            }
+        };
+        let answer = match handler.call::<Option<Table>>(ctx) {
             Ok(answer) => answer,
             Err(err) => {
                 if frame.hard_tripped.get() {
@@ -4736,6 +4981,283 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("activating for command")),
             "staying active is not a re-activation: {lines:?}"
+        );
+    }
+    // --- the settings carry (plugin-manifest PM4) ---
+
+    /// Write one fixture manifest with two rows (a string and a
+    /// boolean), the ctx-carry tests' common shape.
+    fn settings_manifest(dir: &TempDir, extra_activation: &str) {
+        manifest(
+            dir,
+            "p",
+            &format!(
+                r#"{{ "commands": [ {{ "id": "show", "description": "Show" }} ],
+                    "settings": [
+                        {{ "key": "prefix", "type": "string", "label": "P", "default": "" }},
+                        {{ "key": "enabled", "type": "boolean", "label": "E", "default": false }}
+                    ]{extra_activation} }}"#
+            ),
+        );
+    }
+
+    fn sync(host: &LuaHost, prefix: &str) {
+        let mut values = StoreValues::new();
+        values.insert(
+            "p".to_owned(),
+            std::collections::BTreeMap::from([("prefix".to_owned(), serde_json::json!(prefix))]),
+        );
+        host.send(HostCommand::SettingsSync { values });
+    }
+
+    #[test]
+    fn settings_ride_the_command_ctx_with_defaults_for_unset_keys() {
+        let dir = TempDir::new("carry-command");
+        settings_manifest(&dir, "");
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   print('prefix=' .. tostring(p.settings.prefix) .. ' enabled=' .. tostring(p.settings.enabled))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "hello");
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("prefix=hello enabled=false")),
+            "the stored value rides and the unset key takes its default: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_without_declared_settings_carries_an_empty_table() {
+        let dir = TempDir::new("carry-empty");
+        // A manifest-less eager plugin: no rows at all.
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   local n = 0\n\
+                   for _ in pairs(p.settings or {{}}) do n = n + 1 end\n\
+                   print('settings=' .. n)\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("settings=0")),
+            "an empty table, never a missing key: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_typed_store_value_falls_to_the_default_with_one_line() {
+        let dir = TempDir::new("carry-wrong");
+        settings_manifest(&dir, "");
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('show', 'Show', function(p)\n\
+                   print('enabled=' .. tostring(p.settings.enabled))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        // The store's boolean row holds a string: fail-to-default at
+        // the merge, one line.
+        let mut values = StoreValues::new();
+        values.insert(
+            "p".to_owned(),
+            std::collections::BTreeMap::from([("enabled".to_owned(), serde_json::json!("yes"))]),
+        );
+        host.send(HostCommand::SettingsSync { values });
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "show");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("enabled=false")),
+            "the wrong-typed value fell to the declared default: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("is the wrong type; using the declared default"))
+                .count(),
+            1,
+            "exactly one wrong-type line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_event_ctx_beside_an_untouched_payload() {
+        let dir = TempDir::new("carry-event");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.on('x', function(payload, ctx)\n\
+                   print('evset=' .. tostring(ctx.settings.prefix) .. ' payload=' .. tostring(payload.mark))\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "ev");
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        host.send(HostCommand::Emit {
+            event: "x".to_owned(),
+            payload: serde_json::json!({ "mark": "kept" }),
+        });
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("evset=ev payload=kept")),
+            "the carry rides the second argument, the payload verbatim: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_segment_ctx_per_owning_plugin() {
+        let dir = TempDir::new("carry-segment");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.status_segment('net', function(ctx)\n\
+                   return {{ text = 'seg:' .. tostring(ctx.settings.prefix), side = 'right' }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "segval");
+        query(&host, 9);
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::SegmentValues { token: 9, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::SegmentValues { token: 9, values, .. }
+                    if values.len() == 1
+                        && matches!(&values[0],
+                            SegmentAnswer::Shown { content, .. }
+                                if *content == SlotContent::Text("seg:segval".to_owned()))
+            )
+        });
+        assert!(
+            answered,
+            "the segment ctx carries the owning plugin's settings: {events:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_tab_title_ctx() {
+        let dir = TempDir::new("carry-titles");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.tab_title(function(p)\n\
+                   return 'title:' .. tostring(p.settings.prefix)\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "tt");
+        host.send(HostCommand::QueryTabTitles {
+            token: 3,
+            tabs: vec![TabTitleAsk {
+                tab: 1,
+                title: "osc".to_owned(),
+            }],
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::TabTitles { token: 3, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::TabTitles { token: 3, values, .. }
+                    if values.len() == 1 && values[0].title == Some("title:tt".to_owned())
+            )
+        });
+        assert!(
+            answered,
+            "the provider ctx carries the seat owner's settings: {events:?}"
+        );
+    }
+
+    #[test]
+    fn settings_ride_the_panel_ask_ctx() {
+        let dir = TempDir::new("carry-panel");
+        settings_manifest(&dir, r#", "activation": ["on_startup"]"#);
+        script(
+            &dir,
+            "p.lua",
+            &format!(
+                "{PORT}\n\
+                 d.panel_view('v', {{ container = 'right-rail', title = 'T' }}, function(ctx)\n\
+                   return {{ rows = {{ {{ text = 'panel:' .. tostring(ctx.settings.prefix) }} }} }}\n\
+                 end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        sync(&host, "pv");
+        host.send(HostCommand::PanelAsk {
+            token: 4,
+            views: vec!["v".to_owned()],
+        });
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::PanelAnswer { token: 4, .. }),
+            LONG_WAIT,
+        );
+        let answered = events.iter().any(|event| {
+            matches!(
+                event,
+                HostEvent::PanelAnswer { token: 4, values, .. }
+                    if values.len() == 1
+                        && matches!(
+                            &values[0].content,
+                            Some(crate::core::slots::PanelContent::Rows { rows })
+                                if rows.len() == 1
+                                    && rows[0].spans.len() == 1
+                                    && rows[0].spans[0].text == "panel:pv"
+                        )
+            )
+        });
+        assert!(
+            answered,
+            "the panel ctx carries the view owner's settings: {events:?}"
         );
     }
 }

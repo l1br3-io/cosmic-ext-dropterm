@@ -649,6 +649,11 @@ pub(crate) struct Shell {
     /// wake — the declared commands' and (PM5) the settings rows'
     /// source. No interpreter, ever.
     plugin_manifests: Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+    /// The settings store's current values (plugin-manifest PM4):
+    /// read at boot, held here, pushed to the host at the mark and
+    /// after every settings save (PM5's editors update this before
+    /// their write). The window is the store's only writer.
+    plugin_settings_values: dropterm::core::plugins_manifest::StoreValues,
     /// The watcher's shell-side wake (plugin-manifest): the same
     /// notify callback that queues the host's `Reload` pings this
     /// channel; the pump drains it into [`Self::rescan_manifests`].
@@ -934,8 +939,14 @@ impl Shell {
         // (a dir that appears mid-run is the next launch's, the
         // watcher's own rule) — `None` means no pane ever holds an
         // inlet, and a no-plugins session stays byte-identical.
-        let (lua_bus, status_scripts, tab_titles, script_commands, plugin_manifests) =
-            Self::plugins_boot_state(&lua_host);
+        let (
+            lua_bus,
+            status_scripts,
+            tab_titles,
+            script_commands,
+            plugin_manifests,
+            plugin_settings_values,
+        ) = Self::plugins_boot_state(&lua_host);
         let (images_panel, rail, panel_rail) = plugin_surfaces();
         Self {
             boot,
@@ -979,6 +990,7 @@ impl Shell {
             startup_marked: false,
             plugin_manifests,
             runtime_script_commands: Vec::new(),
+            plugin_settings_values,
             manifest_wake,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
@@ -1054,6 +1066,7 @@ impl Shell {
         dropterm::core::tabs::TabTitleAsks,
         Vec<dropterm::core::keybinds::CommandRow>,
         Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+        dropterm::core::plugins_manifest::StoreValues,
     ) {
         let stood = lua_host.plugins_dir().exists();
         let lua_bus = stood.then(|| lua_host.handle());
@@ -1072,7 +1085,29 @@ impl Shell {
         // event, so no registry log line rides it.
         let script_commands =
             merge_script_command_rows(&declared_command_rows_of(&plugin_manifests), Vec::new());
-        (lua_bus, scripts, asks, script_commands, plugin_manifests)
+        // The settings store's launch read (plugin-manifest PM4):
+        // tolerant, next-launch semantics — the file is read here and
+        // pushed once at the first pump's mark, never watched. One
+        // line when it carries values, the launch's observable step.
+        let store_path = dropterm::core::config::store::store_dir()
+            .join(dropterm::core::plugins_manifest::STORE_FILE_NAME);
+        let (plugin_settings_values, store_logs) =
+            dropterm::core::plugins_manifest::read_store(&store_path);
+        for line in store_logs {
+            println!("dropterm: plugins: {line}");
+        }
+        if !plugin_settings_values.is_empty() {
+            let ids: Vec<&String> = plugin_settings_values.keys().collect();
+            println!("dropterm: plugins: settings store loaded for {ids:?}");
+        }
+        (
+            lua_bus,
+            scripts,
+            asks,
+            script_commands,
+            plugin_manifests,
+            plugin_settings_values,
+        )
     }
 
     /// The probe's granted-bounds slot, cloned into each measuring
@@ -1232,6 +1267,11 @@ impl Shell {
         // ruled branch.
         if self.lua_bus.is_some() && !self.startup_marked {
             self.startup_marked = true;
+            // The settings push rides the mark's guard (plugin-manifest
+            // PM4): the values cross first, so the mark's own loads —
+            // an `on_startup` handler's first dispatch included —
+            // resolve against them.
+            self.push_plugin_settings();
             self.lua_host
                 .send(dropterm::core::lua_host::HostCommand::StartupMark {
                     elapsed_ms: u64::try_from(self.boot.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -5514,6 +5554,17 @@ impl Shell {
     /// order — the scan's registry speaking, no interpreter.
     fn declared_command_rows(&self) -> Vec<dropterm::core::keybinds::CommandRow> {
         declared_command_rows_of(&self.plugin_manifests)
+    }
+
+    /// The settings store's push (plugin-manifest PM4): the shell's
+    /// current per-plugin values cross to the host as one passive
+    /// command — the boot arm and the settings save's own step (the
+    /// Plugins page calls it after its writes, PM5).
+    fn push_plugin_settings(&self) {
+        self.lua_host
+            .send(dropterm::core::lua_host::HostCommand::SettingsSync {
+                values: self.plugin_settings_values.clone(),
+            });
     }
 
     /// The watcher's shell-side half (plugin-manifest): the scan
@@ -10977,5 +11028,95 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
                 );
             });
         });
+    }
+    #[gpui::test]
+    fn a_settings_push_reaches_the_next_dispatch_ctx(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("carry-save");
+        // The eager plugin's command opens a dialog whose title names
+        // the ctx carry — the shell-observable half of the SettingsSync
+        // path (plugin-manifest PM4).
+        std::fs::create_dir_all(dir.0.join("plugins").join("save")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("save").join("plugin.json"),
+            r#"{ "commands": [ { "id": "show", "description": "Show" } ],
+                "settings": [
+                    { "key": "prefix", "type": "string", "label": "P", "default": "" }
+                ],
+                "activation": ["on_startup"] }"#,
+        )
+        .expect("write manifest");
+        std::fs::write(
+            dir.0.join("plugins").join("save").join("plugin.lua"),
+            "local d = require('dropterm')\n\
+             d.command('show', 'Show', function(p)\n\
+               d.dialog({ title = 'prefix=' .. tostring(p.settings.prefix),\n\
+                          buttons = { { id = 'ok', label = 'OK' } } })\n\
+             end)",
+        )
+        .expect("write script");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // The boot arm: the push rides the mark's guard. Drive it the
+        // way the pump does, then dispatch.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::StartupMark { elapsed_ms: 10 });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let loaded = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    !shell.script_commands.is_empty()
+                })
+            });
+            if loaded || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The save path: the shell's values update, the push crosses,
+        // the next dispatch's ctx carries them.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell.plugin_settings_values.insert(
+                    "save".to_owned(),
+                    std::collections::BTreeMap::from([(
+                        "prefix".to_owned(),
+                        serde_json::json!("saved"),
+                    )]),
+                );
+                shell.push_plugin_settings();
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::RunCommand {
+                        name: "show".to_owned(),
+                        tab: 1,
+                    });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut title = String::new();
+        loop {
+            let opened = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    if let Some(dialog) = &shell.pending_dialog {
+                        title.clone_from(&dialog.title);
+                        true
+                    } else {
+                        false
+                    }
+                })
+            });
+            if opened || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(title, "prefix=saved", "the push reached the ctx");
     }
 }

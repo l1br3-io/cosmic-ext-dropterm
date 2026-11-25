@@ -80,6 +80,21 @@ pub enum SettingKind {
 }
 
 impl SettingKind {
+    /// The row's default as a JSON value — the ctx carry's fallback
+    /// (PM4) and the store merge's floor, whatever the manifest
+    /// declared or the builtin stood in for.
+    pub fn default_value(&self) -> serde_json::Value {
+        match self {
+            SettingKind::Boolean { default } => serde_json::Value::Bool(*default),
+            SettingKind::String { default } | SettingKind::Enum { default, .. } => {
+                serde_json::Value::String(default.clone())
+            }
+            SettingKind::Number { default } => serde_json::json!(default),
+            SettingKind::Array { default } => serde_json::Value::Array(default.clone()),
+            SettingKind::Object { default } => serde_json::Value::Object(default.clone()),
+        }
+    }
+
     /// The builtin default for this kind — the fail-to-default floor
     /// (`false`, `""`, `0`, the first enum value, `[]`, `{}`).
     fn builtin(&self) -> Self {
@@ -407,7 +422,7 @@ fn parse_manifest(id: &str, bytes: &str) -> (Option<ManifestData>, Vec<String>) 
         };
         let kind = match &raw_setting.default {
             None => kind.builtin(),
-            Some(value) if default_matches(&kind, value) => with_default(&kind, value),
+            Some(value) if value_matches_kind(&kind, value) => with_default(&kind, value),
             Some(_) => {
                 logs.push(format!(
                     "{id}: setting '{key}' default is the wrong type; \
@@ -472,9 +487,11 @@ fn build_setting_kind(kind_word: &str, enum_values: Option<&[String]>) -> Option
     })
 }
 
-/// Whether `value` is a valid default for `kind` — the enum row's
-/// default must also be one of its declared values.
-fn default_matches(kind: &SettingKind, value: &serde_json::Value) -> bool {
+/// Whether `value` is a valid value for `kind` — the store's merge
+/// (PM4's ctx carry) and the manifest's own default validation share
+/// one check. The enum row's value must also be one of its declared
+/// words.
+pub fn value_matches_kind(kind: &SettingKind, value: &serde_json::Value) -> bool {
     match kind {
         SettingKind::Boolean { .. } => value.is_boolean(),
         SettingKind::String { .. } => value.is_string(),
