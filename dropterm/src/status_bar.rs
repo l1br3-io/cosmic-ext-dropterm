@@ -31,15 +31,19 @@ use dropterm::core::status::{
 use crate::tab_bar;
 use gpui::prelude::*;
 
-/// The styled runs' palette (styled-status-slot): the script-facing
-/// color words the band resolves — the scheme's ANSI words, `accent`
-/// riding the scheme's `BrightBlue` (`theme_gen`'s own accent mapping),
-/// and `fg` the pane-derived foreground the band already paints
-/// builtins with. One source, built once per render at the band's
-/// composition site; resolution never invents a second theme path.
+/// The styled runs' palette (styled-status-slot, style-engine SE2):
+/// the script-facing color words the band resolves — the scheme's
+/// ANSI words, `accent` riding the scheme's `BrightBlue`
+/// (`theme_gen`'s own accent mapping), `fg` the pane-derived
+/// foreground the band already paints builtins with, and `bg` the
+/// worn scheme's background (the one addition chrome rules need).
+/// One source, built once per render at the band's composition site;
+/// resolution never invents a second theme path.
 pub(crate) struct ScriptPalette {
     /// The pane-derived foreground — the unstyled run's color.
     pub fg: gpui::Hsla,
+    /// The worn scheme's background — the `bg` token's color.
+    pub bg: gpui::Hsla,
     black: gpui::Hsla,
     red: gpui::Hsla,
     green: gpui::Hsla,
@@ -61,8 +65,9 @@ pub(crate) struct ScriptPalette {
 /// The palette's known words — the closed set the drain logs
 /// unknowns against. Additive: a new word joins here and in the
 /// docs row it rides.
-pub(crate) const SLOT_TOKENS: [&str; 18] = [
+pub(crate) const SLOT_TOKENS: [&str; 19] = [
     "accent",
+    "bg",
     "fg",
     "black",
     "red",
@@ -84,10 +89,15 @@ pub(crate) const SLOT_TOKENS: [&str; 18] = [
 
 impl ScriptPalette {
     /// Resolve from the pane's effective scheme (the same `Colors`
-    /// the strip pair derives from) and the band's foreground. A
-    /// scheme slot standing empty resolves to the foreground — the
-    /// word is known, the scheme just has nothing for it.
-    pub fn resolve(colors: &alacritty_terminal::term::color::Colors, fg: gpui::Hsla) -> Self {
+    /// the strip pair derives from), the band's foreground, and the
+    /// worn scheme's background — the `bg` token's color. A scheme
+    /// slot standing empty resolves to the foreground — the word is
+    /// known, the scheme just has nothing for it.
+    pub fn resolve(
+        colors: &alacritty_terminal::term::color::Colors,
+        fg: gpui::Hsla,
+        bg: gpui::Hsla,
+    ) -> Self {
         use alacritty_terminal::vte::ansi::NamedColor::{
             Black, Blue, BrightBlack, BrightBlue, BrightCyan, BrightGreen, BrightMagenta,
             BrightRed, BrightWhite, BrightYellow, Cyan, Green, Magenta, Red, White, Yellow,
@@ -97,6 +107,7 @@ impl ScriptPalette {
         };
         Self {
             fg,
+            bg,
             black: pick(Black),
             red: pick(Red),
             green: pick(Green),
@@ -121,6 +132,7 @@ impl ScriptPalette {
     pub fn color(&self, token: &str) -> Option<gpui::Hsla> {
         let color = match token {
             "accent" | "bright_blue" => self.bright_blue,
+            "bg" => self.bg,
             "fg" => self.fg,
             "black" => self.black,
             "red" => self.red,
@@ -143,35 +155,31 @@ impl ScriptPalette {
     }
 }
 
-/// One styled run the painter mounts: the run's composed text and
-/// its resolved color (styled-status-slot).
+/// One styled run the painter mounts (styled-status-slot, SE2): the
+/// run's composed text (the `icon` declaration's glyph already in),
+/// its resolved color, and the rest of the resolved cascade in
+/// engine words — the view maps them onto the gpui styled-text
+/// methods.
 pub(crate) struct StyledRun {
     pub text: String,
     pub color: gpui::Hsla,
+    pub background: Option<gpui::Hsla>,
+    pub weight: Option<dropterm::core::style_engine::FontWeight>,
+    pub slant: Option<dropterm::core::style_engine::FontSlant>,
+    pub decoration: Option<dropterm::core::style_engine::TextDecoration>,
 }
 
-/// Paint one script row's runs (styled-status-slot): the resolved
-/// color per run — an uncolored run is the row's fg, a token
+/// Paint one script row's runs (styled-status-slot, SE2): each run
+/// carries its cascade-resolved style (the engine resolved at the VM
+/// composition, [`dropterm::core::status::script_runs`]) — the
+/// painter maps it: an uncolored run is the row's fg, a token
 /// resolves through the palette, a hex parses direct, an unknown
-/// token renders unstyled (fg; the drain named it) — and the side's
-/// dim alpha applied to every run (the band's own rule, never the
-/// script's). No run ever drops for a color failure.
+/// token renders unstyled (fg; the drain named it). No run ever
+/// drops for a color failure.
 pub(crate) fn paint_script_segment(
     runs: &[BandScriptRunVm],
-    side: dropterm::core::status::ScriptSide,
     palette: &ScriptPalette,
 ) -> Vec<StyledRun> {
-    let dim = side == dropterm::core::status::ScriptSide::Right;
-    let shade = |color: gpui::Hsla| {
-        if dim {
-            gpui::Hsla {
-                a: DIM_ALPHA,
-                ..color
-            }
-        } else {
-            color
-        }
-    };
     runs.iter()
         .map(|run| {
             let color = match run.color.as_ref() {
@@ -181,16 +189,42 @@ pub(crate) fn paint_script_segment(
             };
             StyledRun {
                 text: run.text.clone(),
-                color: shade(color),
+                color,
+                background: run.background.as_ref().and_then(|value| match value {
+                    SlotColor::Token(token) => palette.color(token),
+                    SlotColor::Hex(hex) => parse_hex(hex),
+                }),
+                weight: run.weight,
+                slant: run.slant,
+                decoration: run.decoration,
             }
         })
         .collect()
 }
 
+/// The band's builtin style rules (style-engine SE2): today's look
+/// as ordinary rules in the host's lowest layer — the right cluster's
+/// dim is the `band.right` color now, so a plugin overriding `color`
+/// there replaces it by ordinary cascade. The selectors are pinned
+/// constants; a drift is a bug the tests catch, never a raise.
+pub(crate) fn builtin_rules() -> Vec<dropterm::core::style_engine::Rule> {
+    use dropterm::core::style_engine::{Rule, RuleOrigin, parse_declarations, parse_selector};
+    let rule = |selector: &str, declarations: serde_json::Value| Rule {
+        origin: RuleOrigin::Builtin,
+        selector: parse_selector(selector).expect("the builtin selector parses — pinned by test"),
+        declarations: parse_declarations(&declarations).declarations,
+    };
+    vec![rule(
+        "band.right",
+        serde_json::json!({ "color": "bright_black" }),
+    )]
+}
+
 /// Parse the contract's `#rrggbb` form to the band's color. The
 /// port validated it; a hand-built bad literal falls back to
-/// unstyled at the paint (never a raise).
-fn parse_hex(hex: &str) -> Option<gpui::Hsla> {
+/// unstyled at the paint (never a raise). Shared with the dialog's
+/// button paints (one color vocabulary, one parser).
+pub(crate) fn parse_hex(hex: &str) -> Option<gpui::Hsla> {
     let raw = hex.strip_prefix('#')?;
     if raw.len() != 6 || !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -203,10 +237,12 @@ fn parse_hex(hex: &str) -> Option<gpui::Hsla> {
     ))
 }
 
-/// The drain-side unknown-token lines (styled-status-slot): one per
-/// distinct unknown token per segment in one reply — the shape's
-/// one-log-line culture applied to color words. The drain prints
-/// them; the painter renders unstyled.
+/// The drain-side unknown-token lines (styled-status-slot, SE2): one
+/// per distinct unknown token per segment in one reply — the shape's
+/// one-log-line culture applied to color words, now walked over the
+/// spans' resolved-cascade color words (the inline declarations and
+/// the rules both land here resolved). The drain prints them; the
+/// painter renders unstyled.
 pub(crate) fn unknown_token_lines(
     answers: &[dropterm::core::status::SegmentAnswer],
 ) -> Vec<String> {
@@ -227,16 +263,25 @@ pub(crate) fn unknown_token_lines(
         };
         let mut named = std::collections::HashSet::new();
         for span in spans {
-            let Some(SlotColor::Token(token)) = span.color.as_ref() else {
-                continue;
-            };
-            if SLOT_TOKENS.contains(&token.as_str()) || !named.insert(token.clone()) {
-                continue;
+            for declaration in &span.style {
+                // Both color words log: the drain can't tell which
+                // surface a rule painted, and doesn't need to.
+                let color = match declaration {
+                    dropterm::core::style_engine::Declaration::Color(color)
+                    | dropterm::core::style_engine::Declaration::Background(color) => Some(color),
+                    _ => None,
+                };
+                let Some(SlotColor::Token(token)) = color else {
+                    continue;
+                };
+                if SLOT_TOKENS.contains(&token.as_str()) || !named.insert(token.clone()) {
+                    continue;
+                }
+                lines.push(format!(
+                    "dropterm: plugins: segment '{id}' colors with the unknown token \
+                     '{token}'; it renders unstyled"
+                ));
             }
-            lines.push(format!(
-                "dropterm: plugins: segment '{id}' colors with the unknown token \
-                 '{token}'; it renders unstyled"
-            ));
         }
     }
     lines
@@ -288,6 +333,10 @@ pub(crate) struct StatusBandView {
     /// The styled runs' palette (styled-status-slot) — the shell
     /// resolves it beside the strip pair, same scheme, same render.
     palette: ScriptPalette,
+    /// The style engine (SE2): the shell's one `StyleSet`, borrowed
+    /// per frame at the render — its builtin layer plus whatever
+    /// rules the sources fed (SE3).
+    engine: std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
     /// The band's font — the terminal's own resolved family.
     font: gpui::Font,
     /// Whether the band renders its border hairline on its side
@@ -329,7 +378,9 @@ impl StatusBandView {
             palette: ScriptPalette::resolve(
                 &alacritty_terminal::term::color::Colors::default(),
                 fg,
+                fg,
             ),
+            engine: std::rc::Rc::new(std::cell::RefCell::default()),
             attention: None,
             font: gpui::Font::default(),
             border: false,
@@ -350,6 +401,16 @@ impl StatusBandView {
 
     pub(crate) fn palette(mut self, palette: ScriptPalette) -> Self {
         self.palette = palette;
+        self
+    }
+
+    /// The shell's style engine (SE2): the one `StyleSet` every
+    /// painter resolves through.
+    pub(crate) fn engine(
+        mut self,
+        engine: std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
+    ) -> Self {
+        self.engine = engine;
         self
     }
 
@@ -436,6 +497,7 @@ impl gpui::RenderOnce for StatusBandView {
             self.copied,
             self.paste_refusal,
             self.hover,
+            &self.engine.borrow(),
         ));
 
         let mut band = gpui::div()
@@ -540,9 +602,11 @@ impl gpui::RenderOnce for StatusBandView {
         // like any row over their laid rects, but non-interactive in
         // v1 — the default cursor, no hover tint, no copy (the
         // interactions key on SegmentId and never see these). The
-        // painter resolves each run's color (styled-status-slot): a
-        // string answer's single run paints exactly as before — the
-        // row's fg — and the side's dim alpha rides every run.
+        // painter maps each run's resolved cascade (styled-status-slot,
+        // SE2): a string answer's single run paints exactly as before
+        // — the row's fg — and the side's dim is the builtin
+        // `band.right` color the engine resolved into the runs.
+        let engine = self.engine.borrow();
         for row in &vm.script_rows {
             let mut text = gpui::div()
                 .absolute()
@@ -554,16 +618,39 @@ impl gpui::RenderOnce for StatusBandView {
                 .items_center()
                 .font(self.font.clone())
                 .text_size(gpui::px(SEGMENT_FONT_SIZE));
-            let side = if row.dimmed {
-                dropterm::core::status::ScriptSide::Right
-            } else {
-                dropterm::core::status::ScriptSide::Left
-            };
-            for run in paint_script_segment(&row.runs, side, &self.palette) {
-                text = text.child(gpui::div().child(run.text).text_color(run.color));
+            for run in paint_script_segment(&row.runs, &self.palette) {
+                let mut styled = gpui::div().child(run.text.clone()).text_color(run.color);
+                if let Some(weight) = run.weight {
+                    styled = styled.font_weight(match weight {
+                        dropterm::core::style_engine::FontWeight::Bold => gpui::FontWeight::BOLD,
+                        dropterm::core::style_engine::FontWeight::Normal => {
+                            gpui::FontWeight::NORMAL
+                        }
+                    });
+                }
+                if run.slant == Some(dropterm::core::style_engine::FontSlant::Italic) {
+                    styled = styled.italic();
+                }
+                match run.decoration {
+                    Some(dropterm::core::style_engine::TextDecoration::Underline) => {
+                        styled = styled.underline();
+                    }
+                    Some(dropterm::core::style_engine::TextDecoration::LineThrough) => {
+                        styled = styled.line_through();
+                    }
+                    Some(dropterm::core::style_engine::TextDecoration::None) => {
+                        styled = styled.text_decoration_none();
+                    }
+                    None => {}
+                }
+                if let Some(background) = run.background {
+                    styled = styled.bg(background);
+                }
+                text = text.child(styled);
             }
             band = band.child(text);
         }
+        drop(engine);
         // The separators: thin hairlines centered in the gaps.
         for x in &vm.separators {
             band = band.child(

@@ -17,6 +17,24 @@ use crate::core::terminal::{
 use std::path::Path;
 use std::time::Duration;
 
+/// A fixture engine: the builtin layer's `band.right` dim — the
+/// break's rule shape (the right cluster's dim is a color
+/// declaration now), the base every `band_vm`/`script_runs` call in
+/// this suite runs against.
+fn fixture_engine() -> crate::core::style_engine::StyleSet {
+    use crate::core::style_engine::{Rule, RuleOrigin, StyleSet, parse_selector};
+    let mut engine = StyleSet::default();
+    engine.set_builtin(vec![Rule {
+        origin: RuleOrigin::Builtin,
+        selector: parse_selector("band.right").expect("parses"),
+        declarations: crate::core::style_engine::parse_declarations(&serde_json::json!(
+            { "color": "bright_black" }
+        ))
+        .declarations,
+    }]);
+    engine
+}
+
 /// The all-on inputs floor every test mutates — a plain-shell local
 /// tab with a cwd and nothing else standing.
 fn inputs<'a>() -> StatusInputs<'a> {
@@ -780,7 +798,15 @@ fn band_vm_lends_the_branch_seat_to_an_armed_reveal() {
     segments.scrolled = None;
     // Narrow enough that the path elides at rest.
     let width = 260.0;
-    let resting = band_vm(&segments, width, &fake_measure, None, None, None);
+    let resting = band_vm(
+        &segments,
+        width,
+        &fake_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(
         matches!(resting.path_fit, PathFit::Elided(_)),
         "the fixture must elide at rest"
@@ -796,7 +822,15 @@ fn band_vm_lends_the_branch_seat_to_an_armed_reveal() {
         .find(|row| row.id == SegmentId::Path)
         .expect("the path row lays");
     let hover = (path_row.x + 1.0, 5.0);
-    let armed = band_vm(&segments, width, &fake_measure, None, None, Some(hover));
+    let armed = band_vm(
+        &segments,
+        width,
+        &fake_measure,
+        None,
+        None,
+        Some(hover),
+        &fixture_engine(),
+    );
     let armed_path = armed
         .rows
         .iter()
@@ -822,6 +856,7 @@ fn band_vm_lends_the_branch_seat_to_an_armed_reveal() {
         None,
         None,
         Some((8.0, 5.0)),
+        &fixture_engine(),
     );
     assert_eq!(
         away.rows
@@ -895,7 +930,15 @@ fn script_segments_render_as_trailing_groups_on_their_chosen_sides() {
             content: Some(SlotContent::Text("net:1.2M".to_owned())),
         },
     ];
-    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let vm = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     // Both groups lay, in slot order per side, the left group first
     // in x-order.
     let ids: Vec<&str> = vm.script_rows.iter().map(|row| row.id.as_str()).collect();
@@ -925,9 +968,6 @@ fn script_segments_render_as_trailing_groups_on_their_chosen_sides() {
         clock.x,
         "the right script group hugs the builtin right cluster's left edge"
     );
-    // The side's cluster idiom rides: left full alpha, right dimmed.
-    assert!(!vm.script_rows[0].dimmed && !vm.script_rows[1].dimmed);
-    assert!(vm.script_rows[2].dimmed);
     // One hairline inside the left group (between its two seats), none
     // around the right group's single seat: same-cluster adjacency is
     // the rule, groups never separate from the builtins.
@@ -963,13 +1003,29 @@ fn script_segments_drop_before_any_builtin_under_width_pressure() {
         },
     ];
     // Roomy: both script seats render beside the full band.
-    let roomy = band_vm(&segments, 400.0, &script_measure, None, None, None);
+    let roomy = band_vm(
+        &segments,
+        400.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert_eq!(roomy.script_rows.len(), 2);
     assert!(roomy.rows.iter().any(|row| row.id == SegmentId::Clock));
 
     // Squeezed past the wider script seat's worth of room: the LAST
     // seat in order gives way first, every builtin intact.
-    let one_gone = band_vm(&segments, 200.0, &script_measure, None, None, None);
+    let one_gone = band_vm(
+        &segments,
+        200.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert_eq!(
         one_gone
             .script_rows
@@ -987,7 +1043,15 @@ fn script_segments_drop_before_any_builtin_under_width_pressure() {
     // Squeezed past both: the script group is gone whole and the
     // builtins still stand (the clock only yields once the script
     // group is exhausted).
-    let scripts_gone = band_vm(&segments, 160.0, &script_measure, None, None, None);
+    let scripts_gone = band_vm(
+        &segments,
+        160.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(
         scripts_gone.script_rows.is_empty(),
         "the script group exhausts before any builtin drops"
@@ -1001,7 +1065,15 @@ fn script_segments_drop_before_any_builtin_under_width_pressure() {
 
     // Past even the builtin floor: the clock — DROP_ORDER's own last
     // — yields, the script group long gone.
-    let past = band_vm(&segments, 100.0, &script_measure, None, None, None);
+    let past = band_vm(
+        &segments,
+        100.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(past.script_rows.is_empty());
     assert!(
         !past.rows.iter().any(|row| row.id == SegmentId::Clock),
@@ -1018,7 +1090,15 @@ fn script_slots_that_answer_nothing_change_no_laid_pixel() {
         clock: Some("14:32".to_owned()),
         ..StatusSegments::default()
     };
-    let today = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let today = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     // A nil answer (text `None`) and an empty-text answer both render
     // nothing: the empty-registry pin — today's band, byte-identical.
     segments.script = vec![
@@ -1033,7 +1113,15 @@ fn script_slots_that_answer_nothing_change_no_laid_pixel() {
             content: Some(SlotContent::Text(String::new())),
         },
     ];
-    let niled = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let niled = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(niled.script_rows.is_empty());
     assert_eq!(niled, today, "no-answer script slots lay today's band");
 }
@@ -1073,7 +1161,15 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
         }],
         ..StatusSegments::default()
     };
-    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let vm = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert_eq!(vm.script_rows.len(), 1);
     assert_eq!(
         vm.script_rows[0].runs.len(),
@@ -1091,18 +1187,30 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
             spans: vec![
                 Span {
                     text: "▼".to_owned(),
-                    color: Some(SlotColor::Token("accent".to_owned())),
-                    icon: None,
+                    class: None,
+                    id: None,
+                    style: vec![crate::core::style_engine::Declaration::Color(
+                        SlotColor::Token("accent".to_owned()),
+                    )],
                 },
                 Span {
                     text: " 1.2 MB/s".to_owned(),
-                    color: None,
-                    icon: None,
+                    class: None,
+                    id: None,
+                    style: Vec::new(),
                 },
             ],
         }),
     }];
-    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let vm = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     let runs: Vec<&str> = vm.script_rows[0]
         .runs
         .iter()
@@ -1131,12 +1239,21 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
         content: Some(SlotContent::Styled {
             spans: vec![Span {
                 text: "1.2 MB/s".to_owned(),
-                color: None,
-                icon: Some("↓".to_owned()),
+                class: None,
+                id: None,
+                style: vec![crate::core::style_engine::Declaration::Icon("↓".to_owned())],
             }],
         }),
     }];
-    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let vm = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert_eq!(vm.script_rows[0].runs.len(), 1);
     assert_eq!(vm.script_rows[0].runs[0].text, "↓ 1.2 MB/s");
     assert_eq!(vm.script_rows[0].width, script_measure("↓ 1.2 MB/s"));
@@ -1149,12 +1266,21 @@ fn script_seats_lay_painted_runs_from_the_typed_content() {
         content: Some(SlotContent::Styled {
             spans: vec![Span {
                 text: String::new(),
-                color: None,
-                icon: Some("↓".to_owned()),
+                class: None,
+                id: None,
+                style: vec![crate::core::style_engine::Declaration::Icon("↓".to_owned())],
             }],
         }),
     }];
-    let vm = band_vm(&segments, 2000.0, &script_measure, None, None, None);
+    let vm = band_vm(
+        &segments,
+        2000.0,
+        &script_measure,
+        None,
+        None,
+        None,
+        &fixture_engine(),
+    );
     assert!(
         vm.script_rows.is_empty(),
         "an all-empty styled answer lays nothing"
@@ -1183,13 +1309,20 @@ fn a_styled_reply_flattens_to_its_concatenated_text_at_the_render() {
                 spans: vec![
                     Span {
                         text: "▼".to_owned(),
-                        color: Some(SlotColor::Token("accent".to_owned())),
-                        icon: Some("arrow-down".to_owned()),
+                        class: None,
+                        id: None,
+                        style: vec![
+                            crate::core::style_engine::Declaration::Color(SlotColor::Token(
+                                "accent".to_owned(),
+                            )),
+                            crate::core::style_engine::Declaration::Icon("arrow-down".to_owned()),
+                        ],
                     },
                     Span {
                         text: " 1.2 MB/s".to_owned(),
-                        color: None,
-                        icon: None,
+                        class: None,
+                        id: None,
+                        style: Vec::new(),
                     },
                 ],
             },
@@ -1227,8 +1360,11 @@ fn the_prior_content_survives_an_omission_and_the_shapes_swap() {
             content: SlotContent::Styled {
                 spans: vec![Span {
                     text: "styled".to_owned(),
-                    color: Some(SlotColor::Token("accent".to_owned())),
-                    icon: None,
+                    class: None,
+                    id: None,
+                    style: vec![crate::core::style_engine::Declaration::Color(
+                        SlotColor::Token("accent".to_owned()),
+                    )],
                 }],
             },
         }],

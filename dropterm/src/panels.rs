@@ -233,7 +233,24 @@ use std::collections::HashMap;
 pub struct PanelSectionVm {
     pub id: String,
     pub title: String,
-    pub rows: Vec<(String, Vec<dropterm::core::status::BandScriptRunVm>)>,
+    pub rows: Vec<LaidRow>,
+}
+
+/// One laid row (panel-slot, style-engine SE4): the composed runs
+/// beside the row's own style hooks — the `row` node's inputs, the
+/// shell's resolve at the render seam.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaidRow {
+    /// The row's press id: the script-named `id`, else the
+    /// positional index.
+    pub press_id: String,
+    pub runs: Vec<dropterm::core::status::BandScriptRunVm>,
+    /// The row's class hook, whole (the shell splits at resolve).
+    pub class: Option<String>,
+    /// The row's numeric event id — the `#id`'s string form.
+    pub id: Option<u32>,
+    /// The row's inline declarations.
+    pub style: Vec<dropterm::core::style_engine::Declaration>,
 }
 
 /// The right rail's live state (panel-slot): the registry's sync rows
@@ -344,7 +361,10 @@ impl PanelRail {
     /// in the registry, only sections with content, each row's runs
     /// composed and its press id resolved (the script-named `id`,
     /// else the positional index).
-    pub fn sections_laid(&self) -> Vec<PanelSectionVm> {
+    pub fn sections_laid(
+        &self,
+        engine: &dropterm::core::style_engine::StyleSet,
+    ) -> Vec<PanelSectionVm> {
         self.views
             .iter()
             .filter_map(|view| {
@@ -354,11 +374,17 @@ impl PanelRail {
                     PanelContent::Slot(slot) => {
                         // A Slot-shaped answer paints one section of
                         // its own text — one row.
-                        let runs = dropterm::core::status::script_runs(slot);
+                        let runs = dropterm::core::status::script_runs(slot, engine, None);
                         return Some(PanelSectionVm {
                             id: view.id.clone(),
                             title: view.title.clone(),
-                            rows: vec![(String::new(), runs)],
+                            rows: vec![LaidRow {
+                                press_id: String::new(),
+                                runs,
+                                class: None,
+                                id: None,
+                                style: Vec::new(),
+                            }],
                         });
                     }
                 };
@@ -373,8 +399,16 @@ impl PanelRail {
                             &dropterm::core::slots::SlotContent::Styled {
                                 spans: row.spans.clone(),
                             },
+                            engine,
+                            None,
                         );
-                        (press_id, runs)
+                        LaidRow {
+                            press_id,
+                            runs,
+                            class: row.class.clone(),
+                            id: row.id,
+                            style: row.style.clone(),
+                        }
                     })
                     .collect();
                 Some(PanelSectionVm {
@@ -423,6 +457,10 @@ mod rail_tests {
     /// round, an omitted id keeps its prior, and a stale or
     /// superseded reply drops whole.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one token/stale walk over one rail: the guards' whole shape in sequence"
+    )]
     fn replies_apply_under_token_and_stale_guards() {
         use dropterm::core::slots::{SlotContent, Span};
         let mut rail = PanelRail::default();
@@ -439,7 +477,10 @@ mod rail_tests {
                 content: Some(PanelContent::Slot(SlotContent::Text("stale".to_owned()))),
             }],
         );
-        assert!(rail.sections_laid().is_empty());
+        assert!(
+            rail.sections_laid(&dropterm::core::style_engine::StyleSet::default())
+                .is_empty()
+        );
         // A superseded token drops too.
         rail.apply_reply(
             token + 7,
@@ -451,7 +492,10 @@ mod rail_tests {
                 ))),
             }],
         );
-        assert!(rail.sections_laid().is_empty());
+        assert!(
+            rail.sections_laid(&dropterm::core::style_engine::StyleSet::default())
+                .is_empty()
+        );
         // The matching fresh reply lands.
         rail.apply_reply(
             token,
@@ -463,11 +507,11 @@ mod rail_tests {
                 ))),
             }],
         );
-        let laid = rail.sections_laid();
+        let laid = rail.sections_laid(&dropterm::core::style_engine::StyleSet::default());
         assert_eq!(laid.len(), 1);
         assert_eq!(laid[0].id, "tasks");
         assert_eq!(laid[0].rows.len(), 1);
-        assert_eq!(laid[0].rows[0].1[0].text, "three tasks");
+        assert_eq!(laid[0].rows[0].runs[0].text, "three tasks");
         // The next trip hides it (nil): the section renders nothing.
         let next = rail
             .requery_due(std::time::Instant::now() + dropterm::core::status::SCRIPT_QUERY_INTERVAL);
@@ -480,7 +524,11 @@ mod rail_tests {
                 content: None,
             }],
         );
-        assert!(rail.sections_laid().is_empty(), "a nil hides this round");
+        assert!(
+            rail.sections_laid(&dropterm::core::style_engine::StyleSet::default())
+                .is_empty(),
+            "a nil hides this round"
+        );
         // A fresh styled answer lays one row per spans row, with the
         // positional press ids.
         let again = rail.requery_due(
@@ -496,28 +544,37 @@ mod rail_tests {
                         dropterm::core::slots::PanelRow {
                             spans: vec![Span {
                                 text: "one".to_owned(),
-                                color: None,
-                                icon: None,
+                                class: None,
+                                id: None,
+                                style: Vec::new(),
                             }],
                             id: Some(9),
+                            class: None,
+                            style: Vec::new(),
                         },
                         dropterm::core::slots::PanelRow {
                             spans: vec![Span {
                                 text: "two".to_owned(),
-                                color: None,
-                                icon: None,
+                                class: None,
+                                id: None,
+                                style: Vec::new(),
                             }],
                             id: None,
+                            class: None,
+                            style: Vec::new(),
                         },
                     ],
                 }),
             }],
         );
-        let laid = rail.sections_laid();
+        let laid = rail.sections_laid(&dropterm::core::style_engine::StyleSet::default());
         assert_eq!(laid[0].rows.len(), 2);
-        assert_eq!(laid[0].rows[0].0, "9", "the script-named id rides");
-        assert_eq!(laid[0].rows[1].0, "1", "the positional index stands in");
-        assert_eq!(laid[0].rows[0].1[0].text, "one");
+        assert_eq!(laid[0].rows[0].press_id, "9", "the script-named id rides");
+        assert_eq!(
+            laid[0].rows[1].press_id, "1",
+            "the positional index stands in"
+        );
+        assert_eq!(laid[0].rows[0].runs[0].text, "one");
     }
 
     /// The press routing: a registered view's row press yields the
@@ -572,9 +629,9 @@ mod rail_tests {
             ],
         );
         rail.note_views(vec![view("a")]);
-        let laid = rail.sections_laid();
+        let laid = rail.sections_laid(&dropterm::core::style_engine::StyleSet::default());
         assert_eq!(laid.len(), 1, "b's section swept with its seat");
         assert_eq!(laid[0].id, "a");
-        assert_eq!(laid[0].rows[0].1[0].text, "a's", "the survivor keeps");
+        assert_eq!(laid[0].rows[0].runs[0].text, "a's", "the survivor keeps");
     }
 }

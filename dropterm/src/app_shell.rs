@@ -159,10 +159,10 @@ struct RenameEdit {
 /// generator and the pane read from a config — the glue chain's name,
 /// mode, and colors in one value, resolved at the echo so the tick's
 /// apply is pure application.
-struct ResolvedTheme {
+pub(crate) struct ResolvedTheme {
     name: String,
     dark: bool,
-    colors: alacritty_terminal::term::color::Colors,
+    pub(crate) colors: alacritty_terminal::term::color::Colors,
 }
 
 /// A comparable copy of a resolved [`ResolvedTheme::colors`] for the
@@ -188,7 +188,7 @@ fn theme_colors(colors: &alacritty_terminal::term::color::Colors) -> ThemeColors
 /// schemes ride in from the shell's holder (theme-files F2): a
 /// stored user-scheme name resolves through them here exactly as at
 /// every pane spawn.
-fn resolve_theme(
+pub(crate) fn resolve_theme(
     config: &DropTermConfig,
     user_schemes: &[dropterm::core::theme_files::UserScheme],
 ) -> ResolvedTheme {
@@ -381,6 +381,13 @@ pub(crate) struct Shell {
     /// `new-tab` keep startup application (the degraded tab verbs
     /// never reach here — `startup_action` already collapsed them).
     pending_startup: Option<cli::Action>,
+    /// The startup mark's once-guard (plugin-manifest spec): the
+    /// first painted frame's pump sends the `StartupMark` command —
+    /// boot-to-frame milliseconds, the 50 ms window's measure — and
+    /// never again. Gated on the plugins dir having stood at boot
+    /// (the `lua_bus` gate), so a no-plugins session keeps the
+    /// quiet-by-default pin: no mark, no spawn, no log.
+    startup_marked: bool,
     /// The drawer's tabs (gpui-tabs Task 1): plain records through
     /// core's model — the strip renders from this list.
     tabs: tab_bar::TabList,
@@ -643,12 +650,42 @@ pub(crate) struct Shell {
     /// drain lands replies through it. Idle by construction with no
     /// plugins dir (no provider ever reports, no ask ever fires).
     tab_titles: dropterm::core::tabs::TabTitleAsks,
-    /// The live script-command set (script-commands spec): the host's
-    /// sync reports, the keybind editor's runtime rows read. Empty by
-    /// construction with no plugins dir; empty after a reload into no
-    /// commands — rows exist only for live commands, while persisted
+    /// The live script-command set (script-commands spec): the
+    /// declared + runtime merge, one seat per slug (plugin-manifest
+    /// advertising) — the keybind editor's rows and the palette's
+    /// `ScriptCommands` section read it. Empty by construction with
+    /// no plugins dir; empty after a reload into no commands — rows
+    /// exist only for live or declared commands, while persisted
     /// `script/<name>` bindings stay in the file, inert.
     pub(crate) script_commands: Vec<dropterm::core::keybinds::CommandRow>,
+    /// The runtime half of that merge: the host's sync reports,
+    /// verbatim — re-merged against the declared set on every
+    /// manifest rescan without touching the host.
+    runtime_script_commands: Vec<dropterm::core::keybinds::CommandRow>,
+    /// The manifest scan's registry (plugin-manifest advertising):
+    /// PM1's pure scan at boot, re-run on the watcher's shell-side
+    /// wake — the declared commands' and (PM5) the settings rows'
+    /// source. No interpreter, ever.
+    pub(crate) plugin_manifests: Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+    /// The settings store's current values (plugin-manifest PM4):
+    /// read at boot, held here, pushed to the host at the mark and
+    /// after every settings save (PM5's editors update this before
+    /// their write). The window is the store's only writer.
+    pub(crate) plugin_settings_values: dropterm::core::plugins_manifest::StoreValues,
+    /// The Plugins page editors' inline errors (plugin-manifest PM5):
+    /// `(plugin id, row key)` → the message, set by a rejected write
+    /// and cleared by the next accepted one. Pure display state.
+    plugin_setting_errors: std::collections::BTreeMap<(String, String), String>,
+    /// The style engine (style-engine SE2): the one `StyleSet` every
+    /// painter resolves through — the builtin layer set here at boot,
+    /// the manifest and runtime sheets fed from SE3 on. The views
+    /// borrow it per frame; the sources mutate it between frames.
+    pub(crate) style_engine:
+        std::rc::Rc<std::cell::RefCell<dropterm::core::style_engine::StyleSet>>,
+    /// The watcher's shell-side wake (plugin-manifest): the same
+    /// notify callback that queues the host's `Reload` pings this
+    /// channel; the pump drains it into [`Self::rescan_manifests`].
+    manifest_wake: Receiver<()>,
     /// The completions table's shared load (gpui-parity Task 1): the
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
@@ -825,6 +862,40 @@ fn plugin_surfaces() -> (PanelContainer, PanelContainer, PanelRail) {
     )
 }
 
+/// The manifest-declared commands as advertising rows, in dir order —
+/// the scan's registry speaking, no interpreter (plugin-manifest).
+fn declared_command_rows_of(
+    manifests: &[dropterm::core::plugins_manifest::ScannedPlugin],
+) -> Vec<dropterm::core::keybinds::CommandRow> {
+    manifests
+        .iter()
+        .flat_map(|plugin| plugin.commands.iter())
+        .map(|command| dropterm::core::keybinds::CommandRow {
+            name: command.id.clone(),
+            description: command.description.clone(),
+        })
+        .collect()
+}
+
+/// The advertising merge (plugin-manifest spec): the manifest-declared
+/// rows and the host's runtime registrations unify one seat per slug —
+/// the manifest wins the row when a slug stands in both (advertising
+/// is the manifest's job; dispatch is the runtime's, PM2's gate).
+/// Declared rows lead in dir order, the runtime-only seats follow in
+/// registration order — deterministic both ways.
+fn merge_script_command_rows(
+    declared: &[dropterm::core::keybinds::CommandRow],
+    runtime: Vec<dropterm::core::keybinds::CommandRow>,
+) -> Vec<dropterm::core::keybinds::CommandRow> {
+    let mut merged: Vec<dropterm::core::keybinds::CommandRow> = declared.to_vec();
+    for row in runtime {
+        if !merged.iter().any(|seat| seat.name == row.name) {
+            merged.push(row);
+        }
+    }
+    merged
+}
+
 impl Shell {
     /// The plain strategy's one inputs patch (gnome-window's
     /// plain-mode ceiling): a toplevel cannot slide itself
@@ -840,6 +911,10 @@ impl Shell {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one struct literal; the boot facts ride their own helpers (plugins_boot_state)"
+    )]
     fn new(
         boot: Instant,
         mode: Verdict,
@@ -864,6 +939,7 @@ impl Shell {
         specs: SpecsWatch,
         tray_actions: Receiver<crate::tray::TrayAction>,
         lua_host: dropterm::core::lua_host::LuaHost,
+        manifest_wake: Receiver<()>,
     ) -> Self {
         // The plain strategy's one inputs patch: no slide. A toplevel
         // cannot slide itself off-screen (xdg-toplevel has no position
@@ -891,7 +967,18 @@ impl Shell {
         // (a dir that appears mid-run is the next launch's, the
         // watcher's own rule) — `None` means no pane ever holds an
         // inlet, and a no-plugins session stays byte-identical.
-        let (lua_bus, status_scripts, tab_titles) = Self::plugins_boot_state(&lua_host);
+        let (
+            lua_bus,
+            status_scripts,
+            tab_titles,
+            script_commands,
+            plugin_manifests,
+            plugin_settings_values,
+        ) = Self::plugins_boot_state(&lua_host);
+        let manifest_rules: Vec<dropterm::core::style_engine::Rule> = plugin_manifests
+            .iter()
+            .flat_map(|plugin| plugin.styles.clone())
+            .collect();
         let (images_panel, rail, panel_rail) = plugin_surfaces();
         Self {
             boot,
@@ -932,6 +1019,27 @@ impl Shell {
             tab_count,
             verbs,
             pending_startup: Some(startup),
+            startup_marked: false,
+            plugin_manifests,
+            runtime_script_commands: Vec::new(),
+            plugin_settings_values,
+            plugin_setting_errors: std::collections::BTreeMap::new(),
+            style_engine: {
+                let engine = std::rc::Rc::new(std::cell::RefCell::new(
+                    dropterm::core::style_engine::StyleSet::default(),
+                ));
+                let mut builtins = crate::dialog_slot::builtin_rules();
+                builtins.extend(crate::status_bar::builtin_rules());
+                let mut set = engine.borrow_mut();
+                set.set_builtin(builtins);
+                // The manifest sheets stand from boot (style-engine
+                // SE3): the whole scan's rules, dir order — chrome
+                // restyles from launch, no interpreter.
+                set.replace_manifest(manifest_rules);
+                drop(set);
+                engine
+            },
+            manifest_wake,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             close_confirm_focused: None,
@@ -969,7 +1077,7 @@ impl Shell {
             status_timer_logged: (false, None, None),
             status_scripts,
             tab_titles,
-            script_commands: Vec::new(),
+            script_commands,
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -994,14 +1102,20 @@ impl Shell {
     /// The plugins-dir boot facts, read once at construction: the bus
     /// inlet (`None` when no plugins dir stood at boot — a dir that
     /// appears mid-run is the next launch's, the watcher's own rule),
-    /// the status boot query (SG1), and the tab-title boot ask (TT2).
-    /// Read before the host moves into the shell.
+    /// the status boot query (SG1), the tab-title boot ask (TT2), and
+    /// the manifest scan with its advertising rows (plugin-manifest) —
+    /// pure data over PM1's module, no interpreter and no host wake,
+    /// so a no-plugins boot stays byte-identical (a missing dir scans
+    /// silent-empty).
     fn plugins_boot_state(
         lua_host: &dropterm::core::lua_host::LuaHost,
     ) -> (
         Option<dropterm::core::lua_host::LuaHostHandle>,
         status::ScriptSegmentsState,
         dropterm::core::tabs::TabTitleAsks,
+        Vec<dropterm::core::keybinds::CommandRow>,
+        Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+        dropterm::core::plugins_manifest::StoreValues,
     ) {
         let stood = lua_host.plugins_dir().exists();
         let lua_bus = stood.then(|| lua_host.handle());
@@ -1013,7 +1127,39 @@ impl Shell {
         if stood {
             asks.arm_boot_ask();
         }
-        (lua_bus, scripts, asks)
+        let scan = dropterm::core::plugins_manifest::scan(lua_host.plugins_dir());
+        let plugin_manifests = scan.plugins;
+        for line in &scan.logs {
+            println!("dropterm: plugins: {line}");
+        }
+        // The advertising rows stand from boot: the declared set merged
+        // over the empty runtime set — the initial state, not a change
+        // event, so no registry log line rides it.
+        let script_commands =
+            merge_script_command_rows(&declared_command_rows_of(&plugin_manifests), Vec::new());
+        // The settings store's launch read (plugin-manifest PM4):
+        // tolerant, next-launch semantics — the file is read here and
+        // pushed once at the first pump's mark, never watched. One
+        // line when it carries values, the launch's observable step.
+        let store_path = dropterm::core::config::store::store_dir()
+            .join(dropterm::core::plugins_manifest::STORE_FILE_NAME);
+        let (plugin_settings_values, store_logs) =
+            dropterm::core::plugins_manifest::read_store(&store_path);
+        for line in store_logs {
+            println!("dropterm: plugins: {line}");
+        }
+        if !plugin_settings_values.is_empty() {
+            let ids: Vec<&String> = plugin_settings_values.keys().collect();
+            println!("dropterm: plugins: settings store loaded for {ids:?}");
+        }
+        (
+            lua_bus,
+            scripts,
+            asks,
+            script_commands,
+            plugin_manifests,
+            plugin_settings_values,
+        )
     }
 
     /// The probe's granted-bounds slot, cloned into each measuring
@@ -1163,6 +1309,26 @@ impl Shell {
             );
             self.dispatch(cx, startup, &mut actions, &mut tab_verbs);
         }
+        // The startup mark (plugin-manifest spec): the first painted
+        // frame's pump is the anchor — boot-to-frame milliseconds, the
+        // 50 ms window's measure, sent once and only when the plugins
+        // dir stood at boot (the lua_bus gate; a no-plugins session
+        // keeps the quiet-by-default pin). The mark is the host's
+        // first work item when it stands, so `on_startup_finished`
+        // plugins load past this point in either direction of the
+        // ruled branch.
+        if self.lua_bus.is_some() && !self.startup_marked {
+            self.startup_marked = true;
+            // The settings push rides the mark's guard (plugin-manifest
+            // PM4): the values cross first, so the mark's own loads —
+            // an `on_startup` handler's first dispatch included —
+            // resolve against them.
+            self.push_plugin_settings();
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::StartupMark {
+                    elapsed_ms: u64::try_from(self.boot.elapsed().as_millis()).unwrap_or(u64::MAX),
+                });
+        }
         while let Ok(action) = self.verbs.try_recv() {
             self.dispatch(cx, action, &mut actions, &mut tab_verbs);
         }
@@ -1231,6 +1397,15 @@ impl Shell {
             cx.notify();
         }
         self.drain_lua_host(cx);
+        // The watcher's shell-side wake (plugin-manifest): the same
+        // notify burst that queued the host's Reload re-merges the
+        // advertising rows. One rescan per burst — the scan reads
+        // current disk, so every queued follower is redundant (the
+        // Reload arm's own fold rule).
+        if self.manifest_wake.try_recv().is_ok() {
+            while self.manifest_wake.try_recv().is_ok() {}
+            self.rescan_manifests(cx);
+        }
         self.panel_ask_tick();
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -2794,12 +2969,34 @@ impl Shell {
             .map(|tab| tab.title.clone())
             .collect();
         let scheme_names = dropterm::core::theme_source::merged_scheme_names(&self.user_schemes);
+        // The script commands (plugin-manifest advertising): the
+        // merged declared + runtime rows as the palette's
+        // append-by-id extras — searchable from launch, a declared
+        // lazy plugin's row standing with no interpreter alive. The
+        // label is the description (the manifest requires one); the
+        // chord hint resolves through the same effective-binding the
+        // keybind rows use, a bound `script/<name>` showing its chord.
+        let extra: Vec<dropterm::core::palette::Command> = self
+            .script_commands
+            .iter()
+            .map(|row| dropterm::core::palette::Command {
+                id: row.id(),
+                label: if row.description.is_empty() {
+                    row.name.clone()
+                } else {
+                    row.description.clone()
+                },
+                section: dropterm::core::palette::Section::ScriptCommands,
+                chord: dropterm::core::keybinds::effective_binding(&row.id(), &custom_binds),
+                verb: dropterm::core::palette::Verb::ScriptCommand(row.name.clone()),
+            })
+            .collect();
         let catalog = dropterm::core::palette::compose(
             &custom_binds,
             &profiles,
             &tab_titles,
             &scheme_names,
-            &[],
+            &extra,
         );
         // The palette's two callbacks — the wiring only: the pick
         // closes the palette then routes, every dismissal closes.
@@ -2884,7 +3081,8 @@ impl Shell {
         let pane_background =
             colors[alacritty_terminal::vte::ansi::NamedColor::Background].unwrap_or(fallback);
         let (_, fg) = tab_bar::strip_pair(Some(pane_background));
-        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
+        let bg = tab_bar::hsla(pane_background.r, pane_background.g, pane_background.b);
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let shell = cx.entity();
         let on_press: crate::dialog_slot::DialogPressFn = std::rc::Rc::new({
             let shell = shell.clone();
@@ -2914,8 +3112,9 @@ impl Shell {
                 });
             }
         });
+        let engine = self.style_engine.borrow();
         let dialog = cx.new(|cx| {
-            crate::dialog_slot::DialogSlot::new(spec, &palette, on_press, on_dismiss, cx)
+            crate::dialog_slot::DialogSlot::new(spec, &palette, &engine, on_press, on_dismiss, cx)
         });
         // The close path's repair handle, captured while the read is
         // safe (the palette's own shape).
@@ -3080,6 +3279,23 @@ impl Shell {
                 };
                 self.write_settings(&write);
                 cx.notify();
+            }
+            Route::ScriptCommand(name) => {
+                // The keybind funnel's own dispatch (script-commands
+                // spec): fire-and-forget `RunCommand`, the active
+                // pane's id the handler's ctx. A paneless session has
+                // no tab to hand the handler — one line, the pick
+                // dropped (the stale-pick drop's own culture).
+                let Some(id) = self.tabs.active_id() else {
+                    println!(
+                        "dropterm: palette pick script/{} dropped: no pane at +{}ms",
+                        name,
+                        self.boot.elapsed().as_millis()
+                    );
+                    return;
+                };
+                self.lua_host
+                    .send(dropterm::core::lua_host::HostCommand::RunCommand { name, tab: id.0 });
             }
         }
     }
@@ -5263,8 +5479,12 @@ impl Shell {
         let (strip, fg) = tab_bar::strip_pair(pane_background);
         // The styled runs' palette (styled-status-slot): resolved
         // beside the strip pair, same scheme, same render — one
-        // color source, no second theme path.
-        let palette = status_bar::ScriptPalette::resolve(&colors, fg);
+        // color source, no second theme path. `bg` is the worn
+        // scheme's background (the strip's undimmed base).
+        let bg = pane_background.map_or(tab_bar::hsla(0, 0, 0), |rgb| {
+            tab_bar::hsla(rgb.r, rgb.g, rgb.b)
+        });
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let width = self
             .last_bounds
             .map_or(0.0, |bounds| bounds.size.width.as_f32());
@@ -5298,6 +5518,7 @@ impl Shell {
         status_bar::StatusBandView::new(self.status.clone(), strip, fg)
             .font(self.band_font.clone())
             .palette(palette)
+            .engine(std::rc::Rc::clone(&self.style_engine))
             .show_border(self.config.status_bar_border)
             .at_bottom(self.inputs.geometry.edge == Edge::Top)
             .width(width)
@@ -5357,29 +5578,164 @@ impl Shell {
     }
 
     /// The commands registry's sync (script-commands spec): the
-    /// keybind editor's runtime rows, the reload-close riding the
-    /// dialog's rule.
+    /// keybind editor's runtime rows, merged with the manifest-declared
+    /// set one seat per slug (plugin-manifest advertising — the
+    /// manifest wins the row when a slug stands in both), the
+    /// reload-close riding the dialog's rule.
     fn note_script_commands(
         &mut self,
         commands: Vec<dropterm::core::keybinds::CommandRow>,
         cx: &mut Context<Self>,
     ) {
-        if commands == self.script_commands {
+        self.runtime_script_commands = commands;
+        self.remerge_script_commands(cx);
+    }
+
+    /// Re-merge the declared and runtime command sets into the
+    /// advertising rows — the rescan's own re-entry point, so a
+    /// manifest change drops or adds its rows without touching the
+    /// runtime seats.
+    fn remerge_script_commands(&mut self, cx: &mut Context<Self>) {
+        let merged = merge_script_command_rows(
+            &self.declared_command_rows(),
+            self.runtime_script_commands.clone(),
+        );
+        if merged == self.script_commands {
             return;
         }
-        let names: Vec<&str> = commands
-            .iter()
-            .map(|command| command.name.as_str())
-            .collect();
+        let names: Vec<&str> = merged.iter().map(|command| command.name.as_str()).collect();
         println!(
             "dropterm: plugins: commands registry {names:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
-        self.script_commands = commands;
+        self.script_commands = merged;
         self.close_dialog(cx);
         cx.notify();
     }
 
+    /// The manifest-declared commands as advertising rows, in dir
+    /// order — the scan's registry speaking, no interpreter.
+    fn declared_command_rows(&self) -> Vec<dropterm::core::keybinds::CommandRow> {
+        declared_command_rows_of(&self.plugin_manifests)
+    }
+
+    /// The settings store's path (plugin-manifest PM5): the config
+    /// dir's own file — derived from the plugins dir's parent so the
+    /// derivation cannot drift from the dir the host scans (and so a
+    /// test's scratch plugins dir carries its own isolated store).
+    fn plugins_store_path(&self) -> std::path::PathBuf {
+        self.lua_host.plugins_dir().parent().map_or_else(
+            || {
+                dropterm::core::config::store::store_dir()
+                    .join(dropterm::core::plugins_manifest::STORE_FILE_NAME)
+            },
+            |dir| dir.join(dropterm::core::plugins_manifest::STORE_FILE_NAME),
+        )
+    }
+
+    /// One Plugins page editor's write (plugin-manifest PM5): the
+    /// declared row gates the value — an unknown row or a wrong-typed
+    /// value sets the row's inline error and keeps the prior store
+    /// value standing; a valid one clears the error, updates the
+    /// shell's values, writes the store atomically, and pushes the
+    /// host's carry. The window is the store's only writer.
+    pub(crate) fn plugin_setting_write(
+        &mut self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let row = self
+            .plugin_manifests
+            .iter()
+            .find(|plugin| plugin.id == plugin_id)
+            .and_then(|plugin| plugin.settings.iter().find(|row| row.key == key));
+        let Some(row) = row else {
+            self.plugin_setting_errors.insert(
+                (plugin_id.to_owned(), key.to_owned()),
+                "no declared row for this key".to_owned(),
+            );
+            cx.notify();
+            return;
+        };
+        if !dropterm::core::plugins_manifest::value_matches_kind(&row.kind, &value) {
+            self.plugin_setting_errors.insert(
+                (plugin_id.to_owned(), key.to_owned()),
+                format!("the value does not match the row's '{}' type", {
+                    // The kind word the manifest speaks, for the message.
+                    match &row.kind {
+                        dropterm::core::plugins_manifest::SettingKind::Boolean { .. } => "boolean",
+                        dropterm::core::plugins_manifest::SettingKind::String { .. } => "string",
+                        dropterm::core::plugins_manifest::SettingKind::Number { .. } => "number",
+                        dropterm::core::plugins_manifest::SettingKind::Enum { .. } => "enum",
+                        dropterm::core::plugins_manifest::SettingKind::Array { .. } => "array",
+                        dropterm::core::plugins_manifest::SettingKind::Object { .. } => "object",
+                    }
+                }),
+            );
+            cx.notify();
+            return;
+        }
+        self.plugin_setting_errors
+            .remove(&(plugin_id.to_owned(), key.to_owned()));
+        self.plugin_settings_values
+            .entry(plugin_id.to_owned())
+            .or_default()
+            .insert(key.to_owned(), value);
+        let path = self.plugins_store_path();
+        if let Err(err) =
+            dropterm::core::plugins_manifest::write_store(&path, &self.plugin_settings_values)
+        {
+            println!("dropterm: plugins: the settings store would not write: {err}");
+        }
+        self.push_plugin_settings();
+        cx.notify();
+    }
+
+    /// One editor row's inline error (plugin-manifest PM5).
+    pub(crate) fn plugin_setting_error(&self, plugin_id: &str, key: &str) -> Option<&String> {
+        self.plugin_setting_errors
+            .get(&(plugin_id.to_owned(), key.to_owned()))
+    }
+
+    /// The settings store's push (plugin-manifest PM4): the shell's
+    /// current per-plugin values cross to the host as one passive
+    /// command — the boot arm and the settings save's own step (the
+    /// Plugins page calls it after its writes, PM5).
+    fn push_plugin_settings(&self) {
+        self.lua_host
+            .send(dropterm::core::lua_host::HostCommand::SettingsSync {
+                values: self.plugin_settings_values.clone(),
+            });
+    }
+
+    /// The watcher's shell-side half (plugin-manifest): the scan
+    /// re-runs and the advertising rows re-merge, so a manifest edit
+    /// or removal lands on the rows at the same reload the host's
+    /// interpreter feels.
+    fn rescan_manifests(&mut self, cx: &mut Context<Self>) {
+        let scan = dropterm::core::plugins_manifest::scan(self.lua_host.plugins_dir());
+        for line in &scan.logs {
+            println!("dropterm: plugins: {line}");
+        }
+        self.plugin_manifests = scan.plugins;
+        // The manifest sheets feed the engine (style-engine SE3):
+        // the whole scan's rules, dir order — chrome restyles from
+        // launch and on every watcher reload, no interpreter.
+        let rules = self
+            .plugin_manifests
+            .iter()
+            .flat_map(|plugin| plugin.styles.iter().cloned())
+            .collect();
+        self.style_engine.borrow_mut().replace_manifest(rules);
+        self.remerge_script_commands(cx);
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the host's whole out-arm in one walk: every event's own arm, the pump's shape"
+    )]
     fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
         while let Some(event) = self.lua_host.try_event() {
             match event {
@@ -5454,6 +5810,28 @@ impl Shell {
                 }
                 dropterm::core::lua_host::HostEvent::CommandsSync { commands } => {
                     self.note_script_commands(commands, cx);
+                }
+                dropterm::core::lua_host::HostEvent::StylesSync { plugin, rules } => {
+                    // The caller's whole sheet, replacing (SE3): the
+                    // plugin's old rules leave, the new rules join at
+                    // the arrival end, and the surfaces repaint by
+                    // the standing notify.
+                    self.style_engine
+                        .borrow_mut()
+                        .replace_runtime_sheet(&plugin, rules);
+                    cx.notify();
+                }
+                dropterm::core::lua_host::HostEvent::StylesReset => {
+                    // A fresh interpreter: every runtime sheet died
+                    // with the old one (SE3) — the shell drops all
+                    // runtime sheets, manifest sheets standing.
+                    let dropped = self.style_engine.borrow_mut().clear_runtime_sheets();
+                    if dropped > 0 {
+                        println!(
+                            "dropterm: plugins: {dropped} runtime style rules dropped at reload"
+                        );
+                        cx.notify();
+                    }
                 }
                 dropterm::core::lua_host::HostEvent::SendText { tab, text } => {
                     // Fire-and-forget the other way (script-commands
@@ -5791,7 +6169,15 @@ impl Shell {
         fg: gpui::Hsla,
     ) -> tab_bar::TabBarView {
         let shell = cx.entity();
+        // The strip's palette beside the band's (SE3): same scheme,
+        // the strip's own fg and background — one color source.
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
+        let bg = resolve_theme(&self.config, &self.user_schemes).colors
+            [alacritty_terminal::vte::ansi::NamedColor::Background]
+            .map_or(strip, |rgb| tab_bar::hsla(rgb.r, rgb.g, rgb.b));
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
+            .styled(std::rc::Rc::clone(&self.style_engine), palette)
             .show_border(self.config.tab_bar_border)
             .min_tabs(usize::from(self.config.tab_bar_min_tabs))
             .at_bottom(at_bottom)
@@ -6070,6 +6456,10 @@ impl Shell {
     /// pin's law); gate-on lays the column beside the empty rail at
     /// the rail's remembered width. The rail is shell chrome — the
     /// hairline the column already carries stays on the column.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the rail's whole mount: the roots' resolves, the sections, the row painter's flip — one column"
+    )]
     fn rail_column(&self, column: impl gpui::IntoElement, cx: &Context<Self>) -> gpui::AnyElement {
         if !self.config.panel_rail_enabled {
             return column.into_any_element();
@@ -6078,6 +6468,25 @@ impl Shell {
             return column.into_any_element();
         };
         let theme = cx.theme();
+        // The rail's rules resolve through the standing palette (SE4):
+        // the scheme words the declarations carry, one color source
+        // with the band's. Unset values leave today's look.
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
+        let scheme_pair = tab_bar::strip_pair(None);
+        let palette = status_bar::ScriptPalette::resolve(&colors, scheme_pair.0, scheme_pair.1);
+        let engine = self.style_engine.borrow();
+        let paint = |value: Option<&dropterm::core::slots::SlotColor>| match value {
+            Some(dropterm::core::slots::SlotColor::Token(token)) => palette.color(token),
+            Some(dropterm::core::slots::SlotColor::Hex(hex)) => status_bar::parse_hex(hex),
+            None => None,
+        };
+        let panel = engine.resolve(&dropterm::core::style_engine::StyleNode {
+            element: "panel",
+            classes: &[],
+            id: None,
+            inline: &[],
+        });
+        let sections = self.panel_rail.sections_laid(&engine);
         let rail = div()
             .id("panel-rail")
             .h_full()
@@ -6085,14 +6494,23 @@ impl Shell {
             .w(gpui::px(rail.width_px()))
             .border_l_1()
             .border_color(theme.border)
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(paint(panel.background.as_ref()).unwrap_or(theme.background))
+            .text_color(paint(panel.color.as_ref()).unwrap_or(theme.foreground))
             .text_size(gpui::px(13.))
             .p(gpui::px(8.))
             .flex()
             .flex_col()
             .gap(gpui::px(8.))
-            .children(self.panel_rail.sections_laid().iter().map(|section| {
+            .children(sections.iter().map(|section| {
+                // The section is one `panel-view` node: its id the
+                // view's registration id, its resolved values on the
+                // section container.
+                let view = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "panel-view",
+                    classes: &[],
+                    id: Some(&section.id),
+                    inline: &[],
+                });
                 let title = gpui::div()
                     .text_size(gpui::px(11.))
                     .text_color(theme.muted_foreground)
@@ -6100,15 +6518,33 @@ impl Shell {
                 let shell = cx.entity();
                 let view_id = section.id.clone();
                 let rows = gpui::div().flex().flex_col().gap(gpui::px(2.)).children(
-                    section.rows.iter().map(|(press_id, runs)| {
+                    section.rows.iter().map(|row| {
+                        // The row resolves its own `row` node (SE4):
+                        // the class hooks, the numeric id's string
+                        // form, the inline declarations — the runs
+                        // paint through the band's composer.
+                        let classes: Vec<&str> = row
+                            .class
+                            .as_deref()
+                            .unwrap_or_default()
+                            .split_whitespace()
+                            .collect();
+                        let id_string = row.id.map(|id| id.to_string());
+                        let style = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "row",
+                            classes: &classes,
+                            id: id_string.as_deref(),
+                            inline: &row.style,
+                        });
+                        let runs = status_bar::paint_script_segment(&row.runs, &palette);
                         // The row is the press target (panel-slot
                         // PS3): the hand gets the pointer and the
                         // hover, the press routes the slot-event
                         // through the shell's one emit.
                         let shell = shell.clone();
                         let view_id = view_id.clone();
-                        let press_id = press_id.clone();
-                        gpui::div()
+                        let press_id = row.press_id.clone();
+                        let mut div = gpui::div()
                             .id(gpui::ElementId::Name(
                                 format!("panel-row-{view_id}-{press_id}").into(),
                             ))
@@ -6118,17 +6554,63 @@ impl Shell {
                                 shell.update(cx, |shell, _cx| {
                                     shell.panel_row_pressed(&view_id, &press_id);
                                 });
-                            })
-                            .children(runs.iter().map(|run| gpui::div().child(run.text.clone())))
+                            });
+                        if let Some(background) = paint(style.background.as_ref()) {
+                            div = div.bg(background);
+                        }
+                        if let Some(color) = paint(style.color.as_ref()) {
+                            div = div.text_color(color);
+                        }
+                        div.children(runs.iter().map(|run| {
+                            let mut child =
+                                gpui::div().child(run.text.clone()).text_color(run.color);
+                            if let Some(background) = run.background {
+                                child = child.bg(background);
+                            }
+                            if let Some(weight) = run.weight {
+                                child = child.font_weight(match weight {
+                                    dropterm::core::style_engine::FontWeight::Bold => {
+                                        gpui::FontWeight::BOLD
+                                    }
+                                    dropterm::core::style_engine::FontWeight::Normal => {
+                                        gpui::FontWeight::NORMAL
+                                    }
+                                });
+                            }
+                            if run.slant == Some(dropterm::core::style_engine::FontSlant::Italic) {
+                                child = child.italic();
+                            }
+                            match run.decoration {
+                                Some(dropterm::core::style_engine::TextDecoration::Underline) => {
+                                    child = child.underline();
+                                }
+                                Some(dropterm::core::style_engine::TextDecoration::LineThrough) => {
+                                    child = child.line_through();
+                                }
+                                Some(dropterm::core::style_engine::TextDecoration::None) => {
+                                    child = child.text_decoration_none();
+                                }
+                                None => {}
+                            }
+                            child
+                        }))
                     }),
                 );
-                gpui::div()
+                let mut section_div = gpui::div()
                     .flex()
                     .flex_col()
                     .gap(gpui::px(4.))
                     .child(title)
-                    .child(rows)
+                    .child(rows);
+                if let Some(background) = paint(view.background.as_ref()) {
+                    section_div = section_div.bg(background);
+                }
+                if let Some(color) = paint(view.color.as_ref()) {
+                    section_div = section_div.text_color(color);
+                }
+                section_div
             }));
+        drop(engine);
         div()
             .size_full()
             .flex()
@@ -7260,7 +7742,12 @@ pub(crate) fn boot(
     // plugins dir arms nothing and prints nothing (the theme-files
     // posture).
     let lua_host = dropterm::core::lua_host::LuaHost::new(config_dir.join("plugins"));
-    if let Some(plugins_watcher) = lua_host.watch_plugins_dir() {
+    // The watcher's shell-side wake (plugin-manifest): the same
+    // notify callback that queues the host's Reload pings the shell's
+    // manifest channel, so the advertising rows re-merge at the same
+    // reload the interpreter feels.
+    let (manifest_wake_tx, manifest_wake) = std::sync::mpsc::channel::<()>();
+    if let Some(plugins_watcher) = lua_host.watch_plugins_dir(manifest_wake_tx) {
         std::thread::spawn(move || {
             let _guard = plugins_watcher;
             std::thread::park();
@@ -7304,6 +7791,7 @@ pub(crate) fn boot(
             specs,
             tray_actions,
             lua_host,
+            manifest_wake,
         )
     });
     // The plain strategy's retained output: display metadata stands
@@ -7594,6 +8082,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -7725,6 +8214,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -7863,22 +8353,27 @@ mod tests {
         }
     }
 
+    /// The respawn test's one-profile config: `/bin/sh` under the
+    /// name "sh", everything else default.
+    fn sh_profile_config() -> DropTermConfig {
+        DropTermConfig {
+            shell: Some("/bin/sh".to_string()),
+            profiles: vec![sh_profile()],
+            ..DropTermConfig::default()
+        }
+    }
+
     #[gpui::test]
     #[ignore = "the respawn's two live PTY reader threads (the swapped-out pane's and the respawned pane's) cannot satisfy the gpui test scheduler's thread-affinity gate across the suite: every assertion runs and passes, then a surviving reader trips the gate in a later test — read the stdout, not the exit code (just test a_profile_respawn -- --ignored)"]
     fn a_profile_respawn_seeds_the_departed_pane_repair(cx: &mut gpui::TestAppContext) {
         // The respawn's keyboard hand-off (the switch-profile focus
         // loss): the swap drops its pane in place, so the departed
-        // handle belongs to no live pane — the tab swap's repair reads
-        // the panes map and cannot see it — and the render's repair
-        // needs the slot instead. The swap must seed the slot with the
-        // departed pane's handle, never the respawned pane's.
+        // handle belongs to no live pane — the render's repair needs
+        // the slot, seeded with the departed handle, never the
+        // respawned pane's.
         cx.update(gpui_component::init);
         let cx = cx.add_empty_window();
-        let config = DropTermConfig {
-            shell: Some("/bin/sh".to_string()),
-            profiles: vec![sh_profile()],
-            ..DropTermConfig::default()
-        };
+        let config = sh_profile_config();
         let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
         let (signals_tx, signals_rx) = std::sync::mpsc::channel();
         let (_config_tx, config_rx) = std::sync::mpsc::channel();
@@ -7924,6 +8419,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -8509,6 +9005,7 @@ mod tests {
                     // Dormant here too: nothing dispatches Lua in
                     // this scaffold.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -8582,6 +9079,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -9113,6 +9611,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10117,6 +10616,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10212,6 +10712,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10337,6 +10838,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(plugins),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         })
@@ -10346,9 +10848,9 @@ mod tests {
     fn the_drain_routes_real_host_events_into_the_band_state(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("segments");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("net")).expect("plugin dir");
         std::fs::write(
-            dir.0.join("plugins").join("net.lua"),
+            dir.0.join("plugins").join("net").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.status_segment('net', function(ctx)\n\
                return { text = 'cwd:' .. tostring(ctx.cwd), side = 'right' }\n\
@@ -10445,11 +10947,11 @@ mod tests {
     fn the_tab_title_round_trip_lands_script_answers_on_the_records(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("tabtitles");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("titles")).expect("plugin dir");
         // The spec's own success criterion as the fixture: an OSC
         // title shows through, an empty one reads 'shell'.
         std::fs::write(
-            dir.0.join("plugins").join("titles.lua"),
+            dir.0.join("plugins").join("titles").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.tab_title(function(p)\n\
                return (p.title ~= '' and p.title) or 'shell'\n\
@@ -10559,9 +11061,9 @@ mod tests {
         // — the pane-booting gpui class is the parked pty-test-gate.)
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("sendtext");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("cmd")).expect("plugin dir");
         std::fs::write(
-            dir.0.join("plugins").join("cmd.lua"),
+            dir.0.join("plugins").join("cmd").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.command('ping', 'Ping the pane', function(p)\n\
                d.send_text('ping\\n')\n\
@@ -10709,8 +11211,9 @@ mod tests {
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             );
             let path = std::env::temp_dir().join(unique);
-            std::fs::create_dir_all(&path).expect("create scratch plugins dir");
-            std::fs::write(path.join("probe.lua"), script).expect("write probe script");
+            std::fs::create_dir_all(path.join("probe")).expect("create scratch plugin dir");
+            std::fs::write(path.join("probe").join("plugin.lua"), script)
+                .expect("write probe script");
             Self(path)
         }
     }
@@ -10775,6 +11278,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(plugins_dir),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10882,5 +11386,467 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
                 "focus flips on a closed gate must never reach the channel"
             );
         });
+    }
+    // --- the advertising rows (plugin-manifest PM3) ---
+
+    fn write_manifest(plugins: &std::path::Path, id: &str, json: &str) {
+        std::fs::create_dir_all(plugins.join(id)).expect("plugin dir");
+        std::fs::write(plugins.join(id).join("plugin.json"), json).expect("write manifest");
+    }
+
+    fn write_script(plugins: &std::path::Path, id: &str, text: &str) {
+        std::fs::create_dir_all(plugins.join(id)).expect("plugin dir");
+        std::fs::write(plugins.join(id).join("plugin.lua"), text).expect("write script");
+    }
+
+    #[gpui::test]
+    fn declared_commands_advertise_at_launch_without_a_host_thread(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("advertise");
+        // A one-command manifest and nothing else: the row stands from
+        // boot, the interpreter never does.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go places" } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert!(
+                    !shell.lua_host.spawned(),
+                    "the boot scan never wakes the host"
+                );
+                assert_eq!(
+                    shell.script_commands,
+                    vec![dropterm::core::keybinds::CommandRow {
+                        name: "go".to_owned(),
+                        description: "Go places".to_owned(),
+                    }],
+                    "the declared row renders from launch"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_manifest_style_rule_stands_at_launch_without_a_host_thread(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-launch");
+        // One styles rule and nothing else: the rule stands in the
+        // engine from boot, the interpreter never does.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "tabber",
+            r#"{ "styles": [ { "selector": "tab.active",
+                "declarations": { "color": "accent", "font-weight": "bold" } } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert!(
+                    !shell.lua_host.spawned(),
+                    "the boot scan never wakes the host"
+                );
+                // The engine's manifest layer carries the rule: a
+                // resolve on the focused tab answers the manifest's
+                // declarations (the tab strip's own consume is the
+                // tab_bar suite's pin).
+                let engine = shell.style_engine.borrow();
+                let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "tab",
+                    classes: &["active"],
+                    id: None,
+                    inline: &[],
+                });
+                assert_eq!(
+                    resolved.color,
+                    Some(dropterm::core::slots::SlotColor::Token("accent".to_owned())),
+                    "the manifest rule resolves from launch"
+                );
+                assert_eq!(
+                    resolved.weight,
+                    Some(dropterm::core::style_engine::FontWeight::Bold)
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_open_settings_window_picks_up_a_reloaded_rule_by_the_re_theme_pass(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-settings");
+        write_manifest(
+            &dir.0.join("plugins"),
+            "styler",
+            r#"{ "styles": [ { "selector": "settings-page.plugins",
+                "declarations": { "background": "accent" } } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                // The seam the page root consumes (SE4): the resolve
+                // answers the rule from launch...
+                let resolved =
+                    shell
+                        .style_engine
+                        .borrow()
+                        .resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "settings-page",
+                            classes: &["plugins"],
+                            id: None,
+                            inline: &[],
+                        });
+                assert_eq!(
+                    resolved.background,
+                    Some(dropterm::core::slots::SlotColor::Token("accent".to_owned())),
+                    "the page rule resolves from launch"
+                );
+                // ...and the re-theme pass IS a fresh resolve per
+                // frame: an edited manifest + the rescan's fresh scan
+                // changes the next frame's answer — the window
+                // repainting by the standing notify, headless at the
+                // seam.
+                write_manifest(
+                    &dir.0.join("plugins"),
+                    "styler",
+                    r#"{ "styles": [ { "selector": "settings-page.plugins",
+                        "declarations": { "background": "green" } } ] }"#,
+                );
+                shell.rescan_manifests(cx);
+                let resolved =
+                    shell
+                        .style_engine
+                        .borrow()
+                        .resolve(&dropterm::core::style_engine::StyleNode {
+                            element: "settings-page",
+                            classes: &["plugins"],
+                            id: None,
+                            inline: &[],
+                        });
+                assert_eq!(
+                    resolved.background,
+                    Some(dropterm::core::slots::SlotColor::Token("green".to_owned())),
+                    "the re-theme pass re-resolves the fresh sheets"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_dropped_manifest_drops_its_rules_at_the_next_rescan(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-drop");
+        let plugins = dir.0.join("plugins");
+        write_manifest(
+            &plugins,
+            "tabber",
+            r#"{ "styles": [ { "selector": "tab.active",
+                "declarations": { "color": "accent" } } ] }"#,
+        );
+        let shell = shell_over_plugins(plugins.clone(), cx);
+        // The manifest leaves: the next rescan rebuilds the sheets
+        // and the rule is gone.
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                let path = plugins.join("tabber").join("plugin.json");
+                std::fs::remove_file(&path).expect("drop the manifest");
+                shell.rescan_manifests(cx);
+                let engine = shell.style_engine.borrow();
+                let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "tab",
+                    classes: &["active"],
+                    id: None,
+                    inline: &[],
+                });
+                assert_eq!(
+                    resolved.color, None,
+                    "a dropped manifest drops its rules at the next reload"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn the_declared_and_runtime_merge_is_one_seat_per_slug(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("merge");
+        // The both-seats case: the manifest declares "go", an eager
+        // script also registers it — the manifest wins the row.
+        // The eager activation: the script must load so its runtime
+        // registrations land for the merge.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "declared",
+            r#"{ "commands": [ { "id": "go", "description": "manifest one" } ],
+                "activation": ["on_startup"] }"#,
+        );
+        write_script(
+            &dir.0.join("plugins"),
+            "declared",
+            "local d = require('dropterm')\n\
+             d.command('go', 'runtime one', function() end)\n\
+             d.command('other', 'runtime only', function() end)",
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // The mark seeds the host (the pump's own boot anchor): the
+        // eager plugin loads, reports its registrations; the drain
+        // merges them with the declared set.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::StartupMark { elapsed_ms: 10 });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let done = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    shell.script_commands.len() == 2
+                })
+            });
+            if done || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            cx.update(|cx| shell.update(cx, |shell, cx| {
+                shell.drain_lua_host(cx);
+                shell.script_commands.clone()
+            })),
+            vec![
+                dropterm::core::keybinds::CommandRow {
+                    name: "go".to_owned(),
+                    description: "manifest one".to_owned(),
+                },
+                dropterm::core::keybinds::CommandRow {
+                    name: "other".to_owned(),
+                    description: "runtime only".to_owned(),
+                },
+            ],
+            "declared rows lead, runtime-only seats follow, the both-seat slug reads the manifest"
+        );
+    }
+
+    #[gpui::test]
+    fn a_manifest_removal_drops_its_rows_on_the_next_rescan(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("removal");
+        write_manifest(
+            &dir.0.join("plugins"),
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go places" } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert_eq!(shell.script_commands.len(), 1);
+            });
+        });
+        // The watcher's wake shape: the dir edit lands, the shell-side
+        // rescan re-runs the scan and re-merges.
+        std::fs::remove_dir_all(dir.0.join("plugins").join("lazy")).expect("remove the plugin");
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.rescan_manifests(cx);
+                assert!(
+                    shell.script_commands.is_empty(),
+                    "the dropped manifest drops its rows"
+                );
+            });
+        });
+    }
+    #[gpui::test]
+    fn a_settings_push_reaches_the_next_dispatch_ctx(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("carry-save");
+        // The eager plugin's command opens a dialog whose title names
+        // the ctx carry — the shell-observable half of the SettingsSync
+        // path (plugin-manifest PM4).
+        std::fs::create_dir_all(dir.0.join("plugins").join("save")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("save").join("plugin.json"),
+            r#"{ "commands": [ { "id": "show", "description": "Show" } ],
+                "settings": [
+                    { "key": "prefix", "type": "string", "label": "P", "default": "" }
+                ],
+                "activation": ["on_startup"] }"#,
+        )
+        .expect("write manifest");
+        std::fs::write(
+            dir.0.join("plugins").join("save").join("plugin.lua"),
+            "local d = require('dropterm')\n\
+             d.command('show', 'Show', function(p)\n\
+               d.dialog({ title = 'prefix=' .. tostring(p.settings.prefix),\n\
+                          buttons = { { id = 'ok', label = 'OK' } } })\n\
+             end)",
+        )
+        .expect("write script");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // The boot arm: the push rides the mark's guard. Drive it the
+        // way the pump does, then dispatch.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::StartupMark { elapsed_ms: 10 });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let loaded = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    !shell.script_commands.is_empty()
+                })
+            });
+            if loaded || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The save path: the shell's values update, the push crosses,
+        // the next dispatch's ctx carries them.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell.plugin_settings_values.insert(
+                    "save".to_owned(),
+                    std::collections::BTreeMap::from([(
+                        "prefix".to_owned(),
+                        serde_json::json!("saved"),
+                    )]),
+                );
+                shell.push_plugin_settings();
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::RunCommand {
+                        name: "show".to_owned(),
+                        tab: 1,
+                    });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut title = String::new();
+        loop {
+            let opened = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    if let Some(dialog) = &shell.pending_dialog {
+                        title.clone_from(&dialog.title);
+                        true
+                    } else {
+                        false
+                    }
+                })
+            });
+            if opened || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(title, "prefix=saved", "the push reached the ctx");
+    }
+    // --- the Plugins page's write path (plugin-manifest PM5) ---
+
+    #[gpui::test]
+    fn a_valid_plugin_setting_write_persists_and_pushes(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-write");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.plugin_setting_write("p", "enabled", serde_json::json!(true), cx);
+                assert!(shell.plugin_setting_error("p", "enabled").is_none());
+                assert_eq!(
+                    shell.plugin_settings_values["p"]["enabled"],
+                    serde_json::json!(true)
+                );
+            });
+        });
+        // The store file holds the write, atomically.
+        let path = dir.0.join("plugins-settings.json");
+        let (values, _) = dropterm::core::plugins_manifest::read_store(&path);
+        assert_eq!(values["p"]["enabled"], serde_json::json!(true));
+    }
+
+    #[gpui::test]
+    fn a_wrong_typed_plugin_setting_write_keeps_the_prior_value_with_an_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-wrong");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                // The prior value lands first.
+                shell.plugin_setting_write("p", "enabled", serde_json::json!(true), cx);
+                // The wrong-typed write: the error sets, the prior stands.
+                shell.plugin_setting_write("p", "enabled", serde_json::json!("yes"), cx);
+                let error = shell
+                    .plugin_setting_error("p", "enabled")
+                    .expect("the inline error")
+                    .clone();
+                assert!(error.contains("boolean"), "{error}");
+                assert_eq!(
+                    shell.plugin_settings_values["p"]["enabled"],
+                    serde_json::json!(true),
+                    "the prior value stands"
+                );
+            });
+        });
+        let (values, _) =
+            dropterm::core::plugins_manifest::read_store(&dir.0.join("plugins-settings.json"));
+        assert_eq!(values["p"]["enabled"], serde_json::json!(true));
+    }
+
+    #[gpui::test]
+    fn an_unknown_plugin_setting_row_writes_nothing(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-unknown");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.plugin_setting_write("p", "ghost", serde_json::json!(true), cx);
+                assert!(
+                    shell
+                        .plugin_setting_error("p", "ghost")
+                        .is_some_and(|e| e.contains("no declared row"))
+                );
+                assert!(shell.plugin_settings_values.is_empty());
+            });
+        });
+        assert!(
+            !dir.0.join("plugins-settings.json").exists(),
+            "no store file without an accepted write"
+        );
     }
 }
