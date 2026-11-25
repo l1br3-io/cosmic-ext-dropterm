@@ -185,6 +185,31 @@ impl std::fmt::Display for NewTabCwd {
     }
 }
 
+/// Who owns the prompt line (rich-input spec): `Native` — the
+/// default — is the bare shell, every keystroke forwarded to the PTY
+/// verbatim and the whole suggest lane dark; `Rich` is the editor:
+/// at a live prompt `DropTerm` buffers, edits, highlights, completes,
+/// and executes the line. Per-profile through
+/// [`Profile::input_mode`](crate::core::profile::Profile::input_mode),
+/// `None` following the global pick (the `color_scheme` pattern).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputMode {
+    #[default]
+    Native,
+    Rich,
+}
+
+/// Where the rich-mode input strip docks (rich-input spec, OQ-7):
+/// `Bottom` — the default — sits at the grid's foot where the prompt
+/// is; `Top` pins the strip at the head of the grid region while the
+/// grid keeps scrolling normally beneath it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputPosition {
+    #[default]
+    Bottom,
+    Top,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 // Whole-struct serde is the store's settings section (`config.ron`):
 // a key the file lacks loads as its default, so the key list stays
@@ -491,15 +516,70 @@ pub struct DropTermConfig {
     /// latch keeps arming either way, so a later flip-on shows
     /// whatever the surface still holds.
     pub status_bar_activity_mark: bool,
-    /// Whether fish-style autosuggestions compute (autosuggest
-    /// spec): the rest of the most recent matching command from this
-    /// tab's own history, as dim ghost text after the cursor; Right
-    /// accepts it, Alt+Right takes one word, anything else dismisses
-    /// it, and nothing executes without an accept. Defaults to
-    /// `true` (the fish/Warp default-on precedent); `false` is the
-    /// kill switch — zero visual difference. Flips apply live on the
-    /// next update.
-    pub autosuggestions_enabled: bool,
+    /// Who owns the prompt line (rich-input spec): `Native` — the
+    /// default, the no-regression ruling (no v1 yet) — forwards
+    /// every keystroke to the PTY verbatim with the whole suggest
+    /// lane dark; `Rich` gives `DropTerm` the line at a live prompt
+    /// (buffer, edit, highlight, complete, execute; unsure prompts
+    /// hide the editor and pass keys through). Per-profile through
+    /// [`Profile::input_mode`](crate::core::profile::Profile::input_mode),
+    /// `None` following this global. Flips apply live on the config
+    /// echo.
+    pub input_mode: InputMode,
+    /// Where the rich-mode input strip docks (rich-input spec, OQ-7):
+    /// `Bottom` — the default — at the grid's foot where the prompt
+    /// is; `Top` at the head of the grid region, every Enter dropping
+    /// the executed command into the flow while the grid scrolls
+    /// normally. Flips apply live on the config echo.
+    pub input_position: InputPosition,
+    /// Whether ghost text computes inside the editor (rich-input
+    /// spec): the dim rest-of-command after the cursor, Right
+    /// accepting it whole and Alt+Right one word — the old
+    /// `autosuggestions_enabled` role under its decoupled name.
+    /// Defaults to `true` (the fish/Warp default-on precedent);
+    /// `false` darkens the ghost alone. Flips apply live.
+    pub input_ghost: bool,
+    /// Whether the completion menu computes (rich-input spec): the
+    /// candidate list over the owned line, opened by the chord and —
+    /// per `input_auto_popup` — as you type — the old
+    /// `autosuggestions_menu_enabled` role. Defaults to `true`;
+    /// `false` removes the menu surface exactly, the ghost untouched.
+    /// Flips apply live: a showing menu closes the moment the switch
+    /// lands.
+    pub input_menu: bool,
+    /// Whether the menu also opens as you type (rich-input spec, the
+    /// parity gates: single row, two-char floor, line-end cursor) —
+    /// the old `autosuggestions_menu_auto` role. Defaults to `true`
+    /// — the suggest-parity OQ-4 ruling carried over (the record
+    /// keeps our default, rejecting Warp's
+    /// `completions_open_while_typing: false`); `false` leaves the
+    /// chord the only opener. Flips apply live.
+    pub input_auto_popup: bool,
+    /// Whether the owned line tokenizes and colors live (rich-input
+    /// spec): command known-vs-unknown, flags, strings, variables,
+    /// the unknown-command mark a dashed underline. Defaults to
+    /// `true`; `false` renders the line plain. Flips apply live.
+    pub input_highlight: bool,
+    /// Whether menu rows carry the corpus descriptions (rich-input
+    /// spec). Defaults to `true`; `false` hides the description
+    /// column. Flips apply live.
+    pub input_descriptions: bool,
+    /// Whether menu rows carry their type badges — cmd/flag/path/
+    /// hist/env/sub (rich-input spec). Defaults to `true`; `false`
+    /// hides the badges. Flips apply live.
+    pub input_badges: bool,
+    /// Whether menu rows carry their icons (rich-input spec).
+    /// Defaults to `true`; `false` hides the icons. Flips apply
+    /// live.
+    pub input_icons: bool,
+    /// Whether the argument hint line renders above the menu
+    /// (rich-input spec). Defaults to `true`; `false` hides the hint.
+    /// Flips apply live.
+    pub input_argument_hint: bool,
+    /// The menu's density switch (rich-input spec): `false` (the
+    /// default) renders comfortable rows, `true` compact — the
+    /// approved mock's two densities. Flips apply live.
+    pub input_compact_rows: bool,
     /// Whether the path provider joins the autosuggest merge
     /// (path-suggest spec): filesystem completion of the typed
     /// token's final component — first sorted match in the parent's
@@ -522,29 +602,6 @@ pub struct DropTermConfig {
     /// `false` restores history-only behavior exactly. Flips apply
     /// live at the next typed prefix.
     pub autosuggestions_commands_enabled: bool,
-    /// Whether the Ctrl+Space completion menu computes (suggest-menu
-    /// spec): the explicit-trigger candidate list over the tab's
-    /// current input — every provider's whole match set where the
-    /// ghost must settle for one choice, Up/Down to navigate,
-    /// Tab/Enter to accept while it shows (bare Tab stays the
-    /// shell's own completion key whenever no menu shows). Defaults
-    /// to `true` — the ghost and the trigger are separable; `false`
-    /// removes the menu surface exactly: the chord forwards to the
-    /// shell verbatim and the ghost is untouched. Flips apply live
-    /// on the config echo — a showing menu closes the moment the
-    /// switch lands.
-    pub autosuggestions_menu_enabled: bool,
-    /// Whether the completion menu also opens on its own as you type
-    /// (suggest-parity spec, the auto-popup gate): with the key on,
-    /// an idle prompt whose typed segment changes — at the line end,
-    /// past the two-character floor — collects the providers' full
-    /// sets and pops the menu without the chord (a single qualifying
-    /// row included), re-collecting fresh rows in place while typing
-    /// and closing when the set empties. Defaults to `true` — the
-    /// record's exact-Warp directive (OQ-4); the key survives so
-    /// chord-only behavior stays one `false` away. Flips apply live
-    /// on the config echo.
-    pub autosuggestions_menu_auto: bool,
     /// Whether history commits remember their working directory and
     /// persist DropTerm-side (suggest-depth spec, OQ-1/OQ-2): with
     /// the key on, an Enter-committed command records the shell's
@@ -675,11 +732,19 @@ impl Default for DropTermConfig {
             tab_bar_border: true,
             status_bar_border: true,
             status_bar_activity_mark: true,
-            autosuggestions_enabled: true,
+            input_mode: InputMode::default(),
+            input_position: InputPosition::default(),
+            input_ghost: true,
+            input_menu: true,
+            input_auto_popup: true,
+            input_highlight: true,
+            input_descriptions: true,
+            input_badges: true,
+            input_icons: true,
+            input_argument_hint: true,
+            input_compact_rows: false,
             autosuggestions_paths_enabled: true,
             autosuggestions_commands_enabled: true,
-            autosuggestions_menu_enabled: true,
-            autosuggestions_menu_auto: true,
             autosuggestions_history_context: true,
             autosuggestions_delay_ms: 0,
             autosuggestions_aliases: HashMap::new(),

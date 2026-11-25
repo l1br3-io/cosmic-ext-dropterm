@@ -384,6 +384,7 @@ fn profile_keys_round_trip_through_the_config_store() {
                 env: None,
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
             Profile {
                 name: "top".to_string(),
@@ -393,6 +394,7 @@ fn profile_keys_round_trip_through_the_config_store() {
                 env: None,
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
         ],
         default_profile: Some("web-prod".to_string()),
@@ -420,6 +422,7 @@ fn profile_color_scheme_round_trips_through_the_config_store() {
                 env: None,
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
             Profile {
                 name: "top".to_string(),
@@ -429,6 +432,7 @@ fn profile_color_scheme_round_trips_through_the_config_store() {
                 env: None,
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
         ],
         ..DropTermConfig::default()
@@ -458,6 +462,7 @@ fn profile_env_round_trips_through_the_config_store() {
                 ])),
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
             Profile {
                 name: "top".to_string(),
@@ -467,6 +472,7 @@ fn profile_env_round_trips_through_the_config_store() {
                 env: None,
                 font_size: None,
                 scrollback_lines: None,
+                input_mode: None,
             },
         ],
         ..DropTermConfig::default()
@@ -866,74 +872,83 @@ fn a_disabled_status_bar_round_trips_through_the_config_store() {
 }
 
 #[test]
-fn missing_autosuggestions_key_loads_as_true() {
-    // A settings section from a version before autosuggestions: no
-    // `autosuggestions_enabled` key. The section's
-    // `#[serde(default)]` backfills from the struct Default —
-    // `true`, the default-on ruling — so pre-existing configs see
-    // ghost text, not a silently-off key.
-    let dir = TempDir::new("missing-autosuggest");
-    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
-
-    let loaded = load_config(&dir);
-    assert!(loaded.autosuggestions_enabled);
-    // The file is live, not ignored: the written key comes back.
-    assert_eq!(loaded.height_percent, 70);
+fn rich_input_defaults_to_native_bottom_all_on_comfortable() {
+    // The rich-input rulings (intake 2026-11-25): a fresh config keeps
+    // the bare shell (`native` — no v1, no regression), the strip
+    // docks at the bottom, every editor surface ships on, and the
+    // menu rows render comfortable — `compact_rows` is the density
+    // switch, off by default.
+    let config = DropTermConfig::default();
+    assert_eq!(config.input_mode, InputMode::Native);
+    assert_eq!(config.input_position, InputPosition::Bottom);
+    assert!(config.input_ghost);
+    assert!(config.input_menu);
+    assert!(config.input_auto_popup);
+    assert!(config.input_highlight);
+    assert!(config.input_descriptions);
+    assert!(config.input_badges);
+    assert!(config.input_icons);
+    assert!(config.input_argument_hint);
+    assert!(!config.input_compact_rows);
 }
 
 #[test]
-fn a_disabled_autosuggestions_round_trips_through_the_config_store() {
-    // The off state persists — the kill switch stays off across a
-    // write→load cycle (the control for the missing-key pin: a
-    // present `false` key is honored, not defaulted over).
-    let dir = TempDir::new("autosuggest-off");
-    let stored = DropTermConfig {
-        autosuggestions_enabled: false,
-        ..DropTermConfig::default()
-    };
-    save_sections(&dir, &stored);
-
-    let loaded = load_config(&dir);
-    assert_eq!(loaded, stored);
-    assert!(!loaded.autosuggestions_enabled);
+fn the_culled_autosuggestions_keys_never_serialize() {
+    // The cull (rich-input OQ-1, no migration — owner ruling: no v1,
+    // no regression): the three superseded keys are gone from the
+    // settings section's shape outright, their roles living under the
+    // decoupled `input_*` names.
+    let text = ron::to_string(&DropTermConfig::default()).expect("serialize");
+    assert!(!text.contains("autosuggestions_enabled"));
+    assert!(!text.contains("autosuggestions_menu_enabled"));
+    assert!(!text.contains("autosuggestions_menu_auto"));
 }
 
 #[test]
-fn the_menu_auto_popup_defaults_on() {
-    // The suggest-parity default (spec assumption 4, OQ-4): the
-    // completion menu's as-you-type path ships on — the record's
-    // exact-Warp directive — with the key surviving so chord-only
-    // behavior stays one flip away. The settings section's
-    // `#[serde(default)]` backfills from the struct Default, so a
-    // pre-existing config sees the menu pop without the chord.
-    assert!(
-        DropTermConfig::default().autosuggestions_menu_auto,
-        "the default resolves on"
+fn a_stale_autosuggestions_line_keeps_loading_and_is_ignored() {
+    // The cull's read side: a file from the old world still carrying
+    // the retired lines loads — serde's unknown-field leniency, the
+    // SW6 drawer-key precedent — and the retired values steer
+    // nothing: the new keys answer their own defaults.
+    let dir = TempDir::new("stale-autosuggest-lines");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        "(height_percent: 70, autosuggestions_enabled: false, autosuggestions_menu_enabled: false, autosuggestions_menu_auto: false)",
     );
-    let dir = TempDir::new("menu-auto-default");
-    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
 
     let loaded = load_config(&dir);
-    assert!(loaded.autosuggestions_menu_auto);
-    // The file is live, not ignored: the written key comes back.
     assert_eq!(loaded.height_percent, 70);
+    assert!(loaded.input_ghost);
+    assert!(loaded.input_menu);
+    assert!(loaded.input_auto_popup);
 }
 
 #[test]
-fn an_explicit_menu_auto_false_stays_chord_only() {
-    // The opt-out survives the default flip: a present `false` key
-    // is honored — chord-only behavior, one flip from the default
-    // (the control for the default-on pin).
-    let dir = TempDir::new("menu-auto-off");
+fn an_all_off_input_config_round_trips_through_the_store() {
+    // The decoupled keys persist: the mode, the position, every
+    // surface's kill switch, and the density flip survive a
+    // write→load cycle (the control for the default-on pin: a
+    // present off value is honored, not defaulted over).
+    let dir = TempDir::new("input-all-off");
     let stored = DropTermConfig {
-        autosuggestions_menu_auto: false,
+        input_mode: InputMode::Rich,
+        input_position: InputPosition::Top,
+        input_ghost: false,
+        input_menu: false,
+        input_auto_popup: false,
+        input_highlight: false,
+        input_descriptions: false,
+        input_badges: false,
+        input_icons: false,
+        input_argument_hint: false,
+        input_compact_rows: true,
         ..DropTermConfig::default()
     };
     save_sections(&dir, &stored);
 
     let loaded = load_config(&dir);
     assert_eq!(loaded, stored);
-    assert!(!loaded.autosuggestions_menu_auto);
 }
 
 #[test]

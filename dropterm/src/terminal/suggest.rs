@@ -191,12 +191,16 @@ pub(crate) fn pane_options(
 ) -> TerminalOptions {
     TerminalOptions {
         font_size: config.font_size,
-        autosuggestions_enabled: config.autosuggestions_enabled,
+        // The folded surfaces read the decoupled rich-input keys
+        // (rich-input RI-1's cull): the internal option names keep
+        // their shape — the editor's own wiring (RI-3/RI-4) renames
+        // them — but their truth is the new keys', roles unchanged.
+        autosuggestions_enabled: config.input_ghost,
         images_enabled: config.images_enabled,
         autosuggestions_paths_enabled: config.autosuggestions_paths_enabled,
         autosuggestions_commands_enabled: config.autosuggestions_commands_enabled,
-        autosuggestions_menu_enabled: config.autosuggestions_menu_enabled,
-        autosuggestions_menu_auto: config.autosuggestions_menu_auto,
+        autosuggestions_menu_enabled: config.input_menu,
+        autosuggestions_menu_auto: config.input_auto_popup,
         autosuggestions_history_context: config.autosuggestions_history_context,
         autosuggestions_delay_ms: config.autosuggestions_delay_ms,
         autosuggestions_aliases: config.autosuggestions_aliases.clone(),
@@ -494,7 +498,7 @@ mod tests {
         let mut aliases = std::collections::HashMap::new();
         aliases.insert("gc".to_string(), "git checkout".to_string());
         let config = DropTermConfig {
-            autosuggestions_enabled: false,
+            input_ghost: false,
             autosuggestions_paths_enabled: false,
             autosuggestions_delay_ms: 250,
             autosuggestions_aliases: aliases.clone(),

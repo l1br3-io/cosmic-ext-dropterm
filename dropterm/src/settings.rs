@@ -29,11 +29,11 @@ use dropterm::core::font_list;
 use dropterm::core::profile::Profile;
 use dropterm::core::settings::{
     self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
-    KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NAV_GROUPS, NEW_TAB_CWD_OPTIONS, ProfileField,
-    SettingsBuffer, SettingsPage, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS,
-    THEME_PREFERENCE_OPTIONS, TextField, blur_decision, drawer_description, dropdown_selected,
-    etc_shells_content, page_section, page_title, profile_scheme_selected, shell_dropdown_selected,
-    shell_label, shell_picker_options, toggle_write,
+    INPUT_MODE_OPTIONS, INPUT_POSITION_OPTIONS, KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NAV_GROUPS,
+    NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer, SettingsPage, TAB_POSITION_OPTIONS,
+    TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField, blur_decision, drawer_description,
+    dropdown_selected, etc_shells_content, page_section, page_title, profile_scheme_selected,
+    shell_dropdown_selected, shell_label, shell_picker_options, toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -97,7 +97,9 @@ pub(crate) fn control_kind(key: ConfigKey) -> ControlKind {
         | ConfigKey::NewTabCwd
         | ConfigKey::Layer
         | ConfigKey::KeyboardMode
-        | ConfigKey::ThemePreference => ControlKind::Dropdown,
+        | ConfigKey::ThemePreference
+        | ConfigKey::InputMode
+        | ConfigKey::InputPosition => ControlKind::Dropdown,
         ConfigKey::Args
         | ConfigKey::DefaultCwd
         | ConfigKey::ScrollbackLines
@@ -135,6 +137,11 @@ fn dropdown_options(key: ConfigKey) -> Vec<SharedString> {
             .map(|(_, label)| *label)
             .collect(),
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
+            .iter()
+            .map(|(_, label)| *label)
+            .collect(),
+        ConfigKey::InputMode => INPUT_MODE_OPTIONS.iter().map(|(_, label)| *label).collect(),
+        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
             .iter()
             .map(|(_, label)| *label)
             .collect(),
@@ -866,15 +873,21 @@ fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
         ConfigKey::SlideAnimationEnabled => config.slide_animation_enabled,
         ConfigKey::BellNotificationEnabled => config.bell_notification_enabled,
         ConfigKey::CommandFinishNotificationEnabled => config.command_finish_notification_enabled,
-        ConfigKey::AutosuggestionsEnabled => config.autosuggestions_enabled,
+        ConfigKey::InputGhost => config.input_ghost,
+        ConfigKey::InputMenu => config.input_menu,
+        ConfigKey::InputAutoPopup => config.input_auto_popup,
+        ConfigKey::InputHighlight => config.input_highlight,
+        ConfigKey::InputDescriptions => config.input_descriptions,
+        ConfigKey::InputBadges => config.input_badges,
+        ConfigKey::InputIcons => config.input_icons,
+        ConfigKey::InputArgumentHint => config.input_argument_hint,
+        ConfigKey::InputCompactRows => config.input_compact_rows,
         ConfigKey::AutosuggestionsPathsEnabled => config.autosuggestions_paths_enabled,
         ConfigKey::AutosuggestionsCommandsEnabled => config.autosuggestions_commands_enabled,
         ConfigKey::AutosuggestionsCompletionsExtended => {
             config.autosuggestions_completions_extended
         }
         ConfigKey::ImagesEnabled => config.images_enabled,
-        ConfigKey::AutosuggestionsMenuEnabled => config.autosuggestions_menu_enabled,
-        ConfigKey::AutosuggestionsMenuAuto => config.autosuggestions_menu_auto,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::RespectPanel => config.respect_panel,

@@ -202,6 +202,7 @@ mod tests {
             env: None,
             font_size: None,
             scrollback_lines: None,
+            input_mode: None,
         }
     }
 

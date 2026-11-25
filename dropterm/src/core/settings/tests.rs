@@ -66,8 +66,9 @@ fn the_pages_partition_every_section_exactly_once() {
 
 #[test]
 fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
-    // The sidebar's two headers: the seven section pages in page
-    // order under Terminal, then the two manager pages under
+    // The sidebar's two headers: the eight section pages in page
+    // order under Terminal (the Auto complete card after Terminal,
+    // rich-input RI-1), then the two manager pages under
     // "Profiles & keys". The flattened list is ALL — the page
     // order the palette's Settings rows follow.
     assert_eq!(
@@ -82,6 +83,7 @@ fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
                     SettingsPage::StatusBar,
                     SettingsPage::Dropdown,
                     SettingsPage::Terminal,
+                    SettingsPage::AutoComplete,
                     SettingsPage::Advanced,
                 ][..],
             ),
@@ -164,12 +166,12 @@ fn a_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
-fn the_exactly_once_count_is_55() {
-    // The settings window's count (settings-window SW6): the two
-    // drawer keys retired, the section-hosted map sits at 55 — one
-    // planned-write variant per exposed key, each in exactly one
-    // section.
-    assert_eq!(section_keys().len(), 55);
+fn the_exactly_once_count_is_63() {
+    // The rich-input rebuild (RI-1): the three superseded
+    // autosuggestions keys culled, the eleven decoupled input keys
+    // added — the section-hosted map sits at 63, one planned-write
+    // variant per exposed key, each in exactly one section.
+    assert_eq!(section_keys().len(), 63);
 }
 
 #[test]
@@ -192,12 +194,20 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::BellNotificationEnabled(true),
         PlannedWrite::CommandFinishNotificationEnabled(true),
         PlannedWrite::CommandFinishNotificationAfterSecs(5),
-        PlannedWrite::AutosuggestionsEnabled(true),
+        PlannedWrite::InputMode(InputMode::Native),
+        PlannedWrite::InputPosition(InputPosition::Bottom),
+        PlannedWrite::InputGhost(true),
+        PlannedWrite::InputMenu(true),
+        PlannedWrite::InputAutoPopup(true),
+        PlannedWrite::InputHighlight(true),
+        PlannedWrite::InputDescriptions(true),
+        PlannedWrite::InputBadges(true),
+        PlannedWrite::InputIcons(true),
+        PlannedWrite::InputArgumentHint(true),
+        PlannedWrite::InputCompactRows(false),
         PlannedWrite::AutosuggestionsPathsEnabled(true),
         PlannedWrite::AutosuggestionsCommandsEnabled(true),
         PlannedWrite::AutosuggestionsCompletionsExtended(true),
-        PlannedWrite::AutosuggestionsMenuEnabled(true),
-        PlannedWrite::AutosuggestionsMenuAuto(false),
         PlannedWrite::AutosuggestionsDelayMs(0),
         PlannedWrite::ImagesEnabled(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
@@ -281,7 +291,17 @@ fn key_names_match_the_config_file_fields() {
             ConfigKey::CommandFinishNotificationAfterSecs,
             "command_finish_notification_after_secs",
         ),
-        (ConfigKey::AutosuggestionsEnabled, "autosuggestions_enabled"),
+        (ConfigKey::InputMode, "input_mode"),
+        (ConfigKey::InputPosition, "input_position"),
+        (ConfigKey::InputGhost, "input_ghost"),
+        (ConfigKey::InputMenu, "input_menu"),
+        (ConfigKey::InputAutoPopup, "input_auto_popup"),
+        (ConfigKey::InputHighlight, "input_highlight"),
+        (ConfigKey::InputDescriptions, "input_descriptions"),
+        (ConfigKey::InputBadges, "input_badges"),
+        (ConfigKey::InputIcons, "input_icons"),
+        (ConfigKey::InputArgumentHint, "input_argument_hint"),
+        (ConfigKey::InputCompactRows, "input_compact_rows"),
         (
             ConfigKey::AutosuggestionsPathsEnabled,
             "autosuggestions_paths_enabled",
@@ -910,7 +930,10 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
     // The Terminal card: the global shell defaults every profile
     // falls back to — shell, arguments, and the plain spawn's
     // default directory (default-spawn DS-1) — with the bell and
-    // its finished-command sibling, terminal behavior, last.
+    // its finished-command sibling, terminal behavior, last. The
+    // prompt-line surfaces moved to their own card (rich-input
+    // RI-1): the culled three are gone, the provider knobs ride the
+    // Auto complete card below.
     assert_eq!(
         Section::Terminal.keys(),
         &[
@@ -921,26 +944,39 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::BellNotificationEnabled,
             ConfigKey::CommandFinishNotificationEnabled,
             ConfigKey::CommandFinishNotificationAfterSecs,
-            ConfigKey::AutosuggestionsEnabled,
+            ConfigKey::ImagesEnabled,
+        ]
+    );
+    assert_eq!(
+        Section::AutoComplete.keys(),
+        &[
+            ConfigKey::InputMode,
+            ConfigKey::InputPosition,
+            ConfigKey::InputGhost,
+            ConfigKey::InputMenu,
+            ConfigKey::InputAutoPopup,
+            ConfigKey::InputHighlight,
+            ConfigKey::InputDescriptions,
+            ConfigKey::InputBadges,
+            ConfigKey::InputIcons,
+            ConfigKey::InputArgumentHint,
+            ConfigKey::InputCompactRows,
             ConfigKey::AutosuggestionsPathsEnabled,
             ConfigKey::AutosuggestionsCommandsEnabled,
             ConfigKey::AutosuggestionsCompletionsExtended,
-            ConfigKey::AutosuggestionsMenuEnabled,
-            ConfigKey::AutosuggestionsMenuAuto,
             ConfigKey::AutosuggestionsDelayMs,
-            ConfigKey::ImagesEnabled,
         ]
     );
     assert_eq!(
         toggle_write(ConfigKey::BellNotificationEnabled, false),
         Some(PlannedWrite::BellNotificationEnabled(false))
     );
-    // The autosuggest kill switch rides the same card, flipping live
-    // through the same single planned-write path — and the path
+    // The ghost's own toggle rides the Auto complete card, flipping
+    // live through the same single planned-write path — and the path
     // provider's own toggle rides beside it.
     assert_eq!(
-        toggle_write(ConfigKey::AutosuggestionsEnabled, false),
-        Some(PlannedWrite::AutosuggestionsEnabled(false))
+        toggle_write(ConfigKey::InputGhost, false),
+        Some(PlannedWrite::InputGhost(false))
     );
     assert_eq!(
         toggle_write(ConfigKey::AutosuggestionsPathsEnabled, false),
@@ -1692,6 +1728,7 @@ pub(super) fn profile(name: &str, command: &str) -> Profile {
         env: None,
         font_size: None,
         scrollback_lines: None,
+        input_mode: None,
     }
 }
 
@@ -2136,6 +2173,7 @@ pub(super) fn sourced_profile() -> Profile {
         env: None,
         font_size: None,
         scrollback_lines: None,
+        input_mode: None,
     }
 }
 
@@ -3140,6 +3178,7 @@ fn a_profile_write_into_a_missing_section_keeps_the_live_profiles() {
             env: None,
             font_size: None,
             scrollback_lines: None,
+            input_mode: None,
         }],
         ..DropTermConfig::default()
     };

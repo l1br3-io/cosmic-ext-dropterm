@@ -275,6 +275,7 @@ mod tests {
             env: None,
             font_size: None,
             scrollback_lines: None,
+            input_mode: None,
         }
     }
 
@@ -429,9 +430,10 @@ mod tests {
             assert_eq!(row.label, format!("Settings: {title}"));
         }
         // The verb carries the core vocabulary the window's seam
-        // consumes.
+        // consumes. (Index follows the ten-page ALL — the Auto
+        // complete page joined at rich-input RI-1.)
         assert_eq!(
-            settings[8].verb,
+            settings[9].verb,
             Verb::OpenSettings(SettingsPage::Keybindings)
         );
     }

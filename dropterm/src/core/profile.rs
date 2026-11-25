@@ -78,6 +78,13 @@ pub struct Profile {
     /// default) follows the global `scrollback_lines`.
     #[serde(default)]
     pub scrollback_lines: Option<u32>,
+    /// The prompt-line mode the profile's tabs run (rich-input spec):
+    /// `Some` pins it — `Rich`, `DropTerm`'s input editor, or
+    /// `Native`, the bare shell — `None` (the default) follows the
+    /// global `input_mode`. Applied per tab at spawn and in the live
+    /// config-apply pass (the `color_scheme` pattern).
+    #[serde(default)]
+    pub input_mode: Option<crate::core::config::InputMode>,
 }
 
 impl Profile {
@@ -161,6 +168,19 @@ pub fn effective_scrollback(profile: Option<&Profile>, global: u32) -> u32 {
         .unwrap_or(global)
 }
 
+/// The prompt-line mode a tab under `profile` runs (rich-input
+/// spec): the profile's override, else the global pick. Applied at
+/// spawn and in the live config-apply pass, like
+/// [`effective_scheme_name`].
+pub fn effective_input_mode(
+    profile: Option<&Profile>,
+    global: crate::core::config::InputMode,
+) -> crate::core::config::InputMode {
+    profile
+        .and_then(|profile| profile.input_mode)
+        .unwrap_or(global)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +194,7 @@ mod tests {
             env: None,
             font_size: None,
             scrollback_lines: None,
+            input_mode: None,
         }
     }
 
@@ -352,6 +373,60 @@ mod tests {
         let text = ron::to_string(&stored).expect("serialize");
         let back: Profile = ron::from_str(&text).expect("deserialize");
         assert_eq!(back, stored);
+    }
+
+    // --- the input-mode field's serde shape and seam (rich-input RI-1) ---
+
+    #[test]
+    fn a_pre_initiative_profile_loads_with_input_mode_unset() {
+        // The pre-initiative on-disk shape — no `input_mode` key at
+        // all — loads as "follow the global pick", never an error:
+        // the same additive-field leniency as every other Profile
+        // field.
+        let loaded: Profile =
+            ron::from_str(r#"(name: "ssh", command: "ssh web")"#).expect("old shape loads");
+        assert_eq!(loaded.input_mode, None);
+    }
+
+    #[test]
+    fn a_profile_with_an_input_mode_round_trips_through_ron() {
+        let stored = Profile {
+            input_mode: Some(crate::core::config::InputMode::Rich),
+            ..profile("ssh-prod", "ssh web-prod")
+        };
+        let text = ron::to_string(&stored).expect("serialize");
+        let back: Profile = ron::from_str(&text).expect("deserialize");
+        assert_eq!(back, stored);
+    }
+
+    #[test]
+    fn a_profile_input_mode_beats_the_global_pick() {
+        // The override half of the rule: a pinned mode applies
+        // whatever the global says.
+        let rich = Profile {
+            input_mode: Some(crate::core::config::InputMode::Rich),
+            ..profile("ssh", "ssh web-prod")
+        };
+        assert_eq!(
+            effective_input_mode(Some(&rich), crate::core::config::InputMode::Native),
+            crate::core::config::InputMode::Rich
+        );
+    }
+
+    #[test]
+    fn an_unset_input_mode_follows_the_global_pick() {
+        // The None half: an unset override on the resolved profile is
+        // exactly the global value, and no profile (a plain tab, or a
+        // dangling id) likewise.
+        let inheritor = profile("ssh", "ssh web-prod");
+        assert_eq!(
+            effective_input_mode(Some(&inheritor), crate::core::config::InputMode::Rich),
+            crate::core::config::InputMode::Rich
+        );
+        assert_eq!(
+            effective_input_mode(None, crate::core::config::InputMode::Native),
+            crate::core::config::InputMode::Native
+        );
     }
 
     // --- the appearance resolution seams ---

@@ -54,6 +54,7 @@ fn a_profile_request_carries_the_wrap_the_identity_and_the_overrides() {
         env: Some(env.clone()),
         font_size: Some(11),
         scrollback_lines: Some(500),
+        input_mode: None,
     }];
     let request = PaneRequest::for_command(
         &dropterm::core::spawn::SpawnCommand::Profile {
@@ -93,6 +94,7 @@ fn a_plain_shell_request_resolves_global_appearance_and_no_identity() {
         env: None,
         font_size: Some(11),
         scrollback_lines: Some(500),
+        input_mode: None,
     }];
     let request = PaneRequest::for_command(
         &dropterm::core::spawn::SpawnCommand::Shell("/bin/sh".to_string()),
@@ -156,6 +158,7 @@ fn the_blank_line_profile_degrades_with_no_identity() {
         env: None,
         font_size: Some(9),
         scrollback_lines: Some(100),
+        input_mode: None,
     }];
     let request = PaneRequest::for_command(&profile_command("broken", "   "), None, &config, &[]);
     assert_eq!(request.program, "/bin/sh");
@@ -322,8 +325,8 @@ fn a_dispatched_tab_reaches_the_pane_under_the_kit_root(cx: &mut gpui::TestAppCo
     // flag reaches the generators' boot-time pre-warm — every pane
     // boots with it, whatever these say — so these lines never kept a
     // worker's wake out; `allow_parking` above does.
-    config.autosuggestions_enabled = false;
-    config.autosuggestions_menu_enabled = false;
+    config.input_ghost = false;
+    config.input_menu = false;
     let sink = std::env::temp_dir().join(format!("dropterm-tab-pin-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&sink);
     let (terminal, pane) = cx

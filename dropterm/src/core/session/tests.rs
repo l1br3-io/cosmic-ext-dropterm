@@ -502,6 +502,7 @@ fn test_profile(name: &str, command: &str, cwd: Option<PathBuf>) -> Profile {
         env: None,
         font_size: None,
         scrollback_lines: None,
+        input_mode: None,
     }
 }
 

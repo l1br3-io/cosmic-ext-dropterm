@@ -7740,6 +7740,23 @@ mod tests {
         });
     }
 
+    /// The respawn pin's `sh` profile — a literal that outgrew the
+    /// test it fed once `Profile` gained `input_mode` (rich-input
+    /// RI-1); a named constructor keeps the test under the line
+    /// ceiling.
+    fn sh_profile() -> dropterm::core::profile::Profile {
+        dropterm::core::profile::Profile {
+            name: "sh".to_owned(),
+            command: "/bin/sh".to_owned(),
+            cwd: None,
+            color_scheme: None,
+            env: None,
+            font_size: None,
+            scrollback_lines: None,
+            input_mode: None,
+        }
+    }
+
     #[gpui::test]
     #[ignore = "the respawn's two live PTY reader threads (the swapped-out pane's and the respawned pane's) cannot satisfy the gpui test scheduler's thread-affinity gate across the suite: every assertion runs and passes, then a surviving reader trips the gate in a later test — read the stdout, not the exit code (just test a_profile_respawn -- --ignored)"]
     fn a_profile_respawn_seeds_the_departed_pane_repair(cx: &mut gpui::TestAppContext) {
@@ -7753,15 +7770,7 @@ mod tests {
         let cx = cx.add_empty_window();
         let config = DropTermConfig {
             shell: Some("/bin/sh".to_string()),
-            profiles: vec![dropterm::core::profile::Profile {
-                name: "sh".to_owned(),
-                command: "/bin/sh".to_owned(),
-                cwd: None,
-                color_scheme: None,
-                env: None,
-                font_size: None,
-                scrollback_lines: None,
-            }],
+            profiles: vec![sh_profile()],
             ..DropTermConfig::default()
         };
         let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();

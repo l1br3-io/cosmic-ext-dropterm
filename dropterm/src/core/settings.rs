@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 
 use crate::core::config::store::{self, SETTINGS_FILE};
 use crate::core::config::{
-    DropTermConfig, Edge, HAlign, KeybindsSection, KeyboardMode, Layer, MAX_HEIGHT_PERCENT,
-    MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd, ProfilesSection,
-    TabPosition, TabTitleMode, ThemePreference,
+    DropTermConfig, Edge, HAlign, InputMode, InputPosition, KeybindsSection, KeyboardMode, Layer,
+    MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd,
+    ProfilesSection, TabPosition, TabTitleMode, ThemePreference,
 };
 use crate::core::profile::Profile;
 use crate::core::profile::command_line_parts;
@@ -50,6 +50,10 @@ pub enum Section {
     StatusBar,
     Dropdown,
     Terminal,
+    /// The prompt-line surfaces (rich-input spec): the mode and
+    /// position dropdowns, the per-feature toggles, and the provider
+    /// knobs that survived the cull.
+    AutoComplete,
     Advanced,
 }
 
@@ -59,13 +63,14 @@ impl Section {
     /// inline tests pin (every section exactly once, every exposed
     /// key exactly once) — a library export here, so it stood
     /// dead-code-marked only in the bin it left.
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Appearance,
         Section::Window,
         Section::Tabs,
         Section::StatusBar,
         Section::Dropdown,
         Section::Terminal,
+        Section::AutoComplete,
         Section::Advanced,
     ];
 
@@ -129,14 +134,24 @@ impl Section {
                 ConfigKey::BellNotificationEnabled,
                 ConfigKey::CommandFinishNotificationEnabled,
                 ConfigKey::CommandFinishNotificationAfterSecs,
-                ConfigKey::AutosuggestionsEnabled,
+                ConfigKey::ImagesEnabled,
+            ],
+            Section::AutoComplete => &[
+                ConfigKey::InputMode,
+                ConfigKey::InputPosition,
+                ConfigKey::InputGhost,
+                ConfigKey::InputMenu,
+                ConfigKey::InputAutoPopup,
+                ConfigKey::InputHighlight,
+                ConfigKey::InputDescriptions,
+                ConfigKey::InputBadges,
+                ConfigKey::InputIcons,
+                ConfigKey::InputArgumentHint,
+                ConfigKey::InputCompactRows,
                 ConfigKey::AutosuggestionsPathsEnabled,
                 ConfigKey::AutosuggestionsCommandsEnabled,
                 ConfigKey::AutosuggestionsCompletionsExtended,
-                ConfigKey::AutosuggestionsMenuEnabled,
-                ConfigKey::AutosuggestionsMenuAuto,
                 ConfigKey::AutosuggestionsDelayMs,
-                ConfigKey::ImagesEnabled,
             ],
             Section::Advanced => &[
                 ConfigKey::RespectPanel,
@@ -182,12 +197,48 @@ pub enum ConfigKey {
     /// seconds (command-notify spec, OQ-1) — the Terminal card's
     /// numeric row, the scrollback parse shape.
     CommandFinishNotificationAfterSecs,
-    /// The autosuggest kill switch (autosuggest spec) — the Terminal
-    /// card's toggle beside the bell, flipping live on the echo.
-    AutosuggestionsEnabled,
+    /// The prompt-line mode (rich-input spec) — the Auto complete
+    /// card's dropdown: `Native` (the default) is the bare shell,
+    /// `Rich` `DropTerm`'s editor. Per-profile through
+    /// `Profile::input_mode`; flips apply live on the echo.
+    InputMode,
+    /// The input strip's dock (rich-input spec) — the Auto complete
+    /// card's dropdown: `Bottom` (the default) at the grid's foot,
+    /// `Top` at the head of the grid region. Flips apply live.
+    InputPosition,
+    /// The ghost's own toggle (rich-input spec) — the old
+    /// `autosuggestions_enabled` role under its decoupled name:
+    /// `false` darkens the ghost alone, flipping live.
+    InputGhost,
+    /// The completion menu's own toggle (rich-input spec) — the old
+    /// `autosuggestions_menu_enabled` role: `false` removes the menu
+    /// surface exactly, the ghost untouched; a showing menu closes
+    /// the moment the switch lands.
+    InputMenu,
+    /// The auto-popup toggle (rich-input spec) — the old
+    /// `autosuggestions_menu_auto` role: with it on the menu opens as
+    /// you type behind the parity gates; `false` leaves the chord the
+    /// only opener.
+    InputAutoPopup,
+    /// The owned line's live syntax highlight (rich-input spec):
+    /// token colors plus the dashed unknown-command underline;
+    /// `false` renders the line plain.
+    InputHighlight,
+    /// The menu rows' corpus descriptions (rich-input spec).
+    InputDescriptions,
+    /// The menu rows' type badges — cmd/flag/path/hist/env/sub
+    /// (rich-input spec).
+    InputBadges,
+    /// The menu rows' icons (rich-input spec).
+    InputIcons,
+    /// The argument hint line above the menu (rich-input spec).
+    InputArgumentHint,
+    /// The menu's density switch (rich-input spec): comfortable rows
+    /// (the default) or compact.
+    InputCompactRows,
     /// The path provider's own toggle (path-suggest spec) — the
-    /// Terminal card's row beside the kill switch, flipping live at
-    /// the next typed prefix; `false` restores history-only
+    /// Auto complete card's row beside the mode dropdowns, flipping
+    /// live at the next typed prefix; `false` restores history-only
     /// suggestions exactly.
     AutosuggestionsPathsEnabled,
     /// The command-name provider's own toggle (command-catalog spec)
@@ -204,27 +255,13 @@ pub enum ConfigKey {
     /// reused — a system data file does not change under a running
     /// app.
     AutosuggestionsCompletionsExtended,
-    /// The completion menu's own toggle (suggest-menu spec) — the
-    /// Terminal card's row beside its siblings: `Ctrl+Space`'s
-    /// candidate list over the tab's current input. An off flip
-    /// closes a showing menu on the echo's `set_config` pass while
-    /// the ghost keeps suggesting (the ghost and the trigger are
-    /// separable); on arms the chord again at its next press.
-    AutosuggestionsMenuEnabled,
-    /// The auto-popup opt-in (suggest-menu spec, OQ-1 decided) —
-    /// the Terminal card's row beside the menu toggle: with it on,
-    /// an idle prompt whose typed segment collects two or more
-    /// candidates pops the menu without the chord, closing on
-    /// narrowing or ineligibility. Default `false` — no peer ships
-    /// auto-popup on; the chord stays today's only opener.
-    AutosuggestionsMenuAuto,
     /// The autosuggest idle-delay display gate (suggest-delay spec) —
-    /// the Terminal card's numeric row beside the provider toggles:
-    /// a qualifying suggestion waits until the typed segment has
-    /// been stable this many milliseconds. `0` is fish parity (the
-    /// ghost appears the moment it computes); the knob applies live,
-    /// and it changes *when* a suggestion is seen, never *which* one
-    /// wins.
+    /// the Auto complete card's numeric row beside the provider
+    /// toggles: a qualifying suggestion waits until the typed segment
+    /// has been stable this many milliseconds. `0` is fish parity
+    /// (the ghost appears the moment it computes); the knob applies
+    /// live, and it changes *when* a suggestion is seen, never
+    /// *which* one wins.
     AutosuggestionsDelayMs,
     /// The inline-image kill switch (iterm-images spec) — the
     /// Terminal card's row: OSC 1337 sequences decode and ride the
@@ -325,6 +362,8 @@ pub enum SettingsPage {
     Dropdown,
     /// The terminal engine's rows: the Terminal section.
     Terminal,
+    /// The prompt-line surfaces: the `AutoComplete` section.
+    AutoComplete,
     /// The profile manager — no sections, so it never perturbs
     /// the section partition.
     Profiles,
@@ -348,6 +387,7 @@ pub const fn page_section(page: SettingsPage) -> Option<Section> {
         SettingsPage::StatusBar => Some(Section::StatusBar),
         SettingsPage::Dropdown => Some(Section::Dropdown),
         SettingsPage::Terminal => Some(Section::Terminal),
+        SettingsPage::AutoComplete => Some(Section::AutoComplete),
         SettingsPage::Advanced => Some(Section::Advanced),
         SettingsPage::Profiles | SettingsPage::Keybindings => None,
     }
@@ -366,6 +406,7 @@ pub const NAV_GROUPS: [(&str, &[SettingsPage]); 2] = [
             SettingsPage::StatusBar,
             SettingsPage::Dropdown,
             SettingsPage::Terminal,
+            SettingsPage::AutoComplete,
             SettingsPage::Advanced,
         ],
     ),
@@ -395,6 +436,7 @@ pub const fn page_title(page: SettingsPage) -> &'static str {
         SettingsPage::StatusBar => Section::StatusBar.title(),
         SettingsPage::Dropdown => Section::Dropdown.title(),
         SettingsPage::Terminal => Section::Terminal.title(),
+        SettingsPage::AutoComplete => Section::AutoComplete.title(),
         SettingsPage::Advanced => Section::Advanced.title(),
         SettingsPage::Profiles => "Profiles",
         SettingsPage::Keybindings => "Keybindings",
@@ -405,13 +447,14 @@ impl SettingsPage {
     /// Every page, in page order — the nav's rows come from this
     /// list and nothing else, and the palette's Settings rows
     /// follow it too.
-    pub const ALL: [SettingsPage; 9] = [
+    pub const ALL: [SettingsPage; 10] = [
         SettingsPage::Appearance,
         SettingsPage::Window,
         SettingsPage::Tabs,
         SettingsPage::StatusBar,
         SettingsPage::Dropdown,
         SettingsPage::Terminal,
+        SettingsPage::AutoComplete,
         SettingsPage::Advanced,
         SettingsPage::Profiles,
         SettingsPage::Keybindings,
@@ -441,13 +484,21 @@ impl ConfigKey {
             ConfigKey::CommandFinishNotificationAfterSecs => {
                 "command_finish_notification_after_secs"
             }
-            ConfigKey::AutosuggestionsEnabled => "autosuggestions_enabled",
+            ConfigKey::InputMode => "input_mode",
+            ConfigKey::InputPosition => "input_position",
+            ConfigKey::InputGhost => "input_ghost",
+            ConfigKey::InputMenu => "input_menu",
+            ConfigKey::InputAutoPopup => "input_auto_popup",
+            ConfigKey::InputHighlight => "input_highlight",
+            ConfigKey::InputDescriptions => "input_descriptions",
+            ConfigKey::InputBadges => "input_badges",
+            ConfigKey::InputIcons => "input_icons",
+            ConfigKey::InputArgumentHint => "input_argument_hint",
+            ConfigKey::InputCompactRows => "input_compact_rows",
             ConfigKey::AutosuggestionsPathsEnabled => "autosuggestions_paths_enabled",
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
             ConfigKey::AutosuggestionsCompletionsExtended => "autosuggestions_completions_extended",
             ConfigKey::ImagesEnabled => "images_enabled",
-            ConfigKey::AutosuggestionsMenuEnabled => "autosuggestions_menu_enabled",
-            ConfigKey::AutosuggestionsMenuAuto => "autosuggestions_menu_auto",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
@@ -513,13 +564,21 @@ pub enum PlannedWrite {
     BellNotificationEnabled(bool),
     CommandFinishNotificationEnabled(bool),
     CommandFinishNotificationAfterSecs(u16),
-    AutosuggestionsEnabled(bool),
+    InputMode(InputMode),
+    InputPosition(InputPosition),
+    InputGhost(bool),
+    InputMenu(bool),
+    InputAutoPopup(bool),
+    InputHighlight(bool),
+    InputDescriptions(bool),
+    InputBadges(bool),
+    InputIcons(bool),
+    InputArgumentHint(bool),
+    InputCompactRows(bool),
     AutosuggestionsPathsEnabled(bool),
     AutosuggestionsCommandsEnabled(bool),
     AutosuggestionsCompletionsExtended(bool),
     ImagesEnabled(bool),
-    AutosuggestionsMenuEnabled(bool),
-    AutosuggestionsMenuAuto(bool),
     AutosuggestionsDelayMs(u16),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
@@ -619,7 +678,17 @@ impl PlannedWrite {
             PlannedWrite::CommandFinishNotificationAfterSecs(_) => {
                 ConfigKey::CommandFinishNotificationAfterSecs
             }
-            PlannedWrite::AutosuggestionsEnabled(_) => ConfigKey::AutosuggestionsEnabled,
+            PlannedWrite::InputMode(_) => ConfigKey::InputMode,
+            PlannedWrite::InputPosition(_) => ConfigKey::InputPosition,
+            PlannedWrite::InputGhost(_) => ConfigKey::InputGhost,
+            PlannedWrite::InputMenu(_) => ConfigKey::InputMenu,
+            PlannedWrite::InputAutoPopup(_) => ConfigKey::InputAutoPopup,
+            PlannedWrite::InputHighlight(_) => ConfigKey::InputHighlight,
+            PlannedWrite::InputDescriptions(_) => ConfigKey::InputDescriptions,
+            PlannedWrite::InputBadges(_) => ConfigKey::InputBadges,
+            PlannedWrite::InputIcons(_) => ConfigKey::InputIcons,
+            PlannedWrite::InputArgumentHint(_) => ConfigKey::InputArgumentHint,
+            PlannedWrite::InputCompactRows(_) => ConfigKey::InputCompactRows,
             PlannedWrite::AutosuggestionsPathsEnabled(_) => ConfigKey::AutosuggestionsPathsEnabled,
             PlannedWrite::AutosuggestionsCommandsEnabled(_) => {
                 ConfigKey::AutosuggestionsCommandsEnabled
@@ -628,8 +697,6 @@ impl PlannedWrite {
                 ConfigKey::AutosuggestionsCompletionsExtended
             }
             PlannedWrite::ImagesEnabled(_) => ConfigKey::ImagesEnabled,
-            PlannedWrite::AutosuggestionsMenuEnabled(_) => ConfigKey::AutosuggestionsMenuEnabled,
-            PlannedWrite::AutosuggestionsMenuAuto(_) => ConfigKey::AutosuggestionsMenuAuto,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
@@ -731,9 +798,17 @@ impl PlannedWrite {
             PlannedWrite::CommandFinishNotificationAfterSecs(value) => {
                 section.command_finish_notification_after_secs = *value;
             }
-            PlannedWrite::AutosuggestionsEnabled(value) => {
-                section.autosuggestions_enabled = *value;
-            }
+            PlannedWrite::InputMode(value) => section.input_mode = *value,
+            PlannedWrite::InputPosition(value) => section.input_position = *value,
+            PlannedWrite::InputGhost(value) => section.input_ghost = *value,
+            PlannedWrite::InputMenu(value) => section.input_menu = *value,
+            PlannedWrite::InputAutoPopup(value) => section.input_auto_popup = *value,
+            PlannedWrite::InputHighlight(value) => section.input_highlight = *value,
+            PlannedWrite::InputDescriptions(value) => section.input_descriptions = *value,
+            PlannedWrite::InputBadges(value) => section.input_badges = *value,
+            PlannedWrite::InputIcons(value) => section.input_icons = *value,
+            PlannedWrite::InputArgumentHint(value) => section.input_argument_hint = *value,
+            PlannedWrite::InputCompactRows(value) => section.input_compact_rows = *value,
             PlannedWrite::AutosuggestionsPathsEnabled(value) => {
                 section.autosuggestions_paths_enabled = *value;
             }
@@ -743,12 +818,6 @@ impl PlannedWrite {
             PlannedWrite::ImagesEnabled(value) => section.images_enabled = *value,
             PlannedWrite::AutosuggestionsCompletionsExtended(value) => {
                 section.autosuggestions_completions_extended = *value;
-            }
-            PlannedWrite::AutosuggestionsMenuEnabled(value) => {
-                section.autosuggestions_menu_enabled = *value;
-            }
-            PlannedWrite::AutosuggestionsMenuAuto(value) => {
-                section.autosuggestions_menu_auto = *value;
             }
             PlannedWrite::AutosuggestionsDelayMs(value) => {
                 section.autosuggestions_delay_ms = *value;
@@ -1051,12 +1120,25 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         // command-name providers' own toggles ride the same timing:
         // a flip applies at the next typed prefix, history untouched
         // either way.
-        | ConfigKey::AutosuggestionsEnabled
         | ConfigKey::AutosuggestionsPathsEnabled
         | ConfigKey::AutosuggestionsCommandsEnabled
         | ConfigKey::AutosuggestionsCompletionsExtended
-        | ConfigKey::AutosuggestionsMenuEnabled
-        | ConfigKey::AutosuggestionsMenuAuto
+        // The rich-input keys ride the same live pass (rich-input
+        // spec): the mode and position flips apply on the config
+        // echo's apply pass, and every surface toggle lands at the
+        // next render or typed prefix the same way the overlay keys
+        // always have.
+        | ConfigKey::InputMode
+        | ConfigKey::InputPosition
+        | ConfigKey::InputGhost
+        | ConfigKey::InputMenu
+        | ConfigKey::InputAutoPopup
+        | ConfigKey::InputHighlight
+        | ConfigKey::InputDescriptions
+        | ConfigKey::InputBadges
+        | ConfigKey::InputIcons
+        | ConfigKey::InputArgumentHint
+        | ConfigKey::InputCompactRows
         // The images kill switch rides the same live pass
         // (iterm-images spec): the echo's set_config swaps the flag,
         // the next 1337 arrival answers it.
@@ -1138,6 +1220,14 @@ pub const THEME_PREFERENCE_OPTIONS: &[(ThemePreference, &str)] = &[
     (ThemePreference::Dark, "Dark"),
     (ThemePreference::Light, "Light"),
 ];
+pub const INPUT_MODE_OPTIONS: &[(InputMode, &str)] = &[
+    (InputMode::Native, "Native (the shell's line)"),
+    (InputMode::Rich, "Rich (DropTerm's editor)"),
+];
+pub const INPUT_POSITION_OPTIONS: &[(InputPosition, &str)] = &[
+    (InputPosition::Bottom, "Bottom"),
+    (InputPosition::Top, "Top"),
+];
 
 /// A scheme dropdown's selection: the config name's position in the
 /// merged options (the registry's names then the user schemes',
@@ -1185,6 +1275,12 @@ pub fn dropdown_selected(
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.theme_preference),
+        ConfigKey::InputMode => INPUT_MODE_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.input_mode),
+        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
+            .iter()
+            .position(|(value, _)| *value == config.input_position),
         _ => None,
     }
 }
@@ -1228,6 +1324,12 @@ pub fn dropdown_write(
         ConfigKey::ThemePreference => THEME_PREFERENCE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::ThemePreference(*value)),
+        ConfigKey::InputMode => INPUT_MODE_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::InputMode(*value)),
+        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
+            .get(index)
+            .map(|(value, _)| PlannedWrite::InputPosition(*value)),
         _ => None,
     }
 }
@@ -1924,6 +2026,18 @@ pub fn plan_profile_save(
                 // mode-special case here.
                 font_size: parse_profile_font_size(&draft.font_size),
                 scrollback_lines: parse_scrollback(&draft.scrollback),
+                // No form row yet (rich-input RI-1 lands the model;
+                // RI-4 owns the mode surface): Add follows the global
+                // pick, Clone carries its source's — the form never
+                // drops a hand-set value. Edit's `base.clone()` keeps
+                // the profile's own pick the same way.
+                input_mode: match &draft.mode {
+                    ProfileDraftMode::Clone { source } => source.input_mode,
+                    // Add carries nothing to carry; Edit never
+                    // reaches this arm (its own branch above clones
+                    // the base whole).
+                    ProfileDraftMode::Add | ProfileDraftMode::Edit { .. } => None,
+                },
             };
             ProfileSavePlan::Write {
                 profiles: add_profile(profiles, added),
@@ -2513,7 +2627,15 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::CommandFinishNotificationEnabled => {
             Some(PlannedWrite::CommandFinishNotificationEnabled(checked))
         }
-        ConfigKey::AutosuggestionsEnabled => Some(PlannedWrite::AutosuggestionsEnabled(checked)),
+        ConfigKey::InputGhost => Some(PlannedWrite::InputGhost(checked)),
+        ConfigKey::InputMenu => Some(PlannedWrite::InputMenu(checked)),
+        ConfigKey::InputAutoPopup => Some(PlannedWrite::InputAutoPopup(checked)),
+        ConfigKey::InputHighlight => Some(PlannedWrite::InputHighlight(checked)),
+        ConfigKey::InputDescriptions => Some(PlannedWrite::InputDescriptions(checked)),
+        ConfigKey::InputBadges => Some(PlannedWrite::InputBadges(checked)),
+        ConfigKey::InputIcons => Some(PlannedWrite::InputIcons(checked)),
+        ConfigKey::InputArgumentHint => Some(PlannedWrite::InputArgumentHint(checked)),
+        ConfigKey::InputCompactRows => Some(PlannedWrite::InputCompactRows(checked)),
         ConfigKey::AutosuggestionsPathsEnabled => {
             Some(PlannedWrite::AutosuggestionsPathsEnabled(checked))
         }
@@ -2524,10 +2646,6 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::AutosuggestionsCompletionsExtended(checked))
         }
         ConfigKey::ImagesEnabled => Some(PlannedWrite::ImagesEnabled(checked)),
-        ConfigKey::AutosuggestionsMenuEnabled => {
-            Some(PlannedWrite::AutosuggestionsMenuEnabled(checked))
-        }
-        ConfigKey::AutosuggestionsMenuAuto => Some(PlannedWrite::AutosuggestionsMenuAuto(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))
@@ -2586,13 +2704,21 @@ impl ConfigKey {
             ConfigKey::BellNotificationEnabled => "Bell notifications",
             ConfigKey::CommandFinishNotificationEnabled => "Command finish notifications",
             ConfigKey::CommandFinishNotificationAfterSecs => "Command finish threshold (seconds)",
-            ConfigKey::AutosuggestionsEnabled => "Autosuggestions",
+            ConfigKey::InputMode => "Input mode",
+            ConfigKey::InputPosition => "Input strip position",
+            ConfigKey::InputGhost => "Ghost text",
+            ConfigKey::InputMenu => "Completion menu",
+            ConfigKey::InputAutoPopup => "Auto-popup while typing",
+            ConfigKey::InputHighlight => "Syntax highlight",
+            ConfigKey::InputDescriptions => "Row descriptions",
+            ConfigKey::InputBadges => "Type badges",
+            ConfigKey::InputIcons => "Row icons",
+            ConfigKey::InputArgumentHint => "Argument hint line",
+            ConfigKey::InputCompactRows => "Compact rows",
             ConfigKey::AutosuggestionsPathsEnabled => "Path completion",
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
             ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
             ConfigKey::ImagesEnabled => "Inline images",
-            ConfigKey::AutosuggestionsMenuEnabled => "Completions menu",
-            ConfigKey::AutosuggestionsMenuAuto => "Open the menu as you type",
             ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
@@ -2642,6 +2768,7 @@ impl Section {
             Section::StatusBar => "Status bar",
             Section::Dropdown => "Dropdown",
             Section::Terminal => "Terminal",
+            Section::AutoComplete => "Auto complete",
             Section::Advanced => "Advanced",
         }
     }
