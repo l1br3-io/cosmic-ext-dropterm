@@ -1095,8 +1095,8 @@ impl PluginsDir {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         let path = std::env::temp_dir().join(unique);
-        std::fs::create_dir_all(&path).expect("create scratch plugins dir");
-        std::fs::write(path.join("probe.lua"), script).expect("write probe script");
+        std::fs::create_dir_all(path.join("probe")).expect("create scratch plugin dir");
+        std::fs::write(path.join("probe").join("plugin.lua"), script).expect("write probe script");
         Self(path)
     }
 }

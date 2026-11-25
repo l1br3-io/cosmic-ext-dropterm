@@ -368,6 +368,13 @@ pub(crate) struct Shell {
     /// `new-tab` keep startup application (the degraded tab verbs
     /// never reach here — `startup_action` already collapsed them).
     pending_startup: Option<cli::Action>,
+    /// The startup mark's once-guard (plugin-manifest spec): the
+    /// first painted frame's pump sends the `StartupMark` command —
+    /// boot-to-frame milliseconds, the 50 ms window's measure — and
+    /// never again. Gated on the plugins dir having stood at boot
+    /// (the `lua_bus` gate), so a no-plugins session keeps the
+    /// quiet-by-default pin: no mark, no spawn, no log.
+    startup_marked: bool,
     /// The drawer's tabs (gpui-tabs Task 1): plain records through
     /// core's model — the strip renders from this list.
     tabs: tab_bar::TabList,
@@ -914,6 +921,7 @@ impl Shell {
             tab_count,
             verbs,
             pending_startup: Some(startup),
+            startup_marked: false,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
@@ -1143,6 +1151,21 @@ impl Shell {
                 self.boot.elapsed().as_millis()
             );
             self.dispatch(cx, startup, &mut actions, &mut tab_verbs);
+        }
+        // The startup mark (plugin-manifest spec): the first painted
+        // frame's pump is the anchor — boot-to-frame milliseconds, the
+        // 50 ms window's measure, sent once and only when the plugins
+        // dir stood at boot (the lua_bus gate; a no-plugins session
+        // keeps the quiet-by-default pin). The mark is the host's
+        // first work item when it stands, so `on_startup_finished`
+        // plugins load past this point in either direction of the
+        // ruled branch.
+        if self.lua_bus.is_some() && !self.startup_marked {
+            self.startup_marked = true;
+            self.lua_host
+                .send(dropterm::core::lua_host::HostCommand::StartupMark {
+                    elapsed_ms: u64::try_from(self.boot.elapsed().as_millis()).unwrap_or(u64::MAX),
+                });
         }
         while let Ok(action) = self.verbs.try_recv() {
             self.dispatch(cx, action, &mut actions, &mut tab_verbs);
@@ -10115,9 +10138,9 @@ mod tests {
     fn the_drain_routes_real_host_events_into_the_band_state(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("segments");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("net")).expect("plugin dir");
         std::fs::write(
-            dir.0.join("plugins").join("net.lua"),
+            dir.0.join("plugins").join("net").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.status_segment('net', function(ctx)\n\
                return { text = 'cwd:' .. tostring(ctx.cwd), side = 'right' }\n\
@@ -10214,11 +10237,11 @@ mod tests {
     fn the_tab_title_round_trip_lands_script_answers_on_the_records(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("tabtitles");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("titles")).expect("plugin dir");
         // The spec's own success criterion as the fixture: an OSC
         // title shows through, an empty one reads 'shell'.
         std::fs::write(
-            dir.0.join("plugins").join("titles.lua"),
+            dir.0.join("plugins").join("titles").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.tab_title(function(p)\n\
                return (p.title ~= '' and p.title) or 'shell'\n\
@@ -10328,9 +10351,9 @@ mod tests {
         // — the pane-booting gpui class is the parked pty-test-gate.)
         cx.update(gpui_component::init);
         let dir = ScratchDir::new("sendtext");
-        std::fs::create_dir_all(dir.0.join("plugins")).expect("plugins dir");
+        std::fs::create_dir_all(dir.0.join("plugins").join("cmd")).expect("plugin dir");
         std::fs::write(
-            dir.0.join("plugins").join("cmd.lua"),
+            dir.0.join("plugins").join("cmd").join("plugin.lua"),
             "local d = require('dropterm')\n\
              d.command('ping', 'Ping the pane', function(p)\n\
                d.send_text('ping\\n')\n\
@@ -10478,8 +10501,9 @@ mod tests {
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             );
             let path = std::env::temp_dir().join(unique);
-            std::fs::create_dir_all(&path).expect("create scratch plugins dir");
-            std::fs::write(path.join("probe.lua"), script).expect("write probe script");
+            std::fs::create_dir_all(path.join("probe")).expect("create scratch plugin dir");
+            std::fs::write(path.join("probe").join("plugin.lua"), script)
+                .expect("write probe script");
             Self(path)
         }
     }

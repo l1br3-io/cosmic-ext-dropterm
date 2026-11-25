@@ -996,8 +996,12 @@ end)";
     #[test]
     fn the_slot_event_crosses_the_bus_with_exactly_its_documented_payload() {
         let dir = TempDir::new("slot-event");
-        fs::write(dir.0.join("listener.lua"), format!("{PORT}\n{LISTENER}"))
-            .expect("the fixture writes");
+        fs::create_dir_all(dir.0.join("listener")).expect("the plugin dir");
+        fs::write(
+            dir.0.join("listener").join("plugin.lua"),
+            format!("{PORT}\n{LISTENER}"),
+        )
+        .expect("the fixture writes");
         let host = LuaHost::new(&dir.0);
         let event = SlotEvent {
             surface: "status".to_owned(),

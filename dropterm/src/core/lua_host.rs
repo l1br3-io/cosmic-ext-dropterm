@@ -50,6 +50,7 @@
 //! rescanned at once.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,8 @@ use std::time::{Duration, Instant};
 use notify::Watcher as _;
 
 use crate::core::keybinds::{CommandRow, MAX_COMMAND_NAME_LEN, valid_command_name};
+use crate::core::plugins_manifest;
+use crate::core::plugins_manifest::{Activation, PluginScan, SCRIPT_FILE_NAME, ScannedPlugin};
 use crate::core::slots::{self, SlotContent};
 use crate::core::status::{ScriptSide, SegmentAnswer, StatusInputs};
 use crate::core::tabs::{TabTitleAsk, TabTitleValue};
@@ -166,7 +169,11 @@ pub enum HostCommand {
     /// receives `{ tab }` (the pane the chord landed in); the
     /// soft/hard bounds cover the run. An unknown name (registered
     /// then reloaded away between binding and press, or never
-    /// registered) dispatches to nobody with one line.
+    /// registered) dispatches to nobody with one line. A name a lazy
+    /// plugin's manifest declares activates that plugin first: the
+    /// interpreter recreation loads its script, and the press
+    /// re-serves on the fresh generation (the activation machine,
+    /// SPEC-plugin-manifest).
     RunCommand {
         /// The command's slug — the registry key (its `script/<name>`
         /// id is the keybind file's vocabulary; the host knows names).
@@ -174,7 +181,30 @@ pub enum HostCommand {
         /// The invoking tab's id — the handler's whole ctx.
         tab: u32,
     },
+    /// The shell's startup mark, sent once at the first painted
+    /// frame (plugin-manifest spec): `elapsed_ms` is how long boot
+    /// took at the mark. At or under the 50 ms window the
+    /// `on_startup_finished` plugins activate right here; past it the
+    /// activation defers to the first idle window the command queue
+    /// drains into (VS Code's measured rule). Only sent when the
+    /// plugins dir stood at boot, so a no-plugins session keeps the
+    /// quiet-by-default pin.
+    StartupMark {
+        /// Boot-to-first-frame milliseconds at the mark.
+        elapsed_ms: u64,
+    },
 }
+
+/// The startup budget the `on_startup_finished` ruling measures
+/// against (SPEC-plugin-manifest: VS Code's measured 50 ms).
+const STARTUP_WINDOW_MS: u64 = 50;
+
+/// How often the deferred activation's poll wakes while waiting for
+/// the idle window: small enough that the deferral lands promptly
+/// after the queue drains, large enough that the wake is noise. The
+/// poll lives only between the deferred mark and the activation —
+/// after it the loop returns to a blocking recv.
+const IDLE_POLL: Duration = Duration::from_millis(25);
 
 /// One observation out of the host thread. v1 carried only the log;
 /// the query surfaces' replies and reports join as new arms with the
@@ -303,7 +333,7 @@ type DormantChannels = Option<(Receiver<HostCommand>, Sender<HostEvent>)>;
 /// until the handle drops, then takes its interpreter with it.
 pub struct LuaHost {
     /// The plugins dir the first scan (and every future reload)
-    /// reads — flat, `.lua` files only.
+    /// reads — one plugin dir per child, the dir-per-plugin layout.
     plugins_dir: PathBuf,
     /// The gate: the channel halves sit here until the first `send`
     /// takes them (never replaces them); `None` is the spawned
@@ -400,17 +430,19 @@ impl LuaHost {
         }
     }
 
-    /// Watch the plugins dir (non-recursive, the config watcher's
-    /// shape) and queue a [`HostCommand::Reload`] on any event (task
-    /// L3): the watcher feeds the host's command channel — never the
-    /// UI's event channel. A dir event is a first work item (spec
-    /// assumption 4: "first event to deliver, first query, first
-    /// watcher wake"), so the wake spawns the host if it has never
-    /// spawned — the owning wake's scan is the load, with no
-    /// duplicate beside it. Returns the watcher guard (dropping it
-    /// stops watching); a dir that cannot be watched is `None` —
-    /// missing is the silent first-run norm (the theme-files posture),
-    /// anything else costs one line.
+    /// Watch the plugins dir recursively — the dir-per-plugin break
+    /// (plugin-manifest spec) moved the scripts one level down
+    /// (`plugins/<id>/plugin.lua`), so a flat watch would miss every
+    /// script edit — and queue a [`HostCommand::Reload`] on any
+    /// content-changing event (task L3): the watcher feeds the host's
+    /// command channel — never the UI's event channel. A dir event is
+    /// a first work item (spec assumption 4: "first event to deliver,
+    /// first query, first watcher wake"), so the wake spawns the host
+    /// if it has never spawned — the owning wake's scan is the load,
+    /// with no duplicate beside it. Returns the watcher guard
+    /// (dropping it stops watching); a dir that cannot be watched is
+    /// `None` — missing is the silent first-run norm (the theme-files
+    /// posture), anything else costs one line.
     pub fn watch_plugins_dir(&self) -> Option<notify::RecommendedWatcher> {
         let commands = self
             .commands
@@ -449,7 +481,7 @@ impl LuaHost {
                     return None;
                 }
             };
-        match watcher.watch(&self.plugins_dir, notify::RecursiveMode::NonRecursive) {
+        match watcher.watch(&self.plugins_dir, notify::RecursiveMode::Recursive) {
             Ok(()) => Some(watcher),
             Err(err) => {
                 if matches!(
@@ -528,6 +560,110 @@ impl LuaHostHandle {
     }
 }
 
+/// The host thread's activation state, living across generations
+/// (plugin-manifest spec): the active set — the plugin ids whose
+/// `plugin.lua` loads on every interpreter build — and the latest
+/// scan's registry, the `RunCommand` gate's source of truth about who
+/// declares a slug. A lazy plugin that activated stays active for the
+/// session (the set survives teardown and the watcher's recreate);
+/// a plugin the fresh scan no longer sees drops from it.
+struct ActivationState {
+    active: BTreeSet<String>,
+    plugins: Vec<ScannedPlugin>,
+    /// The startup mark's ruling, once it arrives: `true` — at or
+    /// under the 50 ms window, the `AfterStartup` set joins at every
+    /// scan from here on (the first one included, so a mark that
+    /// arrives before the first load activates at the mark itself);
+    /// `false` — past it, the join waits for the idle window.
+    /// `None` — the mark has not arrived.
+    startup_ruling: Option<bool>,
+}
+
+impl ActivationState {
+    fn new() -> Self {
+        Self {
+            active: BTreeSet::new(),
+            plugins: Vec::new(),
+            startup_ruling: None,
+        }
+    }
+
+    /// Fold one scan into the state: the fresh `AtStartup` set joins,
+    /// the previously active plugins still present stay active, the
+    /// `AfterStartup` set joins under the mark's at-window ruling, and
+    /// the registry replaces.
+    fn apply_scan(&mut self, scan: &PluginScan) {
+        self.plugins.clone_from(&scan.plugins);
+        self.active
+            .retain(|id| self.plugins.iter().any(|plugin| &plugin.id == id));
+        for plugin in &self.plugins {
+            if plugin.activation == Activation::AtStartup
+                || (plugin.activation == Activation::AfterStartup
+                    && self.startup_ruling == Some(true))
+            {
+                self.active.insert(plugin.id.clone());
+            }
+        }
+    }
+
+    /// The first plugin in dir order whose manifest declares `name`
+    /// and whose script has not activated — the `RunCommand` gate's
+    /// lookup. Two plugins declaring one slug is not this module's
+    /// rejection: the first dir-order seat wins (the advertising
+    /// merge, PM3, rules the same).
+    fn lazy_plugin_declaring(&self, name: &str) -> Option<&str> {
+        self.plugins
+            .iter()
+            .find(|plugin| {
+                plugin.activation == Activation::Lazy
+                    && !self.active.contains(&plugin.id)
+                    && plugin.commands.iter().any(|command| command.id == name)
+            })
+            .map(|plugin| plugin.id.as_str())
+    }
+
+    /// Join every `AfterStartup` plugin to the active set, now and at
+    /// every later scan — the mark's at-window arrival or its idle
+    /// activation (past the window). The registry may still be empty
+    /// (the mark as the first work item): the ruling stands, and the
+    /// next scan's fold carries the set in.
+    fn activate_after_startup(&mut self) {
+        self.startup_ruling = Some(true);
+        for plugin in &self.plugins {
+            if plugin.activation == Activation::AfterStartup {
+                self.active.insert(plugin.id.clone());
+            }
+        }
+    }
+}
+
+/// What [`pull_command`] found: one command, an idle queue observed
+/// while a deferred activation pends, or a dead channel (shutdown).
+enum Pulled {
+    Command(HostCommand),
+    Idle,
+    Dead,
+}
+
+/// Pull one command off the channel: a blocking recv while no
+/// deferred activation pends — the idle thread costs nothing — and a
+/// short poll while one does, so the queue-drain moment (the idle
+/// window the deferred mark's ruling waits for) is observable.
+fn pull_command(commands: &Receiver<HostCommand>, deferred: bool) -> Pulled {
+    if deferred {
+        match commands.recv_timeout(IDLE_POLL) {
+            Ok(command) => Pulled::Command(command),
+            Err(RecvTimeoutError::Timeout) => Pulled::Idle,
+            Err(RecvTimeoutError::Disconnected) => Pulled::Dead,
+        }
+    } else {
+        match commands.recv() {
+            Ok(command) => Pulled::Command(command),
+            Err(_) => Pulled::Dead,
+        }
+    }
+}
+
 /// The host thread's whole life: generations of interpreter, each
 /// built, ported, bounded, then served strictly in arrival order — one
 /// thread, one interpreter at a time, no dispatch racing another (spec
@@ -546,6 +682,13 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
     // Set by a `Reload` on a live generation: the next generation
     // loads eagerly at build (the rescan is the work).
     let mut rescan_now = false;
+    // The activation machine's memory (plugin-manifest spec): the
+    // active set and the scan registry, living across generations.
+    let mut state = ActivationState::new();
+    // Set by a past-the-window `StartupMark`: the AfterStartup
+    // plugins activate at the first idle window the queue drains
+    // into (the poll in [`pull_command`] observes it).
+    let mut deferred_activation = false;
     // An Emit found while folding a Reload burst: served first on
     // the reloaded generation — the host is serial, nothing
     // reorders, nothing drops.
@@ -558,11 +701,9 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             log(events, "host thread up");
             first_generation = false;
         }
-        // Whether this generation's scripts have been loaded: a fresh
-        // generation scans before it first serves, so the spawn, the
-        // hard cap, and the wake all share one lazy path.
-        let mut scanned = false;
-        if rescan_now {
+        // The one load path: the same ten arguments every arm passes,
+        // a local closure over the generation's registry tables.
+        let load = |state: &mut ActivationState| {
             load_scripts(
                 &generation.lua,
                 &generation.segments,
@@ -572,7 +713,15 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 plugins_dir,
                 events,
                 &frame,
+                state,
             );
+        };
+        // Whether this generation's scripts have been loaded: a fresh
+        // generation scans before it first serves, so the spawn, the
+        // hard cap, and the wake all share one lazy path.
+        let mut scanned = false;
+        if rescan_now {
+            load(&mut state);
             // The eager rescan IS this generation's load — mark it
             // scanned so the first dispatch never loads a second
             // copy beside it (found at status-segments SG1: a doubled
@@ -587,20 +736,36 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             }
         }
         let mut reload_requested = false;
-        while let Some(command) = held.take().or_else(|| commands.recv().ok()) {
+        loop {
+            let command = match held.take().map_or_else(
+                || pull_command(commands, deferred_activation),
+                Pulled::Command,
+            ) {
+                Pulled::Command(command) => command,
+                Pulled::Idle => {
+                    // The deferred mark's ruling, served the moment the
+                    // queue drains into the idle window: the
+                    // AfterStartup plugins join the active set, and the
+                    // ruled recreation unit carries them in.
+                    deferred_activation = false;
+                    state.activate_after_startup();
+                    if scanned {
+                        reload_requested = true;
+                        break;
+                    }
+                    load(&mut state);
+                    scanned = true;
+                    if frame.hard_tripped.get() {
+                        break;
+                    }
+                    continue;
+                }
+                Pulled::Dead => break,
+            };
             match command {
                 HostCommand::Emit { event, payload } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -632,16 +797,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::QuerySegments { token, ctx } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -654,16 +810,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::QueryTabTitles { token, tabs } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -676,16 +823,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::PanelAsk { token, views } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
@@ -698,24 +836,52 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                 }
                 HostCommand::RunCommand { name, tab } => {
                     if !scanned {
-                        load_scripts(
-                            &generation.lua,
-                            &generation.segments,
-                            &generation.tab_title,
-                            &generation.commands,
-                            &generation.panel_views,
-                            plugins_dir,
-                            events,
-                            &frame,
-                        );
+                        load(&mut state);
                         scanned = true;
                         if frame.hard_tripped.get() {
                             break;
                         }
                     }
+                    // The activation gate (plugin-manifest spec): a
+                    // name a not-yet-active lazy plugin declares
+                    // activates that plugin — the ruled recreation
+                    // loads its script, and this press re-serves on
+                    // the fresh generation (first press pays the
+                    // load; fire-and-forget stands, the load happens
+                    // host-side).
+                    if let Some(plugin_id) = state.lazy_plugin_declaring(&name) {
+                        log(
+                            events,
+                            format!("{plugin_id}: activating for command '{name}'"),
+                        );
+                        state.active.insert(plugin_id.to_owned());
+                        held = Some(HostCommand::RunCommand { name, tab });
+                        reload_requested = true;
+                        break;
+                    }
                     run_command(&generation, &name, tab, events, &frame);
                     if frame.hard_tripped.get() {
                         break;
+                    }
+                }
+                HostCommand::StartupMark { elapsed_ms } => {
+                    if elapsed_ms <= STARTUP_WINDOW_MS {
+                        // At or under the window: the AfterStartup
+                        // plugins activate at the mark.
+                        state.activate_after_startup();
+                        if scanned {
+                            reload_requested = true;
+                            break;
+                        }
+                        load(&mut state);
+                        scanned = true;
+                        if frame.hard_tripped.get() {
+                            break;
+                        }
+                    } else {
+                        // Past it: the activation defers to the idle
+                        // window (the poll observes the drain).
+                        deferred_activation = true;
                     }
                 }
                 HostCommand::Reload => {
@@ -742,11 +908,14 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                                 held = Some(query);
                                 break;
                             }
-                            // A command press riding a reload burst is
-                            // held the same way — served on the
-                            // reloaded generation, whose registry is
-                            // the truth about who answers.
-                            Ok(run @ HostCommand::RunCommand { .. }) => {
+                            // A command press or a startup mark riding
+                            // a reload burst is held the same way —
+                            // served on the reloaded generation, whose
+                            // registry is the truth about who answers.
+                            Ok(
+                                run @ (HostCommand::RunCommand { .. }
+                                | HostCommand::StartupMark { .. }),
+                            ) => {
                                 held = Some(run);
                                 break;
                             }
@@ -764,16 +933,7 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
                     // The spawning wake itself: this generation has
                     // never loaded anything, so the scan IS the
                     // reload — no duplicate beside it.
-                    load_scripts(
-                        &generation.lua,
-                        &generation.segments,
-                        &generation.tab_title,
-                        &generation.commands,
-                        &generation.panel_views,
-                        plugins_dir,
-                        events,
-                        &frame,
-                    );
+                    load(&mut state);
                     scanned = true;
                     if frame.hard_tripped.get() {
                         break;
@@ -1316,19 +1476,25 @@ fn display_value(lua: &Lua, value: Value) -> String {
     }
 }
 
-/// Scan `dir` for `.lua` plugin scripts and load each into the
-/// interpreter, sorted by file name so registration order is
-/// deterministic. The loader is read-only — nothing under the dir is
-/// written, moved, or renamed — and a missing dir is the silent
-/// first run. A script that fails to parse or raises at load costs
-/// one log line and never stops its siblings. Each file's load runs
-/// under the hard cap (never the soft bound — a load has no result to
-/// go stale); a tripped cap aborts the remaining files, which load
-/// with the recreated interpreter's deferred reload. Every completed
-/// pass — a reload into an empty dir included — ends with the
-/// registry-sync report (status-segments spec): the live id set is
-/// the asking surface's source of truth, and the tab-title seat's
-/// and command registry's own reports ride beside it (their specs).
+/// Load the active set's scripts (plugin-manifest spec): the scan
+/// folds into `state` — its log lines land verbatim, the fresh
+/// `AtStartup` plugins join the previously-active survivors (a lazy
+/// plugin that activated stays active for the session; a plugin the
+/// fresh scan no longer sees drops) — and each active plugin's
+/// `plugins/<id>/plugin.lua` loads into the interpreter in id order so
+/// registration order is deterministic. The loader is read-only —
+/// nothing under the dir is written, moved, or renamed — and a missing
+/// dir is the silent first run. A plugin dir without its script loads
+/// nothing silently (its manifest rows still advertise); a script that
+/// fails to parse or raises at load costs one log line and never stops
+/// its siblings. Each script's load runs under the hard cap (never the
+/// soft bound — a load has no result to go stale); a tripped cap
+/// aborts the remaining files, which load with the recreated
+/// interpreter's deferred reload. Every completed pass — a reload into
+/// an empty dir included — ends with the registry-sync report
+/// (status-segments spec): the live id set is the asking surface's
+/// source of truth, and the tab-title seat's and command registry's
+/// own reports ride beside it (their specs).
 #[expect(
     clippy::too_many_arguments,
     reason = "one registry table per script surface; the panel registry joins its peers"
@@ -1342,46 +1508,35 @@ fn load_scripts(
     dir: &Path,
     events: &Sender<HostEvent>,
     frame: &TimeoutFrame,
+    state: &mut ActivationState,
 ) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            sync_registry(segments, events);
-            sync_tab_title_provider(tab_title, events);
-            sync_commands(commands, events);
-            sync_panel_views(panel_views, events);
-            return;
+    let scan = plugins_manifest::scan(dir);
+    for line in &scan.logs {
+        log(events, line);
+    }
+    state.apply_scan(&scan);
+    for id in &state.active {
+        let Some(plugin) = state.plugins.iter().find(|plugin| &plugin.id == id) else {
+            continue;
+        };
+        if !plugin.has_script {
+            // Nothing to load; the manifest rows still advertise (the
+            // Plugins page and the command rows ride the scan, not
+            // the interpreter). The empty dir is a scaffold, not a
+            // failure — silent.
+            continue;
         }
-        Err(err) => {
-            log(events, format!("cannot read {}: {err}", dir.display()));
-            sync_registry(segments, events);
-            sync_tab_title_provider(tab_title, events);
-            sync_commands(commands, events);
-            sync_panel_views(panel_views, events);
-            return;
-        }
-    };
-    let mut scripts: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
-        .collect();
-    scripts.sort();
-    for path in scripts {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let path = dir.join(id).join(SCRIPT_FILE_NAME);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) => {
-                log(events, format!("skipped {name}: unreadable: {err}"));
+                log(events, format!("skipped {id}: unreadable: {err}"));
                 continue;
             }
         };
-        frame.begin(false, format_args!("loading {name}"));
-        match lua.load(text).set_name(name.clone()).exec() {
-            Ok(()) => log(events, format!("loaded {name}")),
+        frame.begin(false, format_args!("loading {id}"));
+        match lua.load(text).set_name(id.clone()).exec() {
+            Ok(()) => log(events, format!("loaded {id}")),
             Err(err) => {
                 if frame.hard_tripped.get() {
                     // The hook logged the reload line already; this
@@ -1389,7 +1544,7 @@ fn load_scripts(
                     // carries the next sync.
                     return;
                 }
-                log(events, format!("skipped {name}: {err}"));
+                log(events, format!("skipped {id}: {err}"));
             }
         }
     }
@@ -1958,8 +2113,16 @@ mod tests {
     /// hard cap takes, so scheduling slack never flakes the suite.
     const LONG_WAIT: Duration = Duration::from_secs(5);
 
+    /// Write one fixture script as the dir-per-plugin layout: the
+    /// `name.lua` argument names the plugin (`hello.lua` is the
+    /// `hello` dir), the script lands at `plugins/<id>/plugin.lua` —
+    /// every fixture is a manifest-less dir, so it scans eager exactly
+    /// like the loose files did before the break.
     fn script(dir: &TempDir, name: &str, text: &str) {
-        fs::write(dir.join(name), text).expect("write fixture script");
+        let id = name.strip_suffix(".lua").unwrap_or(name);
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::write(plugin_dir.join("plugin.lua"), text).expect("write fixture script");
     }
 
     /// Collect the host's log lines until it goes quiet (200 ms with
@@ -2095,7 +2258,7 @@ mod tests {
         assert!(host.spawned());
         let lines = logs_until_quiet(&host);
         assert!(
-            lines.iter().any(|line| line.contains("loaded hello.lua")),
+            lines.iter().any(|line| line.contains("loaded hello")),
             "the scan must load the fixture: {lines:?}"
         );
         assert!(
@@ -2150,7 +2313,7 @@ mod tests {
         let host = LuaHost::new(&dir.0);
         emit(&host, "other");
         let lines = logs_until_quiet(&host);
-        assert!(lines.iter().any(|line| line.contains("loaded hello.lua")));
+        assert!(lines.iter().any(|line| line.contains("loaded hello")));
         assert!(
             !lines.iter().any(|line| line.contains("hi")),
             "an unregistered event dispatches to nobody, silently: {lines:?}"
@@ -2174,12 +2337,12 @@ mod tests {
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.contains("broken.lua"))
+                .filter(|line| line.contains("skipped broken"))
                 .count(),
             1,
             "a load error costs exactly one line: {lines:?}"
         );
-        assert!(lines.iter().any(|line| line.contains("loaded good.lua")));
+        assert!(lines.iter().any(|line| line.contains("loaded good")));
         assert!(
             lines.iter().any(|line| line.contains(" ok")),
             "the sibling script's handler still answers: {lines:?}"
@@ -2292,9 +2455,7 @@ mod tests {
         emit(&host, "x");
         let second = logs_until_quiet(&host);
         assert!(
-            second
-                .iter()
-                .any(|line| line.contains("loaded runaway.lua")),
+            second.iter().any(|line| line.contains("loaded runaway")),
             "the reload re-runs the registration scripts: {second:?}"
         );
         assert!(
@@ -2406,11 +2567,11 @@ mod tests {
             &format!("{PORT}\nd.on('x', function() print('v2') end)"),
         );
         host.send(HostCommand::Reload);
-        let second = logs_until(&host, |line| line.contains("loaded gen.lua"), LONG_WAIT);
+        let second = logs_until(&host, |line| line.contains("loaded gen"), LONG_WAIT);
         assert_eq!(
             second
                 .iter()
-                .filter(|line| line.contains("loaded gen.lua"))
+                .filter(|line| line.contains("loaded gen"))
                 .count(),
             1,
             "the reload rescans the edited script: {second:?}"
@@ -2489,13 +2650,13 @@ mod tests {
         // Wait for the load line (a script's own print lands before
         // it), then drain the quiet tail so a duplicate rescan — if
         // one existed — would be collected rather than cut off.
-        let mut lines = logs_until(&host, |line| line.contains("loaded hello.lua"), LONG_WAIT);
+        let mut lines = logs_until(&host, |line| line.contains("loaded hello"), LONG_WAIT);
         lines.extend(logs_until_quiet(&host));
         assert!(host.spawned(), "the wake must spawn the host: {lines:?}");
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.contains("loaded hello.lua"))
+                .filter(|line| line.contains("loaded hello"))
                 .count(),
             1,
             "the spawning wake is the one scan — no duplicate reload beside it: {lines:?}"
@@ -2543,9 +2704,9 @@ mod tests {
             &format!("{PORT}\nd.on('x', function() print('back') end)"),
         );
         host.send(HostCommand::Reload);
-        let second = logs_until(&host, |line| line.contains("loaded back.lua"), LONG_WAIT);
+        let second = logs_until(&host, |line| line.contains("loaded back"), LONG_WAIT);
         assert!(
-            second.iter().any(|line| line.contains("loaded back.lua")),
+            second.iter().any(|line| line.contains("loaded back")),
             "the host survives the removed-dir reload: {second:?}"
         );
         emit(&host, "x");
@@ -3228,7 +3389,7 @@ mod tests {
         // The script unlinks first (the reload rescans current disk),
         // then the tests' reload lever (the resync test's own): the
         // host command, not the watcher's inotify timing.
-        std::fs::remove_file(dir.0.join("views.lua")).expect("the script unlinks");
+        std::fs::remove_file(dir.0.join("views").join("plugin.lua")).expect("the script unlinks");
         host.send(HostCommand::Reload);
         let events = events_until(
             &host,
@@ -4291,6 +4452,281 @@ mod tests {
                 .count(),
             1,
             "the contextless call costs exactly one line: {lines:?}"
+        );
+    }
+    // --- the activation machine (plugin-manifest PM2) ---
+
+    /// Write one fixture manifest: `plugin.json` in the plugin dir the
+    /// same id the `script` helper builds.
+    fn manifest(dir: &TempDir, id: &str, json: &str) {
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::write(plugin_dir.join("plugin.json"), json).expect("write fixture manifest");
+    }
+
+    fn press(host: &LuaHost, name: &str) {
+        host.send(HostCommand::RunCommand {
+            name: name.to_owned(),
+            tab: 1,
+        });
+    }
+
+    fn mark(host: &LuaHost, elapsed_ms: u64) {
+        host.send(HostCommand::StartupMark { elapsed_ms });
+    }
+
+    #[test]
+    fn a_lazy_manifest_plugin_costs_zero_interpreter_work_until_its_dispatch() {
+        let dir = TempDir::new("lazy-manifest");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nd.command('go', 'Go', function() print('go ran') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        // The mark is a work item: it spawns the host and scans, but
+        // the lazy plugin joins nothing.
+        mark(&host, 10);
+        let lines = logs_until_quiet(&host);
+        assert!(host.spawned(), "the mark materialized the host");
+        assert!(
+            !lines.iter().any(|line| line.contains("loaded lazy")),
+            "a lazy plugin loads nothing at the mark: {lines:?}"
+        );
+        // The first press pays the load, then dispatches.
+        press(&host, "go");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("lazy: activating for command 'go'")),
+            "the gate names the activation: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("loaded lazy")),
+            "the recreation loads the activated plugin: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("go ran")),
+            "the press dispatches on the fresh generation: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_loads_at_the_first_work_item() {
+        let dir = TempDir::new("on-startup");
+        manifest(&dir, "eager", r#"{ "activation": ["on_startup"] }"#);
+        script(&dir, "eager.lua", &format!("{PORT}\nprint('eager up')"));
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("loaded eager")),
+            "on_startup loads at the mark with no dispatch: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_finished_under_the_window_activates_at_the_mark() {
+        let dir = TempDir::new("under-window");
+        manifest(
+            &dir,
+            "defer",
+            r#"{ "activation": ["on_startup_finished"] }"#,
+        );
+        script(&dir, "defer.lua", &format!("{PORT}\nprint('defer up')"));
+        let host = LuaHost::new(&dir.0);
+        // The mark loads at itself; the later press's own line lands
+        // after the load's — the ordering is the pin.
+        mark(&host, 10);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        let loaded = lines
+            .iter()
+            .position(|line| line.contains("loaded defer"))
+            .expect("the mark loaded the AfterStartup plugin");
+        let nobody = lines
+            .iter()
+            .position(|line| line.contains("dispatched to nobody"))
+            .expect("the press dispatched");
+        assert!(
+            loaded < nobody,
+            "under the window the load lands before the later press: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn on_startup_finished_over_the_window_defers_to_the_idle_window() {
+        let dir = TempDir::new("over-window");
+        manifest(
+            &dir,
+            "defer",
+            r#"{ "activation": ["on_startup_finished"] }"#,
+        );
+        script(&dir, "defer.lua", &format!("{PORT}\nprint('defer up')"));
+        let host = LuaHost::new(&dir.0);
+        // Past the window the mark defers: the queued press serves
+        // first, the activation waits for the queue to drain.
+        mark(&host, 100);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        let loaded = lines
+            .iter()
+            .position(|line| line.contains("loaded defer"))
+            .expect("the idle window loaded the AfterStartup plugin");
+        let nobody = lines
+            .iter()
+            .position(|line| line.contains("dispatched to nobody"))
+            .expect("the press dispatched before the idle activation");
+        assert!(
+            nobody < loaded,
+            "over the window the activation waits for the idle: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_active_set_survives_a_forced_teardown_recreation() {
+        let dir = TempDir::new("survive-teardown");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{
+                "commands": [
+                    { "id": "spin", "description": "Runaway" },
+                    { "id": "hello", "description": "Prints" }
+                ]
+            }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!(
+                "{PORT}\n\
+                 d.command('spin', 'Runaway', function() while true do end end)\n\
+                 d.command('hello', 'Prints', function() print('hello from active') end)"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        // The spin trips the hard cap: teardown, recreation.
+        press(&host, "spin");
+        let _ = logs_until(&host, |line| line.contains("hard cap"), LONG_WAIT);
+        // The successor generation loads the same active set: the
+        // press dispatches with no new activation.
+        press(&host, "hello");
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("hello from active")),
+            "the activated plugin survived the teardown: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("activating for command 'hello'")),
+            "an active plugin's press never re-activates: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_declared_but_never_registered_slug_dispatches_to_nobody_with_one_line() {
+        let dir = TempDir::new("ghost");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "ghost", "description": "Nobody" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nprint('registered nothing')"),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "ghost");
+        let lines = logs_until_quiet(&host);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("dispatched to nobody"))
+                .count(),
+            1,
+            "exactly one nobody line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn skip_shapes_flow_through_the_log_arm_exactly_once_each() {
+        let dir = TempDir::new("skips");
+        // The loose file is the break's subject: a raw top-level .lua,
+        // not a plugin dir.
+        fs::write(dir.0.join("stray.lua"), "print('never loads')")
+            .expect("write the loose fixture");
+        script(&dir, "Bad_Dir.lua", "print('never loads')");
+        script(&dir, "ok.lua", &format!("{PORT}\nprint('fine')"));
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let lines = logs_until_quiet(&host);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("skipped loose stray.lua"))
+                .count(),
+            1,
+            "exactly one loose-skip line: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("skipped Bad_Dir:"))
+                .count(),
+            1,
+            "exactly one non-slug skip line: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("loaded ok")),
+            "the slug dir still loads: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_reloaded_active_lazy_plugin_stays_active_for_the_session() {
+        let dir = TempDir::new("reload-active");
+        manifest(
+            &dir,
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go" } ] }"#,
+        );
+        script(
+            &dir,
+            "lazy.lua",
+            &format!("{PORT}\nd.command('go', 'Go', function() print('go ran') end)"),
+        );
+        let host = LuaHost::new(&dir.0);
+        mark(&host, 10);
+        let _ = logs_until_quiet(&host);
+        press(&host, "go");
+        let _ = logs_until_quiet(&host);
+        // The watcher's wake rides the same command channel in tests:
+        // the reload re-runs the scan and re-gates — the activated
+        // plugin stays in the active set and loads with the recreation.
+        host.send(HostCommand::Reload);
+        let lines = logs_until_quiet(&host);
+        assert!(
+            lines.iter().any(|line| line.contains("loaded lazy")),
+            "the reload carries the active set: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("activating for command")),
+            "staying active is not a re-activation: {lines:?}"
         );
     }
 }
