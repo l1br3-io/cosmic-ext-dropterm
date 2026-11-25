@@ -5464,3 +5464,138 @@ fn execution_writes_the_line_and_the_echo_does_not_reopen_the_lane() {
         "the echo must not re-open the menu lane"
     );
 }
+
+// --- the rich-input editor lane (rich-input RI-5, the engine half) ---
+
+/// The recording recipe's tail (the recording pin's own): type a
+/// command, let the echo land, run it, and SIGINT back to the
+/// prompt — the run commits into the history the suggest state
+/// carries.
+fn record_command(terminal: &mut Terminal, command: &str) {
+    terminal.input_no_scroll(command.as_bytes().to_vec());
+    poll_update_until(
+        terminal,
+        |t| bottom_line_text(t).contains(command),
+        "the typed line echoes",
+    );
+    terminal.input_no_scroll(&b"\r"[..]);
+    poll_update_until(
+        terminal,
+        Terminal::foreground_child_running,
+        "the child takes the foreground",
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_update_until(
+        terminal,
+        |t| !t.foreground_child_running(),
+        "SIGINT returns the prompt",
+    );
+}
+
+#[test]
+fn editor_step_drives_the_ghost_over_the_owned_line() {
+    // The lane's core fact: the ghost computes over the editor's
+    // buffer — the anchor bridge rebuilding the grid's line shape —
+    // not over any grid text. A recorded command ghosts its own
+    // prefix the moment the editor steps it, and a step past the
+    // recorded shape withdraws.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    terminal.editor_step("slee", true);
+    assert_eq!(terminal.suggestion(), Some("p 30"));
+    terminal.editor_step("zzz", true);
+    assert_eq!(terminal.suggestion(), None);
+}
+
+#[test]
+fn editor_steps_auto_pop_the_menu_with_the_parity_gates() {
+    // The auto-pop over the owned line, the grid lane's own harness
+    // shape (a recorded history command answers where the bare
+    // harness's catalog and specs floor do not): the two-char floor
+    // and the qualifying row (one char never opens, the recorded
+    // word's two-char prefix pops), fresh rows re-collecting in
+    // place while typing, and the fully-typed word — nothing left to
+    // insert — closing the auto-opened menu.
+    // The recorded word is a real external command ("sleep 30", the
+    // recording recipe's own): dash answers a not-found word without
+    // forking, and the commit rides the fork's run edge.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    terminal.editor_step("s", true);
+    assert!(!terminal.menu_is_open(), "the one-char floor holds");
+    terminal.editor_step("sl", true);
+    assert!(terminal.menu_is_open(), "a qualifying row pops");
+    terminal.editor_step("sle", true);
+    assert!(terminal.menu_is_open(), "fresh rows land in place");
+    terminal.editor_step("sleep 30", true);
+    assert!(
+        !terminal.menu_is_open(),
+        "a fully-typed word carries no insert"
+    );
+}
+
+#[test]
+fn editor_menu_press_accepts_and_two_stages_over_the_owned_line() {
+    // The lane's write shape: an accept's suffix RETURNS for the
+    // buffer — the PTY never sees it, the grid stays bare — and the
+    // two-stage Enter's equal line answers Execute (close, insert
+    // nothing, run).
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    terminal.editor_step("sl", true);
+    assert!(terminal.menu_is_open());
+    assert_eq!(
+        terminal.editor_menu_press(suggest::MenuKey::Accept, "sl"),
+        // The trailing space is the accept funnel's own token
+        // completion — the same bytes the grid lane writes.
+        editor::MenuPress::Insert("eep 30 ".to_string())
+    );
+    assert!(!terminal.menu_is_open());
+    assert!(
+        !bottom_line_text(&terminal).contains("ec"),
+        "the accept never reached the grid"
+    );
+
+    // The two-stage Enter: the conditioned opener over editor facts
+    // opens at the full word, the selection equals the line, and
+    // Enter answers Execute.
+    assert!(terminal.editor_menu_open("sleep 30"));
+    assert_eq!(
+        terminal.editor_menu_press(suggest::MenuKey::Accept, "sleep 30"),
+        editor::MenuPress::Execute
+    );
+    assert!(!terminal.menu_is_open());
+}
+
+#[test]
+fn editor_accept_suggestion_returns_the_suffix_for_the_buffer() {
+    // The ghost's accept from the lane: Full returns the whole
+    // suffix, the take consumes the showing, and Word returns the
+    // first word alone.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    terminal.editor_step("slee", true);
+    assert_eq!(
+        terminal.editor_accept_suggestion(AcceptKind::Full),
+        Some("p 30".to_string())
+    );
+    assert_eq!(
+        terminal.editor_accept_suggestion(AcceptKind::Full),
+        None,
+        "the take consumed the showing"
+    );
+
+    terminal.editor_step("slee", true);
+    assert_eq!(
+        terminal.editor_accept_suggestion(AcceptKind::Word),
+        Some("p".to_string())
+    );
+}

@@ -2776,6 +2776,235 @@ impl Terminal {
         self.menu.selected_equals(typed)
     }
 
+    // --- the rich-input editor lane (rich-input spec, RI-5): the
+    // parity machinery re-targeted from the grid's cursor line to
+    // the editor's buffer — the same suggest state, the same menu,
+    // fed editor facts; every write returns to the pane instead of
+    // the PTY, because the editor owns the line.
+
+    /// One editor keystroke's suggest step (rich-input RI-5): the
+    /// observation built from the owned line (the pane calls this
+    /// after every buffer mutation), stepping the same state machine
+    /// the grid lane steps — the ghost and the anchor bookkeeping
+    /// ride it unchanged. `after_blank` is the caret-at-line-end
+    /// fact the auto-popup's line-end gate reads. The auto-pop
+    /// re-collect runs on the same gates (two-char floor, a
+    /// qualifying row, fresh rows in place while typing, an
+    /// auto-opened menu closing when the set empties); no echo
+    /// one-shot on this lane — an accept's insert flows through the
+    /// buffer (the re-collect is wanted), and execution's echo
+    /// arrives on the grid lane already suppressed.
+    /// The editor lane's line bridge (rich-input RI-5): the grid
+    /// lane's before-cursor text is the anchor plus the typed
+    /// segment — the editor's buffer is the segment alone — so the
+    /// lane's entry points rebuild the grid's shape before the
+    /// suggest state carves.
+    fn editor_grid_line(&self, buffer: &str) -> String {
+        let mut line = self.suggest.anchor().unwrap_or_default().to_string();
+        line.push_str(buffer);
+        line
+    }
+
+    pub fn editor_step(&mut self, before_cursor: &str, after_blank: bool) {
+        let line = self.editor_grid_line(before_cursor);
+        let before_cursor = line.as_str();
+        let typed_changed = before_cursor != self.suggest_last_before_cursor;
+        if typed_changed {
+            self.suggest_typed_at = Instant::now();
+            self.suggest_last_before_cursor = before_cursor.to_string();
+        }
+        let paths_eligible = self.paths_eligible();
+        let working_directory = self.working_directory();
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
+        let typed = self.suggest.typed_segment(before_cursor);
+        let path_listing = self.path_cache.listing_for(
+            self.autosuggestions_enabled && self.autosuggestions_paths_enabled && paths_eligible,
+            suggest::path_token(typed),
+            self.spawn_home.as_deref(),
+            working_directory.as_deref(),
+        );
+        let columns = self.term.lock().grid().columns();
+        let observation = suggest::Observation {
+            enabled: self.autosuggestions_enabled,
+            paths_eligible,
+            paths_enabled: self.autosuggestions_paths_enabled,
+            path_listing,
+            commands_enabled: self.autosuggestions_commands_enabled,
+            specs_enabled: self.autosuggestions_specs_enabled,
+            aliases: &self.autosuggestions_aliases,
+            specs_table: &self.autosuggestions_specs_table,
+            command_catalog: &self.command_catalog,
+            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
+                branches: &sets.branches,
+                tags: &sets.tags,
+                files: &sets.files,
+            }),
+            focused: self.is_focused,
+            foreground_child: false,
+            display_offset: 0,
+            cursor_on_bottom_row: true,
+            columns,
+            cursor_column: before_cursor.chars().count(),
+            before_cursor,
+            after_cursor_blank: after_blank,
+            fresh_prompt: false,
+            delay_ms: self.autosuggestions_delay_ms,
+            typed_idle_ms: 0,
+            working_cwd: working_directory.as_deref().and_then(Path::to_str),
+            history_context: self.autosuggestions_history_context,
+            menu_fuzzy: self.autosuggestions_menu_fuzzy,
+            env_names: &self.spawn_env_names,
+        };
+        suggest::step(&observation, &mut self.suggest);
+        // The store's write side, the grid lane's own rule: a commit
+        // under the toggle merges into the app-global store file.
+        if let Some((command, cwd)) = self.suggest.take_store_commit()
+            && let Err(err) =
+                save_history_store_commit(&self.history_state_path, &command, cwd.as_deref())
+        {
+            log::warn!("failed to persist history store: {err}");
+        }
+        // The auto-pop (suggest-parity spec): the editor's step is
+        // the typed change itself.
+        if self.autosuggestions_menu_auto
+            && self.autosuggestions_menu_enabled
+            && self.autosuggestions_enabled
+            && observation.focused
+            && after_blank
+            && typed_changed
+            && let Some(typed) = self.suggest.typed_segment(before_cursor)
+            && typed.chars().count() >= 2
+        {
+            let collected = suggest::candidates(typed, &self.suggest, &observation);
+            let qualifying = collected.iter().any(|row| !row.suffix.is_empty());
+            if !qualifying {
+                if self.menu.is_open() && self.menu_auto_opened {
+                    self.menu.close();
+                }
+            } else if !self.menu.is_open() || self.menu_auto_opened {
+                self.menu_auto_opened = true;
+                self.menu.open(collected);
+            }
+        }
+    }
+
+    /// One menu press from the editor lane (rich-input RI-5): the
+    /// pure transition applied, the resulting insert returned for the
+    /// pane to place in the buffer — the grid lane writes bytes
+    /// (`menu_press`); the editor owns the line.
+    pub fn editor_menu_press(
+        &mut self,
+        key: suggest::MenuKey,
+        before_cursor: &str,
+    ) -> editor::MenuPress {
+        let line = self.editor_grid_line(before_cursor);
+        let typed = self
+            .suggest
+            .typed_segment(&line)
+            .unwrap_or_default()
+            .to_owned();
+        match self.menu.press(key, &typed) {
+            suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
+                editor::MenuPress::Insert(suffix)
+            }
+            suggest::MenuOutcome::Execute => editor::MenuPress::Execute,
+            _ => editor::MenuPress::Noop,
+        }
+    }
+
+    /// The ghost's accept from the editor lane (rich-input RI-5):
+    /// the gained suffix (whole, or the first word) returned for the
+    /// buffer — the grid lane writes bytes (`accept_suggestion`);
+    /// the editor owns the line.
+    pub fn editor_accept_suggestion(&mut self, kind: AcceptKind) -> Option<String> {
+        let suffix = self.suggest.take_suffix()?;
+        let gained = match kind {
+            AcceptKind::Full => suffix,
+            AcceptKind::Word => suggest::split_word(&suffix).0.to_string(),
+        };
+        (!gained.is_empty()).then_some(gained)
+    }
+
+    /// The completion menu's open attempt from the editor lane
+    /// (rich-input RI-5, the conditioned opener's backing): the soft
+    /// trigger's collection over the owned line — the same
+    /// eligibility minus the grid scrape, the editor's own gates
+    /// already holding.
+    pub fn editor_menu_open(&mut self, before_cursor: &str) -> bool {
+        self.menu_auto_opened = false;
+        self.generator
+            .revalidate(self.working_directory().as_deref());
+        if !self.autosuggestions_menu_enabled
+            || !self.autosuggestions_enabled
+            || !self.is_focused
+            || self.foreground_child_running()
+        {
+            return false;
+        }
+        let line = self.editor_grid_line(before_cursor);
+        let Some(typed) = self.suggest.typed_segment(&line) else {
+            return false;
+        };
+        let mut rows = self.menu_candidates_over(typed, &line, true);
+        if self.autosuggestions_specs_loading {
+            rows.insert(0, suggest::loading_candidate());
+        }
+        self.menu.open(rows)
+    }
+
+    /// The candidate collection over editor facts (rich-input
+    /// RI-5): [`Self::menu_candidates`]'s build with the owned line
+    /// in place of the grid scrape — one shape, two lanes.
+    fn menu_candidates_over(
+        &mut self,
+        typed: &str,
+        before_cursor: &str,
+        after_blank: bool,
+    ) -> Vec<suggest::MenuCandidate> {
+        let paths_eligible = self.paths_eligible();
+        let working_directory = self.working_directory();
+        let generator_sets = self.generator.sets_for(working_directory.as_deref());
+        let path_listing = self.path_cache.listing_for(
+            self.autosuggestions_paths_enabled && paths_eligible,
+            suggest::path_token(Some(typed)),
+            self.spawn_home.as_deref(),
+            working_directory.as_deref(),
+        );
+        let columns = self.term.lock().grid().columns();
+        let observation = suggest::Observation {
+            enabled: self.autosuggestions_enabled,
+            paths_eligible,
+            paths_enabled: self.autosuggestions_paths_enabled,
+            path_listing,
+            commands_enabled: self.autosuggestions_commands_enabled,
+            specs_enabled: self.autosuggestions_specs_enabled,
+            aliases: &self.autosuggestions_aliases,
+            specs_table: &self.autosuggestions_specs_table,
+            command_catalog: &self.command_catalog,
+            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
+                branches: &sets.branches,
+                tags: &sets.tags,
+                files: &sets.files,
+            }),
+            focused: self.is_focused,
+            foreground_child: false,
+            display_offset: 0,
+            cursor_on_bottom_row: false,
+            columns,
+            cursor_column: before_cursor.chars().count(),
+            before_cursor,
+            after_cursor_blank: after_blank,
+            fresh_prompt: false,
+            delay_ms: self.autosuggestions_delay_ms,
+            typed_idle_ms: 0,
+            working_cwd: working_directory.as_deref().and_then(Path::to_str),
+            history_context: self.autosuggestions_history_context,
+            menu_fuzzy: self.autosuggestions_menu_fuzzy,
+            env_names: &self.spawn_env_names,
+        };
+        suggest::candidates(typed, &self.suggest, &observation)
+    }
+
     /// The cursor line's reduced facts (suggest-menu spec): the
     /// before-cursor text (wide spacers skipped, tabs flattened,
     /// zero-width runs carried), the after-cursor blank fact, the

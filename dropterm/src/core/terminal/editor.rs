@@ -109,6 +109,22 @@ impl Verdict {
     }
 }
 
+/// One editor-lane menu press's outcome (rich-input RI-5): the grid
+/// lane's menu outcome with the PTY write replaced by the insert the
+/// pane owes the buffer — the editor owns the line, so an accept or
+/// fill gains text there, never bytes here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuPress {
+    /// Navigation or a close: the buffer is untouched.
+    Noop,
+    /// The suffix an accept or fill gained — the pane inserts it at
+    /// the caret, then steps the suggest lane.
+    Insert(String),
+    /// The two-stage Enter's equal line (suggest-parity spec): the
+    /// menu closed, nothing was inserted — the line runs.
+    Execute,
+}
+
 /// What the grid-read gates concluded about the prompt (rich-input
 /// OQ-4): `Live` is a prompt the gates can see; `Unsure` is anything
 /// they cannot decide — and unsure hides (a wrongly-shown editor
