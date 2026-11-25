@@ -8,6 +8,16 @@
 # (no README rides the carry). Upstream ask: alacritty/alacritty —
 # the same unguarded loop is in master today. Retirement: the
 # upstream fix, once released.
+#
+# The standalone test seat (shell-integration SI-3): the root
+# workspace excludes this carry so its own tests can run
+# (`cargo test` from inside the carry, against the frozen
+# Cargo.lock beside it). The patch table below applies ONLY to that
+# standalone run — a dependency's patch table is never read by the
+# root build, which resolves vte through the root's own
+# [patch.crates-io] — and points the standalone resolution at the
+# same carried vte, without whose A/B/C arms this crate's Handler
+# impls would not compile.
 [package]
 name = "alacritty_terminal"
 version = "0.25.1"
@@ -55,3 +65,8 @@ windows-sys = { version = "0.59.0", features = [
 
 [dev-dependencies]
 serde_json = "1.0.0"
+
+# Standalone-test-only (see the header): resolves the carried vte
+# for this carry's own test runs.
+[patch.crates-io]
+vte = { path = "../vte" }

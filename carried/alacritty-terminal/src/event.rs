@@ -56,6 +56,14 @@ pub enum Event {
     /// Child process exited with an error code.
     ChildExit(i32),
 
+    /// Semantic prompt zone started (OSC 133;A shell integration);
+    /// the shell is about to print its prompt.
+    PromptStart,
+
+    /// Semantic command zone started (OSC 133;C shell integration);
+    /// the entered command is running.
+    CommandStart,
+
     /// Semantic prompt zone finished; the final command's exit code
     /// (OSC 133;D shell integration).
     PromptExit(u32),
@@ -104,6 +112,8 @@ impl Debug for Event {
             Event::Bell => write!(f, "Bell"),
             Event::Exit => write!(f, "Exit"),
             Event::ChildExit(code) => write!(f, "ChildExit({code})"),
+            Event::PromptStart => write!(f, "PromptStart"),
+            Event::CommandStart => write!(f, "CommandStart"),
             Event::PromptExit(code) => write!(f, "PromptExit({code})"),
             Event::CurrentDirectory(url) => write!(f, "CurrentDirectory({url})"),
             Event::ProgressReport(state, value) => write!(f, "ProgressReport({state}, {value:?})"),

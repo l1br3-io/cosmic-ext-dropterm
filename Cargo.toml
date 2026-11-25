@@ -4,8 +4,15 @@
 # ruling); cu-4 (the owner's ruling, 2026-11-15) then removed the
 # applet and dissolved `dropterm-core` into the terminal crate — the
 # workspace now carries `dropterm` alone. Git history keeps both.
+# The alacritty carry is excluded (not a member): membership would
+# subject upstream sources to this workspace's fmt/clippy gates,
+# which upstream code does not meet; exclusion instead lets the
+# carry run its own tests standalone (its manifest carries a
+# standalone-only vte patch — inert here, a dependency's patch
+# table is never read by the root build).
 [workspace]
 members = ["dropterm"]
+exclude = ["carried/alacritty-terminal"]
 resolver = "3"
 
 # status-exit (OQ-1, decided 2026-11-03): the shell's own "command

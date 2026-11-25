@@ -12,3 +12,6 @@ docs/_site/
 .zcode-site.json
 /SPEC*.md
 /tasks/
+
+# The standalone test seat build output (SI-3)
+carried/alacritty-terminal/target/

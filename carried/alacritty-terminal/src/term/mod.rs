@@ -1538,6 +1538,22 @@ impl<T: EventListener> Handler for Term<T> {
         self.event_proxy.send_event(Event::Bell);
     }
 
+    /// Semantic prompt zone started; the shell is about to print its
+    /// prompt (OSC 133;A).
+    #[inline]
+    fn semantic_prompt_start(&mut self) {
+        trace!("PromptStart");
+        self.event_proxy.send_event(Event::PromptStart);
+    }
+
+    /// Semantic command zone started; the entered command is running
+    /// (OSC 133;C).
+    #[inline]
+    fn semantic_command_start(&mut self) {
+        trace!("CommandStart");
+        self.event_proxy.send_event(Event::CommandStart);
+    }
+
     /// Semantic prompt zone finished; the final command's exit code.
     #[inline]
     fn semantic_prompt_exit(&mut self, exit_code: u32) {
@@ -3475,6 +3491,69 @@ mod tests {
         let recorded = events.0.borrow();
         assert_eq!(recorded.len(), 1);
         assert!(matches!(recorded[0], Event::PromptExit(1)));
+    }
+
+    #[test]
+    fn semantic_prompt_start_emits_event() {
+        let size = TermSize::new(5, 10);
+        let events = EventSink::default();
+        let mut term = Term::new(Config::default(), &size, events.clone());
+
+        term.semantic_prompt_start();
+
+        let recorded = events.0.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(recorded[0], Event::PromptStart));
+    }
+
+    #[test]
+    fn semantic_command_start_emits_event() {
+        let size = TermSize::new(5, 10);
+        let events = EventSink::default();
+        let mut term = Term::new(Config::default(), &size, events.clone());
+
+        term.semantic_command_start();
+
+        let recorded = events.0.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert!(matches!(recorded[0], Event::CommandStart));
+    }
+
+    #[test]
+    fn semantic_prompt_end_records_nothing() {
+        // `B` keeps vte's default no-op: parsed by the fork below,
+        // never forwarded as an event (no consumer wants it in v1).
+        let size = TermSize::new(5, 10);
+        let events = EventSink::default();
+        let mut term = Term::new(Config::default(), &size, events.clone());
+
+        term.semantic_prompt_end();
+
+        let recorded = events.0.borrow();
+        assert_eq!(recorded.len(), 0);
+    }
+
+    #[test]
+    fn osc133_bytes_through_the_parser_emit_the_zone_events() {
+        // The full byte path the engine will see: parser bytes in,
+        // zone events out — A (both terminators' ST form here), C,
+        // then D carrying its code, with B parsed between C and D
+        // forwarding nothing.
+        let size = TermSize::new(5, 10);
+        let events = EventSink::default();
+        let mut term = Term::new(Config::default(), &size, events.clone());
+        let mut processor = ansi::Processor::<ansi::StdSyncHandler>::new();
+
+        processor.advance(&mut term, b"\x1b]133;A\x1b\\");
+        processor.advance(&mut term, b"\x1b]133;C\x07");
+        processor.advance(&mut term, b"\x1b]133;B\x07");
+        processor.advance(&mut term, b"\x1b]133;D;7\x07");
+
+        let recorded = events.0.borrow();
+        assert_eq!(recorded.len(), 3);
+        assert!(matches!(recorded[0], Event::PromptStart));
+        assert!(matches!(recorded[1], Event::CommandStart));
+        assert!(matches!(recorded[2], Event::PromptExit(7)));
     }
 
     #[test]
