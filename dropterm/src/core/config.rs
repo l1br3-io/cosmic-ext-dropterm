@@ -59,12 +59,13 @@ pub enum HAlign {
 
 /// Which wlr-layer-shell layer the surface is created on.
 ///
-/// `Overlay` sits above fullscreen windows; `Top` sits below them but tends
-/// to behave better with input methods (see the README's known-risks section).
+/// `Top` — the default — sits below fullscreen windows but tends to behave
+/// better with input methods; `Overlay` sits above them (see the README's
+/// known-risks section).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Layer {
-    #[default]
     Overlay,
+    #[default]
     Top,
 }
 

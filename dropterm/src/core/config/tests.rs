@@ -189,7 +189,7 @@ fn defaults_are_sane() {
     assert_eq!(config.width_percent, DEFAULT_WIDTH_PERCENT);
     assert_eq!(config.h_align, HAlign::Center);
     assert_eq!(config.edge, Edge::Top);
-    assert_eq!(config.layer, Layer::Overlay);
+    assert_eq!(config.layer, Layer::Top);
     // The single tab's row ships hidden — kitty's own default
     // (`tab_bar_min_tabs 2`), today's behavior bit-for-bit.
     assert_eq!(config.tab_bar_min_tabs, 2);
