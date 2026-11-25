@@ -54,7 +54,8 @@ use crate::tab_bar;
 use crate::terminal::view::{self, TerminalPane};
 
 // The close-confirm modal's Escape (bound in the `close-confirm`
-// key context; every other key the modal holds is swallowed — no
+// key context; the modal's Tab and Enter ride its own key-down
+// listener — the verbs — and every other key is swallowed — no
 // binds fire, nothing types).
 gpui::actions!(
     dropterm_gpui,
@@ -69,6 +70,18 @@ gpui::actions!(
 /// The modal callback shape: the dismissal paths hand the shell both
 /// halves the strip's callbacks get.
 type ModalFn = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// The modal's key-down sink: every keystroke the `close-confirm`
+/// context sees while the modal holds the keyboard — Tab cycles the
+/// armed verb, Enter presses it, the rest dies on the path. The
+/// three references ride their own lifetimes: the sink hands itself
+/// straight to `on_key_down`'s `for<'a, 'b, 'c>` bound.
+type ModalKeyFn =
+    std::rc::Rc<dyn for<'a, 'b, 'c> Fn(&'a gpui::KeyDownEvent, &'b mut Window, &'c mut App)>;
+
+/// The confirm modal's verb count — the row's shape and the keyboard
+/// cycle's bound move together (0 cancel, 1 proceed).
+const CLOSE_CONFIRM_VERBS: usize = 2;
 
 /// The evidence walks' deterministic exit (a scaffold affordance, not
 /// a feature): `DROPTERM_EXIT_AFTER_MS`, read once at boot. Unset —
@@ -480,6 +493,11 @@ pub(crate) struct Shell {
     /// the modal waits (the pane's render-time claim defers to it),
     /// handed back to the active pane when the decision resolves.
     modal_focus: gpui::FocusHandle,
+    /// The confirm modal's armed verb (`None` while the modal's
+    /// container holds the keyboard itself): Tab cycles, Enter
+    /// presses — the dialog slot's own shape. Reset at every arm and
+    /// every resolution, so a fresh modal opens unarmed.
+    close_confirm_focused: Option<usize>,
     /// The command palette (command-palette spec): `Some` while the
     /// palette stands open — the entity is built at open over a fresh
     /// compose (the live inputs read at open: tab titles, profile
@@ -916,6 +934,7 @@ impl Shell {
             pending_startup: Some(startup),
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
+            close_confirm_focused: None,
             rename: None,
             settings: crate::settings::SettingsState {
                 summon: load_summon_snapshot(),
@@ -3092,6 +3111,7 @@ impl Shell {
             .is_some_and(|pane| pane.read(cx).foreground_child_running());
         if tab_bar::confirm_needed(self.config.close_confirmation_enabled, running) {
             self.pending_close = Some(id);
+            self.close_confirm_focused = None;
             self.modal_focus.focus(window, cx);
             println!(
                 "dropterm: close {id:?} gated -> the confirm modal armed at +{}ms",
@@ -3112,6 +3132,7 @@ impl Shell {
     fn close_now(&mut self, id: TabId, cx: &mut Context<Self>) {
         if self.pending_close == Some(id) {
             self.pending_close = None;
+            self.close_confirm_focused = None;
         }
         let Some(decision) = self.tabs.close(id) else {
             return;
@@ -3172,6 +3193,7 @@ impl Shell {
     /// back).
     fn cancel_pending_close(&mut self) {
         if let Some(id) = self.pending_close.take() {
+            self.close_confirm_focused = None;
             println!(
                 "dropterm: close {id:?} canceled (modal dismissed) at +{}ms",
                 self.boot.elapsed().as_millis()
@@ -3948,6 +3970,7 @@ impl Shell {
             .is_some_and(|pane| pane.read(cx).foreground_child_running());
         if tab_bar::confirm_needed(self.config.close_confirmation_enabled, running) {
             self.pending_close = Some(id);
+            self.close_confirm_focused = None;
             println!(
                 "dropterm: close {id:?} gated -> the confirm modal armed (windowless) \
                  at +{}ms",
@@ -6436,9 +6459,10 @@ impl Shell {
     /// armed-only (no pending close passes the band through
     /// untouched): a full-surface scrim whose press cancels, carrying
     /// a centered card naming the tab by its title only — never the
-    /// process name — with the modal holding the keyboard (its key
-    /// context swallows everything but Escape, the reference bar's
-    /// own routing). The layer itself is [`close_confirm_layer`]'s.
+    /// process name — with the modal holding the keyboard (Escape
+    /// rides its dismissal action; Tab cycles and Enter presses the
+    /// verbs; every other key is swallowed — the reference bar's own
+    /// routing). The layer itself is [`close_confirm_layer`]'s.
     fn close_confirm_modal(
         &self,
         pending: TabId,
@@ -6469,6 +6493,42 @@ impl Shell {
         let pane_background = resolve_theme(&self.config, &self.user_schemes).colors
             [alacritty_terminal::vte::ansi::NamedColor::Background];
         let colors = tab_bar::strip_pair(pane_background);
+        // The modal's keyboard (the dialog slot's own shape): Tab
+        // cycles the armed verb, Enter presses it, everything else
+        // dies on the path. The listener rides the shell — the armed
+        // index is the shell's own slot — and stop-propagation keeps
+        // the Kit Root's traversal from walking a real focus onto the
+        // buttons (the render's keyboard hold would yank it back the
+        // very next frame; the ring is the armed wrapper instead).
+        let key_down: ModalKeyFn = std::rc::Rc::new(cx.listener(
+            move |this, event: &gpui::KeyDownEvent, _window: &mut Window, cx| {
+                match event.keystroke.key.as_str() {
+                    "tab" => {
+                        cx.stop_propagation();
+                        this.close_confirm_focused =
+                            match (this.close_confirm_focused, event.keystroke.modifiers.shift) {
+                                (None, false) => Some(0),
+                                (None, true) => Some(CLOSE_CONFIRM_VERBS - 1),
+                                (Some(index), false) => Some((index + 1) % CLOSE_CONFIRM_VERBS),
+                                (Some(index), true) => {
+                                    Some((index + CLOSE_CONFIRM_VERBS - 1) % CLOSE_CONFIRM_VERBS)
+                                }
+                            };
+                        cx.notify();
+                    }
+                    "enter" | "space" => {
+                        if let Some(index) = this.close_confirm_focused {
+                            cx.stop_propagation();
+                            match index {
+                                0 => this.cancel_pending_close(),
+                                _ => this.close_now(pending, cx),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        ));
         close_confirm_layer(
             &title,
             colors,
@@ -6476,6 +6536,8 @@ impl Shell {
             band.into_any_element(),
             &cancel,
             &proceed,
+            self.close_confirm_focused,
+            key_down,
         )
     }
 }
@@ -6496,6 +6558,24 @@ fn confirm_verb(id: &'static str, label: &'static str, danger: bool, on_press: M
     button.on_click(move |_: &gpui::ClickEvent, window, cx| on_press(window, cx))
 }
 
+/// The armed verb's keyboard hand (the dialog slot's own wrapper):
+/// the focused one hairlined in the card's foreground — the Kit
+/// Button's own ring can't serve, it lights on real window focus and
+/// the modal's keyboard hold never leaves its container — and both
+/// arms wrapped, so the row's layout never shifts between them.
+fn armed_verb(verb: Button, armed: bool, fg: gpui::Hsla) -> gpui::AnyElement {
+    if armed {
+        gpui::div()
+            .border_1()
+            .border_color(fg)
+            .rounded_md()
+            .child(verb)
+            .into_any_element()
+    } else {
+        gpui::div().child(verb).into_any_element()
+    }
+}
+
 /// The pending close-confirmation's overlay: the band beneath, a
 /// full-surface scrim over it whose press cancels, and the centered
 /// card above both. The card occludes (this gpui's dispatch rule,
@@ -6504,10 +6584,16 @@ fn confirm_verb(id: &'static str, label: &'static str, danger: bool, on_press: M
 /// one — without the occlusion every card press is also the scrim's
 /// cancel), and its verbs are Kit Buttons so the hand gets hover and
 /// pressed feedback. The passed focus handle is the modal's keyboard
-/// hold: the `close-confirm` key context swallows everything but
-/// Escape, which rides the dismissal action back into the cancel
-/// verb. The colors are the strip's own `(card, fg)` pair; the
-/// hairline is that fg at the border alpha.
+/// hold: the `close-confirm` key context routes Escape to the
+/// dismissal action and the passed key-down sink cycles and presses
+/// the verbs, while every other key dies on the path. The armed
+/// index wraps its verb in the hairline ring (the dialog slot's own
+/// hand for the keyboard). The colors are the strip's own `(card,
+/// fg)` pair; the hairline is that fg at the border alpha.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the layer's whole contract rides one call: the card's copy, the two verbs, the keyboard hold and its sink"
+)]
 fn close_confirm_layer(
     title: &str,
     colors: (gpui::Hsla, gpui::Hsla),
@@ -6515,6 +6601,8 @@ fn close_confirm_layer(
     band: gpui::AnyElement,
     cancel: &ModalFn,
     proceed: &ModalFn,
+    armed: Option<usize>,
+    key_down: ModalKeyFn,
 ) -> gpui::AnyElement {
     let (card_color, fg) = colors;
     let hairline = gpui::Hsla {
@@ -6545,17 +6633,25 @@ fn close_confirm_layer(
                 .flex_row()
                 .gap(gpui::px(8.))
                 .justify_end()
-                .child(confirm_verb(
-                    "close-confirm-cancel",
-                    "Cancel",
-                    false,
-                    std::rc::Rc::clone(cancel),
+                .child(armed_verb(
+                    confirm_verb(
+                        "close-confirm-cancel",
+                        "Cancel",
+                        false,
+                        std::rc::Rc::clone(cancel),
+                    ),
+                    armed == Some(0),
+                    fg,
                 ))
-                .child(confirm_verb(
-                    "close-confirm-proceed",
-                    "Close Tab",
-                    true,
-                    std::rc::Rc::clone(proceed),
+                .child(armed_verb(
+                    confirm_verb(
+                        "close-confirm-proceed",
+                        "Close Tab",
+                        true,
+                        std::rc::Rc::clone(proceed),
+                    ),
+                    armed == Some(1),
+                    fg,
                 )),
         );
     div()
@@ -6572,11 +6668,19 @@ fn close_confirm_layer(
                 .justify_center()
                 // The modal's keyboard: it holds focus while
                 // pending (the pane's claim defers), its context
-                // binds Escape to the dismissal, and every other
+                // binds Escape to the dismissal, the passed sink
+                // cycles and presses the verbs, and every other
                 // key dies on the path — no binds fire, nothing
                 // types.
                 .key_context("close-confirm")
                 .track_focus(focus)
+                // The sink rides a fresh closure, not itself: gpui's
+                // key-down bound wants the closure's own HRTB, and a
+                // handed-through Rc<dyn Fn> reads as one fixed
+                // instantiation.
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    key_down(event, window, cx);
+                })
                 .on_action({
                     let cancel = std::rc::Rc::clone(cancel);
                     move |_: &DismissCloseConfirm, window: &mut Window, cx: &mut App| {
@@ -7057,6 +7161,8 @@ pub(crate) fn boot(
     // The close-confirm modal's Escape (gpui-tabs Task 2): bound in
     // the modal's own key context, so the key reaches the dismissal
     // while the modal holds the keyboard and dies there otherwise.
+    // The verbs' Tab and Enter ride the layer's own key-down sink,
+    // never this map.
     cx.bind_keys([
         gpui::KeyBinding::new("escape", DismissCloseConfirm, Some("close-confirm")),
         gpui::KeyBinding::new("escape", DismissPalette, Some("palette")),
@@ -7939,13 +8045,18 @@ mod tests {
     struct CloseConfirmProbe {
         fired: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
         focus: gpui::FocusHandle,
+        /// The armed verb — the shell's own slot in miniature, and
+        /// the key-down sink below its listener in miniature: the
+        /// pair is written to mirror `close_confirm_modal`'s, so a
+        /// drift on either side fails these walks.
+        armed: std::cell::Cell<Option<usize>>,
     }
 
     impl gpui::Render for CloseConfirmProbe {
         fn render(
             &mut self,
             _window: &mut Window,
-            _cx: &mut gpui::Context<Self>,
+            cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             let cancel: ModalFn = {
                 let fired = std::rc::Rc::clone(&self.fired);
@@ -7955,6 +8066,42 @@ mod tests {
                 let fired = std::rc::Rc::clone(&self.fired);
                 std::rc::Rc::new(move |_, _| fired.borrow_mut().push("proceed"))
             };
+            // The probe's own sink, the shell's listener mirrored:
+            // Tab cycles the armed slot, Enter presses it, the rest
+            // dies on the path. The verbs ride in cloned, the
+            // originals stay for the layer's click wiring.
+            let listener_cancel = std::rc::Rc::clone(&cancel);
+            let listener_proceed = std::rc::Rc::clone(&proceed);
+            let key_down: ModalKeyFn = std::rc::Rc::new(cx.listener(
+                move |this, event: &gpui::KeyDownEvent, window: &mut Window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "tab" => {
+                            cx.stop_propagation();
+                            this.armed.set(
+                                match (this.armed.get(), event.keystroke.modifiers.shift) {
+                                    (None, false) => Some(0),
+                                    (None, true) => Some(CLOSE_CONFIRM_VERBS - 1),
+                                    (Some(index), false) => Some((index + 1) % CLOSE_CONFIRM_VERBS),
+                                    (Some(index), true) => Some(
+                                        (index + CLOSE_CONFIRM_VERBS - 1) % CLOSE_CONFIRM_VERBS,
+                                    ),
+                                },
+                            );
+                            cx.notify();
+                        }
+                        "enter" | "space" => {
+                            if let Some(index) = this.armed.get() {
+                                cx.stop_propagation();
+                                match index {
+                                    0 => listener_cancel(window, cx),
+                                    _ => listener_proceed(window, cx),
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                },
+            ));
             let colors = tab_bar::strip_pair(None);
             close_confirm_layer(
                 "probe",
@@ -7963,8 +8110,61 @@ mod tests {
                 gpui::div().into_any_element(),
                 &cancel,
                 &proceed,
+                self.armed.get(),
+                key_down,
             )
         }
+    }
+
+    /// The close-confirm probe's mount: the modal layer as a probe
+    /// window's root, drawn once, its keyboard focused — the
+    /// palette's own harness shape.
+    fn mount_close_confirm_probe(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        gpui::VisualTestContext,
+        gpui::Entity<CloseConfirmProbe>,
+        std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    ) {
+        cx.update(gpui_component::init);
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let probe = std::rc::Rc::clone(&fired);
+        let handle = cx.update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::size(px(640.), px(400.)),
+                    })),
+                    ..Default::default()
+                },
+                |_, cx| {
+                    cx.new(|cx| CloseConfirmProbe {
+                        fired: probe,
+                        focus: cx.focus_handle(),
+                        armed: std::cell::Cell::new(None),
+                    })
+                },
+            )
+            .expect("open the modal probe window")
+        });
+        let entity: gpui::Entity<CloseConfirmProbe> =
+            cx.update(|cx| handle.root(cx).expect("the probe is its window's root"));
+        let mut cx = gpui::VisualTestContext::from_window(handle.into(), cx);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        // The layer's keyboard hold: focused, the modal's standing
+        // shape once the shell's arm has taken the seat.
+        cx.update(|window, cx| {
+            let focus = entity.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        (cx, entity, fired)
     }
 
     #[gpui::test]
@@ -8020,33 +8220,7 @@ mod tests {
         // scrim is the one cancel. The nested build without the
         // occlusion saw every card press bubble into the scrim and
         // cancel under the user's hand.
-        cx.update(gpui_component::init);
-        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let probe = std::rc::Rc::clone(&fired);
-        let handle = cx
-            .update(|cx| {
-                cx.open_window(
-                    gpui::WindowOptions {
-                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
-                            origin: gpui::Point::default(),
-                            size: gpui::size(px(640.), px(400.)),
-                        })),
-                        ..Default::default()
-                    },
-                    |_, cx| {
-                        cx.new(|cx| CloseConfirmProbe {
-                            fired: probe,
-                            focus: cx.focus_handle(),
-                        })
-                    },
-                )
-            })
-            .expect("open the modal probe window");
-        let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
-        cx.update(|window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-        });
+        let (mut cx, _entity, fired) = mount_close_confirm_probe(cx);
 
         // The card's bare interior (the centered 320 px card holds
         // this seat; the right-justified verbs sit far right of it).
@@ -8063,6 +8237,54 @@ mod tests {
             *fired.borrow(),
             vec!["cancel"],
             "the scrim press must be the one cancel"
+        );
+    }
+
+    #[gpui::test]
+    fn one_tab_arms_cancel_and_enter_presses_it(cx: &mut gpui::TestAppContext) {
+        // The close-confirm keyboard's own pin, the dialog slot's
+        // walk mirrored: Tab arms the first verb with the ring, Enter
+        // presses it — before this fix the modal had no Tab handling
+        // at all, and the Kit Root's traversal ate the press (no
+        // ring, no arm, a dead keyboard save Escape).
+        let (mut cx, _entity, fired) = mount_close_confirm_probe(cx);
+        cx.simulate_keystrokes("tab enter");
+        assert_eq!(
+            *fired.borrow(),
+            ["cancel"],
+            "Tab arms the first verb, Enter presses it"
+        );
+    }
+
+    #[gpui::test]
+    fn two_tabs_cycle_to_proceed(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _entity, fired) = mount_close_confirm_probe(cx);
+        cx.simulate_keystrokes("tab tab enter");
+        assert_eq!(
+            *fired.borrow(),
+            ["proceed"],
+            "two Tabs cycle to the destructive verb"
+        );
+    }
+
+    #[gpui::test]
+    fn shift_tab_cycles_back(cx: &mut gpui::TestAppContext) {
+        let (mut cx, _entity, fired) = mount_close_confirm_probe(cx);
+        cx.simulate_keystrokes("tab tab shift-tab enter");
+        assert_eq!(*fired.borrow(), ["cancel"], "Shift-Tab cycles back");
+    }
+
+    #[gpui::test]
+    fn an_unarmed_enter_is_swallowed(cx: &mut gpui::TestAppContext) {
+        // The swallow rule's edge: with no verb armed, Enter dies on
+        // the path — never a silent proceed on a modal the keyboard
+        // never walked.
+        let (mut cx, _entity, fired) = mount_close_confirm_probe(cx);
+        cx.simulate_keystrokes("enter");
+        assert!(
+            fired.borrow().is_empty(),
+            "an unarmed Enter must not fire any verb: {:?}",
+            fired.borrow()
         );
     }
 
