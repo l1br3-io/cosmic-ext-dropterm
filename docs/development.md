@@ -139,8 +139,10 @@ The checklist's runtime rows in [testing.md](testing.md) need a live
 COSMIC session; the validation VM is where they walk when no spare
 hardware is at hand. The guest is a Pop!_OS 24.04 COSMIC image under
 virt-manager/QEMU — `/dev/kvm`, virtio-gpu with virgl: cosmic-comp
-renders GLES and libcosmic falls back to GL, so no guest Vulkan is
-needed (cosmic-epoch#3831/#3844). One-time guest setup: install
+renders GLES and the GPUI frontend draws on the same GL stack (the
+[gpui-spike](research/gpui-spike.md) walked this VM on llvmpipe
+fallback), so no guest Vulkan is needed (cosmic-epoch#3831/#3844).
+One-time guest setup: install
 `qemu-guest-agent` (the harness's only channel in — no SSH), auto-login
 via greetd so reboots return to the desktop unattended, then snapshot
 the stock state and name it; every walk rewinds to it first.

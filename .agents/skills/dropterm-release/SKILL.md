@@ -244,7 +244,7 @@ Verification is green, not that the steps ran.
   means stop and investigate.
 - **Half-release tree** (the recipe died mid-run after the bump, and
   re-running refuses on "already reads X.Y.Z") → reset the version
-  files to HEAD (`git checkout -- Cargo.toml applet/Cargo.toml
+  files to HEAD (`git checkout -- dropterm/Cargo.toml
   Cargo.lock`) and re-run the recipe — the recipe does the whole
   bump; never hand-roll the remainder.
 - **Wrong commit tagged locally** (pre-push) → the maintainer deletes

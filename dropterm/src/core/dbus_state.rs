@@ -9,22 +9,23 @@
 //! the bus name and object path the app owns itself (the
 //! control-transport package: `DropTerm` owns its bus name; libcosmic's
 //! `single-instance` feature used to). The module deliberately keeps
-//! the app's types out: it lives in `dropterm-core` so the panel applet
-//! and every frontend consume the same contract implementation, and the
-//! app converts its own state into the types defined here.
+//! the app's types out: it lived in `dropterm-core` so the panel applet
+//! and every frontend consumed the same contract implementation, and
+//! the cu-4 collapse folded it into this crate, where the app still
+//! converts its own state into the types defined here.
 //!
-//! The applet-facing contract is [`BUS_NAME`], [`OBJECT_PATH`],
-//! [`INTERFACE`], [`State`], and the [`V1InterfaceProxy`] client (plus
-//! the [`V1`] server, which the applet's wire tests use as a mock).
-//! The remaining items are `pub` because the terminal bin and the
-//! applet reach them through this crate as well.
+//! The wire contract is [`BUS_NAME`], [`OBJECT_PATH`], [`INTERFACE`],
+//! [`State`], and the [`V1InterfaceProxy`] client (plus the [`V1`]
+//! server, which the wire tests use as a mock). The remaining items
+//! are `pub` for the in-crate consumers: the CLI's query path and the
+//! tests.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use zbus::{interface, proxy};
 
-/// Bus name the running instance owns (libcosmic single-instance) —
+/// Bus name the running instance owns (libcosmic single-instance heritage) —
 /// this build's identity; core's [`crate::core::APP_ID`] is the single
 /// source of truth.
 pub const BUS_NAME: &str = crate::core::APP_ID;
@@ -147,8 +148,8 @@ impl V1 {
 }
 
 /// Client side of the V1 interface, generated from the same contract.
-/// The CLI's `--is-visible` query and the panel applet both go through
-/// this proxy. No `default_service`/`default_path`: proxy attributes
+/// The CLI's `--is-visible` query goes through this proxy. No
+/// `default_service`/`default_path`: proxy attributes
 /// take literals, which would pin the release identity into dev
 /// builds — the generated constructor instead demands the names, and
 /// every caller passes [`BUS_NAME`]/[`OBJECT_PATH`].
@@ -948,8 +949,8 @@ mod tests {
                     .find(|(name, _)| *name == "io.github.l1br3_io.dropterm.V1")
                     .expect("V1 served")
                     .1;
-                // V1 is exactly the two read-only properties the
-                // applet and --is-visible speak; it has no methods.
+                // V1 is exactly the two read-only properties
+                // --is-visible speaks; it has no methods.
                 assert!(
                     methods(v1).is_empty(),
                     "V1 serves no methods: {:?}",

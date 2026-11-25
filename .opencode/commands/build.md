@@ -32,13 +32,13 @@ Chunks are the **only** source of tasks. If `SPEC.md` or the target module's `SP
 
 Before writing any code, work out what the task actually involves, then let the `Intent → skill mapping` in AGENTS.md decide which skills to load on top of `incremental-implementation` + `test-driven-development`.
 
-1. **Detect the stack.** Read `Cargo.toml` and the files the chunk lists to pin down what the task touches — plain Rust logic, libcosmic / COSMIC APIs, Wayland layer-shell, config parsing, or the PTY/terminal engine.
+1. **Detect the stack.** Read `Cargo.toml` and the files the chunk lists to pin down what the task touches — plain Rust logic, GPUI / gpui-component Kit APIs, Wayland layer-shell, config parsing, or the PTY/terminal engine.
 2. **Map the intent.** Consult the `Intent → skill mapping` in AGENTS.md and load every skill the task's intent matches. For this repo that means:
    - Rust code / review → `rust-best-practices` (load for every Rust task)
    - New module boundary or public interface → `api-and-interface-design`
    - Untrusted input, auth, secrets, config → `security-and-hardening`
    - Performance-sensitive path or suspected regression → `performance-optimization`
-3. **Verify unfamiliar APIs.** When the task calls a libcosmic / COSMIC API you'd otherwise write from memory, ground it in official docs (`source-driven-development`) rather than trusting training data.
+3. **Verify unfamiliar APIs.** When the task calls a GPUI / Kit API you'd otherwise write from memory, ground it in official docs (`source-driven-development`) rather than trusting training data.
 
 The mapping — not this file — is the authority on which skill governs an intent. If the task matches an entry listed there, load it.
 

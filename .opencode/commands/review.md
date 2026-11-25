@@ -4,7 +4,7 @@ description: Conduct a five-axis code review — correctness, readability, archi
 
 Load the `code-review-and-quality` skill with the `skill` tool.
 
-Detect the tech stack first (this is Rust on libcosmic), then consult the `Intent → skill mapping` in AGENTS.md and load every skill the change's intent matches — at minimum `rust-best-practices` for the Rust code, plus `security-and-hardening` and `performance-optimization` when those axes are implicated.
+Detect the tech stack first (this is Rust on GPUI, the gpui-component Kit), then consult the `Intent → skill mapping` in AGENTS.md and load every skill the change's intent matches — at minimum `rust-best-practices` for the Rust code, plus `security-and-hardening` and `performance-optimization` when those axes are implicated.
 
 Review the current changes (staged or recent commits) across all five axes:
 

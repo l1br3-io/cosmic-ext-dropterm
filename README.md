@@ -22,7 +22,7 @@ tar -xzf dropterm-0.5.0-x86_64.tar.gz
 sudo cp -a usr/. /usr/
 ```
 
-ARM machines take the `dropterm-0.5.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot (git-pinned libcosmic included) for `just build-vendored` offline rebuilds. To uninstall, remove the two `dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.dropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
+ARM machines take the `dropterm-0.5.0-aarch64.tar.gz` asset instead. The release also ships `vendor.tar`, the complete dependency snapshot for `just build-vendored` offline rebuilds. To uninstall, remove the two `dropterm*` binaries from `/usr/bin` and the `io.github.l1br3_io.dropterm*` files under `/usr/share/{applications,icons,metainfo}/` — or, from a source checkout, `sudo just uninstall`.
 
 ### From source
 
