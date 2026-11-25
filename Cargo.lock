@@ -7613,7 +7613,6 @@ dependencies = [
 [[package]]
 name = "vte"
 version = "0.15.0"
-source = "git+https://github.com/l1br3-io/vte?rev=52dadb7b7ccc0429439c662490bd603824bd35c0#52dadb7b7ccc0429439c662490bd603824bd35c0"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",

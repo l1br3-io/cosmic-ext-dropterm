@@ -12,7 +12,7 @@ resolver = "3"
 # finished with code N" (OSC 133;D, FinalTerm/contour shell
 # integration) is parsed nowhere upstream — vte 0.15.0's ansi table
 # log-drops unknown codes and alacritty_terminal 0.25.1 holds no
-# parser at all. Two one-arm forks carry the passthrough (branch
+# parser at all. Two one-arm forks carried the passthrough (branch
 # dropterm-osc133d each, based on the exact crates.io publish
 # commits, so the patched sources are the lockfile's versions plus
 # the one arm): vte parses `133;D;<code>` into a default-no-op
@@ -22,8 +22,16 @@ resolver = "3"
 # crate. Upstreaming: PRs to alacritty/vte and alacritty/alacritty
 # are the follow-up once the module proves out. The wide-reflow carry
 # below adds a second alacritty-side reason to that ask (ram-leak).
+#
+# The vte entry flipped git → path (shell-integration SI-2, the
+# alacritty-terminal discipline): the fork's exact 52dadb7 sources
+# live at carried/vte with the three remaining OSC 133 arms added —
+# `133;A`/`133;C` parse into default-no-op Handler methods the fork
+# above implements as events, `133;B` parses into a no-op nobody
+# overrides. The pre-carry pin, for the retirement's re-pin:
+#   vte = { git = "https://github.com/l1br3-io/vte", rev = "52dadb7b7ccc0429439c662490bd603824bd35c0" }
 [patch.crates-io]
-vte = { git = "https://github.com/l1br3-io/vte", rev = "52dadb7b7ccc0429439c662490bd603824bd35c0" }
+vte = { path = "carried/vte" }
 # The wide-reflow carry (ram-leak rl-3, ruled 2026-11-17 by the
 # owner: carried path, kit-root-border shape): the fork's exact
 # 1185ffd sources (OSC 133;D arm included) live at
