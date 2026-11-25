@@ -43,6 +43,7 @@ pub mod lua_host;
 pub mod mem;
 pub mod palette;
 pub mod paste_cache;
+pub mod plugins_manifest;
 pub mod profile;
 pub mod session;
 pub mod settings;
