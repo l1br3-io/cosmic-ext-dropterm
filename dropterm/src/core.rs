@@ -46,6 +46,7 @@ pub mod paste_cache;
 pub mod profile;
 pub mod session;
 pub mod settings;
+pub mod shell_integration;
 pub mod slide;
 pub mod slots;
 pub mod spawn;
