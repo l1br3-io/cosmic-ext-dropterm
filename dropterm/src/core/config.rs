@@ -674,6 +674,16 @@ pub struct DropTermConfig {
     /// at cold startup while no summon binding exists, and a bound
     /// key retires it regardless of this flag.
     pub onboarding_dismissed: bool,
+    /// The shell-integration kill switch (shell-integration spec):
+    /// with it on — the default — every spawned bash/zsh/fish is
+    /// injected with `DropTerm`'s own emitters (argv/env only, never an
+    /// rc file edited), so prompt marks, exit codes, and cwd reports
+    /// arrive with no user configuration and the rich-input prompt
+    /// truth reads the shell's own marks. `false` skips the whole
+    /// path — no materialization, no argv/env change — and today's
+    /// passive behavior stands byte-identical. Read once per spawn:
+    /// a flip governs the shells spawned after it.
+    pub shell_integration: bool,
 }
 
 impl Default for DropTermConfig {
@@ -751,6 +761,7 @@ impl Default for DropTermConfig {
             autosuggestions_completions_extended: true,
             images_enabled: true,
             onboarding_dismissed: false,
+            shell_integration: true,
         }
     }
 }

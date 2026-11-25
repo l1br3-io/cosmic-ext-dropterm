@@ -1022,6 +1022,46 @@ fn missing_status_bar_border_key_loads_as_true() {
 }
 
 #[test]
+fn shell_integration_defaults_on() {
+    // The integration ships injected (shell-integration spec, the
+    // map row's ruling): every spawned bash/zsh/fish reports the
+    // prompt marks, exit codes, and cwd with no user configuration.
+    assert!(DropTermConfig::default().shell_integration);
+}
+
+#[test]
+fn a_disabled_shell_integration_config_round_trips_through_the_store() {
+    // The kill-switch persists (the control for the default-on pin:
+    // a present `false` is honored, not defaulted over) — off means
+    // no materialization, no argv/env change, byte-identical spawns.
+    let dir = TempDir::new("shell-integration-off");
+    let stored = DropTermConfig {
+        shell_integration: false,
+        ..DropTermConfig::default()
+    };
+    save_sections(&dir, &stored);
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded, stored);
+    assert!(!loaded.shell_integration);
+}
+
+#[test]
+fn missing_shell_integration_key_loads_as_true() {
+    // A settings section from before the integration (every config
+    // today): the whole-struct `#[serde(default)]` backfills `true`,
+    // so existing installs gain the integration, never a silently
+    // off key (the additive-load contract).
+    let dir = TempDir::new("missing-shell-integration");
+    write_section(&dir, store::SETTINGS_FILE, "(height_percent: 70)");
+
+    let loaded = load_config(&dir);
+    assert!(loaded.shell_integration);
+    // The file is live, not ignored: the written key comes back.
+    assert_eq!(loaded.height_percent, 70);
+}
+
+#[test]
 fn hidden_segments_round_trip_through_the_config_store() {
     // Every off state persists across a write→load cycle (the
     // control for the missing-key pin: present `false` keys are

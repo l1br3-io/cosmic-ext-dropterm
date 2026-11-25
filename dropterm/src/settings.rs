@@ -888,6 +888,7 @@ fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
             config.autosuggestions_completions_extended
         }
         ConfigKey::ImagesEnabled => config.images_enabled,
+        ConfigKey::ShellIntegration => config.shell_integration,
         ConfigKey::NewTabAfterCurrent => config.new_tab_after_current,
         ConfigKey::CloseConfirmationEnabled => config.close_confirmation_enabled,
         ConfigKey::RespectPanel => config.respect_panel,

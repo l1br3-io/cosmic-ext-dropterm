@@ -166,12 +166,12 @@ fn a_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
-fn the_exactly_once_count_is_63() {
-    // The rich-input rebuild (RI-1): the three superseded
-    // autosuggestions keys culled, the eleven decoupled input keys
-    // added — the section-hosted map sits at 63, one planned-write
-    // variant per exposed key, each in exactly one section.
-    assert_eq!(section_keys().len(), 63);
+fn the_exactly_once_count_is_64() {
+    // The rich-input rebuild (RI-1) sat the map at 63; the shell
+    // integration's kill switch (SI-1) adds its row — one
+    // planned-write variant per exposed key, each in exactly one
+    // section.
+    assert_eq!(section_keys().len(), 64);
 }
 
 #[test]
@@ -210,6 +210,7 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::AutosuggestionsCompletionsExtended(true),
         PlannedWrite::AutosuggestionsDelayMs(0),
         PlannedWrite::ImagesEnabled(true),
+        PlannedWrite::ShellIntegration(true),
         PlannedWrite::TabTitleMode(TabTitleMode::Shell),
         PlannedWrite::TabBarMinTabs(2),
         PlannedWrite::NewTabAfterCurrent(true),
@@ -945,6 +946,7 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
             ConfigKey::CommandFinishNotificationEnabled,
             ConfigKey::CommandFinishNotificationAfterSecs,
             ConfigKey::ImagesEnabled,
+            ConfigKey::ShellIntegration,
         ]
     );
     assert_eq!(
@@ -970,6 +972,13 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
     assert_eq!(
         toggle_write(ConfigKey::BellNotificationEnabled, false),
         Some(PlannedWrite::BellNotificationEnabled(false))
+    );
+    // The integration's kill switch rides the Terminal card too —
+    // the toggle is the one write path (SI-1: vocabulary first, no
+    // behavior behind it yet).
+    assert_eq!(
+        toggle_write(ConfigKey::ShellIntegration, false),
+        Some(PlannedWrite::ShellIntegration(false))
     );
     // The ghost's own toggle rides the Auto complete card, flipping
     // live through the same single planned-write path — and the path

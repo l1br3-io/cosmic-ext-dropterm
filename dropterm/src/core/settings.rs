@@ -135,6 +135,7 @@ impl Section {
                 ConfigKey::CommandFinishNotificationEnabled,
                 ConfigKey::CommandFinishNotificationAfterSecs,
                 ConfigKey::ImagesEnabled,
+                ConfigKey::ShellIntegration,
             ],
             Section::AutoComplete => &[
                 ConfigKey::InputMode,
@@ -270,6 +271,11 @@ pub enum ConfigKey {
     /// cells and stored pixels stand either way. Sixel stays
     /// deferred; `inline=0` renders nothing whatever the key says.
     ImagesEnabled,
+    /// The shell-integration kill switch (shell-integration spec) —
+    /// the Terminal card's toggle: on, spawned bash/zsh/fish carry
+    /// `DropTerm`'s own emitters (prompt marks, exit codes, cwd);
+    /// `false` spawns every shell untouched. Read once per spawn.
+    ShellIntegration,
     TabTitleMode,
     NewTabAfterCurrent,
     NewTabCwd,
@@ -499,6 +505,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsCommandsEnabled => "autosuggestions_commands_enabled",
             ConfigKey::AutosuggestionsCompletionsExtended => "autosuggestions_completions_extended",
             ConfigKey::ImagesEnabled => "images_enabled",
+            ConfigKey::ShellIntegration => "shell_integration",
             ConfigKey::AutosuggestionsDelayMs => "autosuggestions_delay_ms",
             ConfigKey::TabTitleMode => "tab_title_mode",
             ConfigKey::NewTabAfterCurrent => "new_tab_after_current",
@@ -579,6 +586,7 @@ pub enum PlannedWrite {
     AutosuggestionsCommandsEnabled(bool),
     AutosuggestionsCompletionsExtended(bool),
     ImagesEnabled(bool),
+    ShellIntegration(bool),
     AutosuggestionsDelayMs(u16),
     TabTitleMode(TabTitleMode),
     NewTabAfterCurrent(bool),
@@ -697,6 +705,7 @@ impl PlannedWrite {
                 ConfigKey::AutosuggestionsCompletionsExtended
             }
             PlannedWrite::ImagesEnabled(_) => ConfigKey::ImagesEnabled,
+            PlannedWrite::ShellIntegration(_) => ConfigKey::ShellIntegration,
             PlannedWrite::AutosuggestionsDelayMs(_) => ConfigKey::AutosuggestionsDelayMs,
             PlannedWrite::TabTitleMode(_) => ConfigKey::TabTitleMode,
             PlannedWrite::NewTabAfterCurrent(_) => ConfigKey::NewTabAfterCurrent,
@@ -816,6 +825,7 @@ impl PlannedWrite {
                 section.autosuggestions_commands_enabled = *value;
             }
             PlannedWrite::ImagesEnabled(value) => section.images_enabled = *value,
+            PlannedWrite::ShellIntegration(value) => section.shell_integration = *value,
             PlannedWrite::AutosuggestionsCompletionsExtended(value) => {
                 section.autosuggestions_completions_extended = *value;
             }
@@ -1169,7 +1179,12 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::Args
         | ConfigKey::ScrollbackLines
         | ConfigKey::NewTabCwd
-        | ConfigKey::DefaultCwd => ApplyTiming::NewTab,
+        | ConfigKey::DefaultCwd
+        // The integration's decision runs once per spawn (the
+        // shell-integration spec): a flip governs the shells spawned
+        // after it; a standing shell keeps the integration it was
+        // spawned with until it exits.
+        | ConfigKey::ShellIntegration => ApplyTiming::NewTab,
         ConfigKey::SessionPersistenceEnabled
         | ConfigKey::SlideAnimationEnabled
         // The coexist flag rides the trigger-timing group too
@@ -2646,6 +2661,7 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
             Some(PlannedWrite::AutosuggestionsCompletionsExtended(checked))
         }
         ConfigKey::ImagesEnabled => Some(PlannedWrite::ImagesEnabled(checked)),
+        ConfigKey::ShellIntegration => Some(PlannedWrite::ShellIntegration(checked)),
         ConfigKey::NewTabAfterCurrent => Some(PlannedWrite::NewTabAfterCurrent(checked)),
         ConfigKey::CloseConfirmationEnabled => {
             Some(PlannedWrite::CloseConfirmationEnabled(checked))
@@ -2719,6 +2735,7 @@ impl ConfigKey {
             ConfigKey::AutosuggestionsCommandsEnabled => "Command completion",
             ConfigKey::AutosuggestionsCompletionsExtended => "Extended completions",
             ConfigKey::ImagesEnabled => "Inline images",
+            ConfigKey::ShellIntegration => "Shell integration",
             ConfigKey::AutosuggestionsDelayMs => "Suggestion delay (milliseconds)",
             ConfigKey::TabTitleMode => "Tab titles",
             ConfigKey::NewTabAfterCurrent => "New tabs after current tab",
