@@ -5724,3 +5724,84 @@ fn mid_pipeline_lines_complete_their_own_segment() {
         terminal.menu_close();
     }
 }
+
+// --- the conditioned opener's decline (tab-surface TS-1) ---
+
+#[test]
+fn the_conditioned_opener_declines_a_line_nothing_answers() {
+    // The opener's decline over a non-qualifying line: the control
+    // first — the recorded line qualifies — then a typed segment no
+    // provider answers (nothing else is recorded in this harness)
+    // declines: false, the menu closed, the press the caller's to
+    // forward verbatim.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    assert!(
+        !terminal.editor_menu_open("zzz"),
+        "a line no provider answers declines"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}
+
+#[test]
+fn the_conditioned_opener_declines_while_the_pane_is_unfocused() {
+    // The opener's decline behind a closed gate: the same line that
+    // qualifies with the pane focused declines unfocused.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    terminal.set_focused(false);
+    assert!(
+        !terminal.editor_menu_open("sleep 30"),
+        "an unfocused pane declines the qualifying line"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}
+
+#[test]
+fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
+    // The opener's decline behind the menu's own key: the settings
+    // flip's live route (`set_config`) turns the key off, and the
+    // qualifying line declines from then on.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_enabled: false,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert!(
+        !terminal.editor_menu_open("sleep 30"),
+        "the menu's key off declines the qualifying line"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}

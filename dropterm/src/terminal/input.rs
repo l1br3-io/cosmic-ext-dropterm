@@ -1126,7 +1126,8 @@ mod tests {
             KeyInput::Bytes(b"\x7f".to_vec())
         );
         // Ctrl+Backspace sends BS, Alt+Enter the ESC-prefixed CR,
-        // Shift+Tab the back-tab sequence.
+        // Tab the tab byte (the native lane's, and every declined
+        // claim's, forward), Shift+Tab the back-tab sequence.
         assert_eq!(
             translate(
                 &key(ctrl(), "backspace", None),
@@ -1142,6 +1143,14 @@ mod tests {
                 plain_modes()
             ),
             KeyInput::Bytes(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            translate(
+                &key(Modifiers::default(), "tab", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Bytes(b"\x09".to_vec())
         );
         assert_eq!(
             translate(

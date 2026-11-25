@@ -1018,12 +1018,10 @@ impl TerminalPane {
         // with a qualifying row opens the menu; the decline falls
         // through and Tab forwards to the shell verbatim — SP-D10's
         // Tab stays the native lane's rule, the lift is the
-        // editor's own.
-        if !keystroke.modifiers.control
-            && !keystroke.modifiers.alt
-            && !keystroke.modifiers.platform
-            && keystroke.key == "tab"
-        {
+        // editor's own. Bare Tab alone claims (tab-surface OQ-1):
+        // Shift+Tab forwards as the shell's back-tab while the menu
+        // is closed.
+        if editor::opener_claims_tab(keystroke) {
             let (to_caret, _) = self.editor_to_caret();
             if self
                 .terminal
