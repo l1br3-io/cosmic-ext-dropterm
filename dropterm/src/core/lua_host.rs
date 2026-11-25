@@ -294,6 +294,19 @@ pub enum HostEvent {
     /// row set with it, while any persisted `script/<name>` bindings
     /// stay in the file, inert.
     CommandsSync { commands: Vec<CommandRow> },
+    /// One `dropterm.styles(rules)` call (style-engine SE3): the
+    /// caller's whole runtime sheet, parsed host-side by the shared
+    /// validator — the shell replaces that plugin's sheet (the
+    /// `status_segment` replacement-seat discipline).
+    StylesSync {
+        plugin: String,
+        rules: Vec<crate::core::style_engine::Rule>,
+    },
+    /// The interpreter's birth (every generation, including the
+    /// first): every runtime sheet is dead with the interpreter that
+    /// held it — the shell drops all runtime sheets, manifest sheets
+    /// standing. One marker per generation, before any script loads.
+    StylesReset,
     /// One `dropterm.send_text` request (script-commands spec):
     /// fire-and-forget the other way — the tick drain writes the
     /// bytes to the named pane's PTY as raw input (the typed-input
@@ -784,6 +797,11 @@ fn host_thread(plugins_dir: &Path, commands: &Receiver<HostCommand>, events: &Se
             log(events, "host thread up");
             first_generation = false;
         }
+        // A fresh interpreter is a fresh sheet registry (style-engine
+        // SE3): every runtime sheet died with the old generation —
+        // one marker per birth, before any script loads, and the
+        // shell drops all runtime sheets (manifest sheets stand).
+        let _ = events.send(HostEvent::StylesReset);
         // The one load path: the same ten arguments every arm passes,
         // a local closure over the generation's registry tables.
         let load = |state: &mut ActivationState| {
@@ -1531,9 +1549,67 @@ fn install_port(
         },
     )?;
 
+    // The runtime style sheet (style-engine SE3): one call replaces
+    // the caller's whole sheet — the status_segment replacement-seat
+    // discipline. Each rule object parses by the engine's shared
+    // rule parse; the sheet flows shell-ward as one StylesSync
+    // report. A raise inside the table's construction follows the
+    // standing handler error path (the argument conversion).
+    let styles_events = events.clone();
+    let styles_owner = Rc::clone(current_plugin);
+    let styles = lua.create_function(move |lua, rules: Value| {
+        let plugin = styles_owner.borrow().clone().ok_or_else(|| {
+            mlua::Error::RuntimeError(
+                "dropterm.styles outside a plugin script has no owner".to_owned(),
+            )
+        })?;
+        let value = lua.from_value::<serde_json::Value>(rules)?;
+        let Some(array) = value.as_array() else {
+            log(
+                &styles_events,
+                format!("styles: the rules are not an array (plugin '{plugin}')"),
+            );
+            return Ok(());
+        };
+        let mut sheet = Vec::new();
+        for raw_rule in array {
+            let mut rule_logs = Vec::new();
+            let parsed = crate::core::style_engine::parse_rule_object(raw_rule, &mut rule_logs);
+            for line in rule_logs {
+                log(
+                    &styles_events,
+                    format!("styles (plugin '{plugin}'): {line}"),
+                );
+            }
+            if let Some((selector, declarations)) = parsed {
+                sheet.push(crate::core::style_engine::Rule {
+                    origin: crate::core::style_engine::RuleOrigin::Runtime {
+                        plugin: plugin.clone(),
+                    },
+                    selector,
+                    declarations,
+                });
+            }
+        }
+        log(
+            &styles_events,
+            format!(
+                "styles sheet for '{plugin}': {} rule{} applied",
+                sheet.len(),
+                if sheet.len() == 1 { "" } else { "s" }
+            ),
+        );
+        let _ = styles_events.send(HostEvent::StylesSync {
+            plugin,
+            rules: sheet,
+        });
+        Ok(())
+    })?;
+
     let module = lua.create_table()?;
     module.set("on", on)?;
     module.set("emit", emit)?;
+    module.set("styles", styles)?;
     module.set("status_segment", status_segment)?;
     module.set("tab_title", tab_title)?;
     module.set("command", command)?;
@@ -4377,6 +4453,127 @@ mod tests {
         );
     }
 
+    // --- the runtime sheet (style-engine SE3) ---
+
+    /// Every event until the host goes quiet (200 ms with no event):
+    /// the styles verb's whole reaction to one load, sync reports
+    /// included.
+    fn all_events_until_quiet(host: &LuaHost) -> Vec<HostEvent> {
+        let mut events = Vec::new();
+        loop {
+            match host.events.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => events.push(event),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return events,
+            }
+        }
+    }
+
+    /// The `StylesSync` reports from a drained event list, in arrival
+    /// order.
+    fn styles_syncs(events: &[HostEvent]) -> Vec<(String, Vec<crate::core::style_engine::Rule>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::StylesSync { plugin, rules } => Some((plugin.clone(), rules.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_styles_verb_reports_the_whole_sheet_per_call_and_drops_shapes() {
+        let dir = TempDir::new("stylesverb");
+        script(
+            &dir,
+            "styler.lua",
+            &format!(
+                "{PORT}\n\
+                 d.styles({{\n\
+                   {{ selector = 'band.right', declarations = {{ color = 'red' }} }},\n\
+                 }})\n\
+                 d.styles({{\n\
+                   {{ selector = '.warn', declarations = {{ color = 'red', frob = 'x' }} }},\n\
+                   {{ selector = 'tab.active', declarations = {{ color = 'accent' }} }},\n\
+                 }})\n\
+                 d.styles({{\n\
+                   {{ selector = '', declarations = {{ color = 'red' }} }},\n\
+                 }})\n\
+                 d.styles('not an array')"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = all_events_until_quiet(&host);
+        let syncs = styles_syncs(&events);
+        // Three usable calls, one report each; the fourth raised (the
+        // string argument crosses no table) — the standing error path.
+        assert_eq!(syncs.len(), 3, "{events:?}");
+        let (plugin, first) = &syncs[0];
+        assert_eq!(plugin, "styler");
+        assert_eq!(first.len(), 1);
+        // The second call's sheet replaces the caller's: the report
+        // carries the second call's rules, not the first's.
+        let (_, second) = &syncs[1];
+        assert_eq!(second.len(), 2);
+        // The bad rule dropped with its line; the good rule stands.
+        let lines: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                HostEvent::Log(line) => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("the selector '' does not parse")),
+            "the junk selector's drop line: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("ignoring unknown style property 'frob'")),
+            "the declaration drop line rides the report's logs: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_runtime_sheet_dies_with_its_interpreter() {
+        let dir = TempDir::new("sheetlife");
+        script(
+            &dir,
+            "styler.lua",
+            &format!(
+                "{PORT}\n\
+                 d.styles({{ {{ selector = '.live', declarations = {{ color = 'red' }} }} }})"
+            ),
+        );
+        let host = LuaHost::new(&dir.0);
+        emit(&host, "x");
+        let events = events_until(
+            &host,
+            |event| matches!(event, HostEvent::StylesSync { .. }),
+            LONG_WAIT,
+        );
+        assert_eq!(styles_syncs(&events).len(), 1, "{events:?}");
+        // The reload: the interpreter dies, one StylesReset marker,
+        // and the reload's own re-run of the script re-reports the
+        // sheet (the script calls styles again from its top).
+        host.send(HostCommand::Reload);
+        let events = all_events_until_quiet(&host);
+        let reset = events
+            .iter()
+            .filter(|event| matches!(event, HostEvent::StylesReset))
+            .count();
+        assert!(reset >= 1, "the birth marker rides the reload: {events:?}");
+        // The fresh generation re-ran the script: a fresh report.
+        let syncs = styles_syncs(&events);
+        assert!(
+            !syncs.is_empty(),
+            "the re-run's own styles call re-reports: {events:?}"
+        );
+    }
+
     #[test]
     fn a_duplicate_command_registration_replaces_with_one_line() {
         let dir = TempDir::new("replaced");
@@ -4587,6 +4784,10 @@ mod tests {
                         | HostEvent::TabTitleProvider { .. }
                         | HostEvent::PanelViewsSync { .. }
                         | HostEvent::PanelAnswer { .. }
+                        // The generation births send one marker
+                        // each (SE3): a sync report, never a
+                        // dispatch answer.
+                        | HostEvent::StylesReset
                 ),
                 "a command dispatch has no reply arm: {event:?}"
             );

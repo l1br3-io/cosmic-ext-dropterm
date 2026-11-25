@@ -891,3 +891,148 @@ fn the_open_rename_banks_caret_and_selection_in_the_row_slot(cx: &mut gpui::Test
         assert!(paths > 0, "no selection path painted for the select-all");
     });
 }
+
+// --- the strip's style seam (style-engine SE3) ---
+
+/// The fixture palette: every token a distinct gray step, so a
+/// resolved color is identifiable by value.
+fn strip_palette() -> crate::status_bar::ScriptPalette {
+    use alacritty_terminal::term::color::Colors;
+    use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+    let mut colors = Colors::default();
+    colors[NamedColor::BrightBlue] = Some(Rgb {
+        r: 16,
+        g: 16,
+        b: 16,
+    });
+    colors[NamedColor::Red] = Some(Rgb {
+        r: 200,
+        g: 40,
+        b: 40,
+    });
+    colors[NamedColor::Green] = Some(Rgb {
+        r: 40,
+        g: 200,
+        b: 40,
+    });
+    let fg = hsla(245, 245, 245);
+    crate::status_bar::ScriptPalette::resolve(&colors, fg, hsla(10, 10, 10))
+}
+
+#[test]
+fn a_rule_restyles_the_focused_tab_and_the_strip_root() {
+    use dropterm::core::style_engine::{RuleOrigin, StyleSet};
+    let rows = vec![
+        RowVm {
+            id: TabId(1),
+            label: "one".to_owned(),
+            is_active: true,
+            is_pinned: false,
+            attention: Attention::None,
+        },
+        RowVm {
+            id: TabId(2),
+            label: "two".to_owned(),
+            is_active: false,
+            is_pinned: false,
+            attention: Attention::None,
+        },
+    ];
+    let palette = strip_palette();
+    // No rules: every style unset — today's look stands.
+    let (bg, styles) = resolve_strip_styles(
+        &std::cell::RefCell::new(StyleSet::default()).borrow(),
+        &palette,
+        &rows,
+    );
+    assert!(bg.is_none());
+    assert!(styles.iter().all(|style| style.color.is_none()));
+
+    // A manifest rule colors the focused tab only, and the strip
+    // root's background.
+    let mut engine = StyleSet::default();
+    let rule = |selector: &str, declarations: serde_json::Value| {
+        let parsed = dropterm::core::style_engine::parse_declarations(&declarations);
+        assert!(parsed.drops.is_empty(), "{:?}", parsed.drops);
+        dropterm::core::style_engine::Rule {
+            origin: RuleOrigin::Manifest {
+                plugin: "tabber".to_owned(),
+            },
+            selector: dropterm::core::style_engine::parse_selector(selector).expect("parses"),
+            declarations: parsed.declarations,
+        }
+    };
+    engine.replace_manifest(vec![
+        rule(
+            "tab.active",
+            serde_json::json!({ "color": "red", "font-weight": "bold" }),
+        ),
+        rule("tabstrip", serde_json::json!({ "background": "green" })),
+    ]);
+    let engine = std::cell::RefCell::new(engine);
+    let (bg, styles) = resolve_strip_styles(&engine.borrow(), &palette, &rows);
+    assert_eq!(bg, Some(hsla(40, 200, 40)), "the strip root restyles");
+    assert_eq!(
+        styles[0].color,
+        Some(hsla(200, 40, 40)),
+        "the focused tab restyles from launch"
+    );
+    assert_eq!(styles[0].weight, Some(gpui::FontWeight::BOLD));
+    assert_eq!(styles[1].color, None, "the quiet tab keeps today's look");
+}
+
+#[test]
+fn a_plain_tab_rule_colors_every_tab_and_active_outspecifies_it() {
+    use dropterm::core::style_engine::{RuleOrigin, StyleSet};
+    let rows = vec![
+        RowVm {
+            id: TabId(1),
+            label: "one".to_owned(),
+            is_active: true,
+            is_pinned: false,
+            attention: Attention::None,
+        },
+        RowVm {
+            id: TabId(2),
+            label: "two".to_owned(),
+            is_active: false,
+            is_pinned: false,
+            attention: Attention::None,
+        },
+    ];
+    let palette = strip_palette();
+    let rule = |origin: dropterm::core::style_engine::RuleOrigin,
+                selector: &str,
+                declarations: serde_json::Value| {
+        let parsed = dropterm::core::style_engine::parse_declarations(&declarations);
+        assert!(parsed.drops.is_empty(), "{:?}", parsed.drops);
+        dropterm::core::style_engine::Rule {
+            origin,
+            selector: dropterm::core::style_engine::parse_selector(selector).expect("parses"),
+            declarations: parsed.declarations,
+        }
+    };
+    // A plain `tab` rule colors every tab; `tab.active` out-specifies
+    // it for the focused one — the CSS ladder, on the strip.
+    let mut engine = StyleSet::default();
+    engine.replace_manifest(vec![
+        rule(
+            RuleOrigin::Manifest {
+                plugin: "a".to_owned(),
+            },
+            "tab",
+            serde_json::json!({ "color": "green" }),
+        ),
+        rule(
+            RuleOrigin::Manifest {
+                plugin: "a".to_owned(),
+            },
+            "tab.active",
+            serde_json::json!({ "color": "red" }),
+        ),
+    ]);
+    let engine = std::cell::RefCell::new(engine);
+    let (_, styles) = resolve_strip_styles(&engine.borrow(), &palette, &rows);
+    assert_eq!(styles[0].color, Some(hsla(200, 40, 40)));
+    assert_eq!(styles[1].color, Some(hsla(40, 200, 40)));
+}

@@ -158,6 +158,9 @@ pub struct ScannedPlugin {
     pub activation: Activation,
     pub commands: Vec<DeclaredCommand>,
     pub settings: Vec<DeclaredSetting>,
+    /// The manifest's `styles` rules (style-engine SE3), origin
+    /// attached — chrome restyles from launch, no interpreter.
+    pub styles: Vec<crate::core::style_engine::Rule>,
 }
 
 /// One scan's result: the registry in dir-name order and the log-line
@@ -175,6 +178,7 @@ struct ManifestData {
     display_name: Option<String>,
     commands: Vec<DeclaredCommand>,
     settings: Vec<DeclaredSetting>,
+    styles: Vec<crate::core::style_engine::Rule>,
     activation: Activation,
 }
 
@@ -244,6 +248,7 @@ pub fn scan(dir: &Path) -> PluginScan {
                     activation: Activation::AtStartup,
                     commands: Vec::new(),
                     settings: Vec::new(),
+                    styles: Vec::new(),
                 });
                 continue;
             }
@@ -265,6 +270,7 @@ pub fn scan(dir: &Path) -> PluginScan {
                 activation: data.activation,
                 commands: data.commands,
                 settings: data.settings,
+                styles: data.styles,
             });
         }
     }
@@ -285,7 +291,23 @@ struct RawManifest {
     #[serde(default)]
     settings: Vec<RawSetting>,
     #[serde(default)]
+    styles: Vec<RawStyleRule>,
+    #[serde(default)]
     activation: Vec<String>,
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
+}
+
+/// One `styles` rule object's serde form (style-engine SE3): the
+/// closed `{selector, declarations}` shape, kebab-case as everywhere
+/// in the manifest; unknown keys flatten and warn-and-ignore.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawStyleRule {
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    declarations: Option<serde_json::Value>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -440,6 +462,36 @@ fn parse_manifest(id: &str, bytes: &str) -> (Option<ManifestData>, Vec<String>) 
         });
     }
 
+    // The manifest's styles (style-engine SE3): each rule object
+    // parses by the engine's shared rule parse — a rule object
+    // outside the vocabulary, an empty selector or declarations, or
+    // an unparseable selector drops the rule with one line; chrome
+    // restyles from launch, no interpreter.
+    let mut styles = Vec::new();
+    for raw_rule in raw.styles {
+        for key in raw_rule.unknown.keys() {
+            logs.push(format!("{id}: ignoring unknown style-rule key '{key}'"));
+        }
+        let mut rule_logs = Vec::new();
+        let value = serde_json::json!({
+            "selector": raw_rule.selector,
+            "declarations": raw_rule.declarations,
+        });
+        let parsed = crate::core::style_engine::parse_rule_object(&value, &mut rule_logs);
+        for line in rule_logs {
+            logs.push(format!("{id}: {line}"));
+        }
+        if let Some((selector, declarations)) = parsed {
+            styles.push(crate::core::style_engine::Rule {
+                origin: crate::core::style_engine::RuleOrigin::Manifest {
+                    plugin: id.to_owned(),
+                },
+                selector,
+                declarations,
+            });
+        }
+    }
+
     let mut activation = Activation::Lazy;
     for token in raw.activation {
         match token.as_str() {
@@ -458,6 +510,7 @@ fn parse_manifest(id: &str, bytes: &str) -> (Option<ManifestData>, Vec<String>) 
             display_name: raw.name,
             commands,
             settings,
+            styles,
             activation,
         }),
         logs,
@@ -1376,6 +1429,7 @@ mod tests {
             has_manifest: true,
             activation: Activation::Lazy,
             commands: Vec::new(),
+            styles: Vec::new(),
             settings: vec![DeclaredSetting {
                 key: key.to_owned(),
                 label: format!("{key} label"),
@@ -1459,5 +1513,99 @@ mod tests {
         let groups = settings_rows(&manifests, &StoreValues::new());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].id, "loud");
+    }
+    // --- the styles source (style-engine SE3) ---
+
+    #[test]
+    fn styles_rules_parse_into_the_scan_with_their_origin() {
+        let dir = TempDir::new("styles");
+        let plugin = dir.plugin("tabber");
+        fs::write(
+            plugin.join(MANIFEST_FILE_NAME),
+            r#"{ "styles": [
+                { "selector": "tab.active", "declarations": { "color": "accent", "font-weight": "bold" } },
+                { "selector": "band.right", "declarations": { "color": "red" } }
+            ] }"#,
+        )
+        .expect("write manifest");
+        let scan = scan(&dir.0);
+        assert!(scan.logs.is_empty(), "{:?}", scan.logs);
+        let plugin = &scan.plugins[0];
+        assert_eq!(plugin.styles.len(), 2);
+        assert_eq!(
+            plugin.styles[0].origin,
+            crate::core::style_engine::RuleOrigin::Manifest {
+                plugin: "tabber".to_owned()
+            }
+        );
+        let (selector, declarations) = (&plugin.styles[0].selector, &plugin.styles[0].declarations);
+        assert_eq!(
+            *selector,
+            crate::core::style_engine::parse_selector("tab.active").expect("parses")
+        );
+        assert_eq!(declarations.len(), 2);
+    }
+
+    #[test]
+    fn every_bad_style_rule_drops_with_one_line_and_the_rest_stand() {
+        let dir = TempDir::new("badstyles");
+        let plugin = dir.plugin("sloppy");
+        fs::write(
+            plugin.join(MANIFEST_FILE_NAME),
+            r#"{ "styles": [
+                { "selector": ".warn", "declarations": { "color": "red" }, "bogus": 1 },
+                { "selector": "", "declarations": { "color": "red" } },
+                { "selector": "a>span", "declarations": { "color": "red" } },
+                { "selector": ".empty", "declarations": {} },
+                { "selector": ".fine", "declarations": { "font-weight": "bold" } }
+            ] }"#,
+        )
+        .expect("write manifest");
+        let scan = scan(&dir.0);
+        let plugin = &scan.plugins[0];
+        // The unknown key warned; the rule stands.
+        assert_eq!(plugin.styles.len(), 2);
+        assert_eq!(
+            plugin.styles[0].selector,
+            crate::core::style_engine::parse_selector(".warn").expect("parses")
+        );
+        assert_eq!(
+            plugin.styles[1].selector,
+            crate::core::style_engine::parse_selector(".fine").expect("parses")
+        );
+        // One line per dropped rule, each naming the plugin.
+        let drops: Vec<&String> = scan
+            .logs
+            .iter()
+            .filter(|line| line.contains("sloppy:"))
+            .collect();
+        assert_eq!(drops.len(), 4, "{:?}", scan.logs);
+        assert!(
+            scan.logs
+                .iter()
+                .any(|l| l.contains("the selector '' does not parse"))
+        );
+        assert!(
+            scan.logs
+                .iter()
+                .any(|l| l.contains("does not parse: the character '>'"))
+        );
+        assert!(
+            scan.logs
+                .iter()
+                .any(|l| l.contains("the rule carries no usable declarations"))
+        );
+        assert!(
+            scan.logs
+                .iter()
+                .any(|l| l.contains("ignoring unknown style-rule key 'bogus'"))
+        );
+        assert!(
+            !scan
+                .logs
+                .iter()
+                .any(|l| l.contains("ignoring unknown style property 'frob'")),
+            "a declaration drop names itself at the rule's level, not the manifest's"
+        );
     }
 }

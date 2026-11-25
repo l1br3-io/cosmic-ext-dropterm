@@ -957,6 +957,10 @@ impl Shell {
             plugin_manifests,
             plugin_settings_values,
         ) = Self::plugins_boot_state(&lua_host);
+        let manifest_rules: Vec<dropterm::core::style_engine::Rule> = plugin_manifests
+            .iter()
+            .flat_map(|plugin| plugin.styles.clone())
+            .collect();
         let (images_panel, rail, panel_rail) = plugin_surfaces();
         Self {
             boot,
@@ -1008,7 +1012,13 @@ impl Shell {
                 ));
                 let mut builtins = crate::dialog_slot::builtin_rules();
                 builtins.extend(crate::status_bar::builtin_rules());
-                engine.borrow_mut().set_builtin(builtins);
+                let mut set = engine.borrow_mut();
+                set.set_builtin(builtins);
+                // The manifest sheets stand from boot (style-engine
+                // SE3): the whole scan's rules, dir order — chrome
+                // restyles from launch, no interpreter.
+                set.replace_manifest(manifest_rules);
+                drop(set);
                 engine
             },
             manifest_wake,
@@ -1098,8 +1108,11 @@ impl Shell {
         if stood {
             asks.arm_boot_ask();
         }
-        let plugin_manifests =
-            dropterm::core::plugins_manifest::scan(lua_host.plugins_dir()).plugins;
+        let scan = dropterm::core::plugins_manifest::scan(lua_host.plugins_dir());
+        let plugin_manifests = scan.plugins;
+        for line in &scan.logs {
+            println!("dropterm: plugins: {line}");
+        }
         // The advertising rows stand from boot: the declared set merged
         // over the empty runtime set — the initial state, not a change
         // event, so no registry log line rides it.
@@ -5680,10 +5693,26 @@ impl Shell {
     /// interpreter feels.
     fn rescan_manifests(&mut self, cx: &mut Context<Self>) {
         let scan = dropterm::core::plugins_manifest::scan(self.lua_host.plugins_dir());
+        for line in &scan.logs {
+            println!("dropterm: plugins: {line}");
+        }
         self.plugin_manifests = scan.plugins;
+        // The manifest sheets feed the engine (style-engine SE3):
+        // the whole scan's rules, dir order — chrome restyles from
+        // launch and on every watcher reload, no interpreter.
+        let rules = self
+            .plugin_manifests
+            .iter()
+            .flat_map(|plugin| plugin.styles.iter().cloned())
+            .collect();
+        self.style_engine.borrow_mut().replace_manifest(rules);
         self.remerge_script_commands(cx);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the host's whole out-arm in one walk: every event's own arm, the pump's shape"
+    )]
     fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
         while let Some(event) = self.lua_host.try_event() {
             match event {
@@ -5758,6 +5787,28 @@ impl Shell {
                 }
                 dropterm::core::lua_host::HostEvent::CommandsSync { commands } => {
                     self.note_script_commands(commands, cx);
+                }
+                dropterm::core::lua_host::HostEvent::StylesSync { plugin, rules } => {
+                    // The caller's whole sheet, replacing (SE3): the
+                    // plugin's old rules leave, the new rules join at
+                    // the arrival end, and the surfaces repaint by
+                    // the standing notify.
+                    self.style_engine
+                        .borrow_mut()
+                        .replace_runtime_sheet(&plugin, rules);
+                    cx.notify();
+                }
+                dropterm::core::lua_host::HostEvent::StylesReset => {
+                    // A fresh interpreter: every runtime sheet died
+                    // with the old one (SE3) — the shell drops all
+                    // runtime sheets, manifest sheets standing.
+                    let dropped = self.style_engine.borrow_mut().clear_runtime_sheets();
+                    if dropped > 0 {
+                        println!(
+                            "dropterm: plugins: {dropped} runtime style rules dropped at reload"
+                        );
+                        cx.notify();
+                    }
                 }
                 dropterm::core::lua_host::HostEvent::SendText { tab, text } => {
                     // Fire-and-forget the other way (script-commands
@@ -6095,7 +6146,15 @@ impl Shell {
         fg: gpui::Hsla,
     ) -> tab_bar::TabBarView {
         let shell = cx.entity();
+        // The strip's palette beside the band's (SE3): same scheme,
+        // the strip's own fg and background — one color source.
+        let colors = resolve_theme(&self.config, &self.user_schemes).colors;
+        let bg = resolve_theme(&self.config, &self.user_schemes).colors
+            [alacritty_terminal::vte::ansi::NamedColor::Background]
+            .map_or(strip, |rgb| tab_bar::hsla(rgb.r, rgb.g, rgb.b));
+        let palette = status_bar::ScriptPalette::resolve(&colors, fg, bg);
         let bar = tab_bar::TabBarView::new(self.tabs.rows(), strip, fg)
+            .styled(std::rc::Rc::clone(&self.style_engine), palette)
             .show_border(self.config.tab_bar_border)
             .min_tabs(usize::from(self.config.tab_bar_min_tabs))
             .at_bottom(at_bottom)
@@ -11046,6 +11105,83 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
                         description: "Go places".to_owned(),
                     }],
                     "the declared row renders from launch"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_manifest_style_rule_stands_at_launch_without_a_host_thread(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-launch");
+        // One styles rule and nothing else: the rule stands in the
+        // engine from boot, the interpreter never does.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "tabber",
+            r#"{ "styles": [ { "selector": "tab.active",
+                "declarations": { "color": "accent", "font-weight": "bold" } } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert!(
+                    !shell.lua_host.spawned(),
+                    "the boot scan never wakes the host"
+                );
+                // The engine's manifest layer carries the rule: a
+                // resolve on the focused tab answers the manifest's
+                // declarations (the tab strip's own consume is the
+                // tab_bar suite's pin).
+                let engine = shell.style_engine.borrow();
+                let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "tab",
+                    classes: &["active"],
+                    id: None,
+                    inline: &[],
+                });
+                assert_eq!(
+                    resolved.color,
+                    Some(dropterm::core::slots::SlotColor::Token("accent".to_owned())),
+                    "the manifest rule resolves from launch"
+                );
+                assert_eq!(
+                    resolved.weight,
+                    Some(dropterm::core::style_engine::FontWeight::Bold)
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_dropped_manifest_drops_its_rules_at_the_next_rescan(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("styled-drop");
+        let plugins = dir.0.join("plugins");
+        write_manifest(
+            &plugins,
+            "tabber",
+            r#"{ "styles": [ { "selector": "tab.active",
+                "declarations": { "color": "accent" } } ] }"#,
+        );
+        let shell = shell_over_plugins(plugins.clone(), cx);
+        // The manifest leaves: the next rescan rebuilds the sheets
+        // and the rule is gone.
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                let path = plugins.join("tabber").join("plugin.json");
+                std::fs::remove_file(&path).expect("drop the manifest");
+                shell.rescan_manifests(cx);
+                let engine = shell.style_engine.borrow();
+                let resolved = engine.resolve(&dropterm::core::style_engine::StyleNode {
+                    element: "tab",
+                    classes: &["active"],
+                    id: None,
+                    inline: &[],
+                });
+                assert_eq!(
+                    resolved.color, None,
+                    "a dropped manifest drops its rules at the next reload"
                 );
             });
         });

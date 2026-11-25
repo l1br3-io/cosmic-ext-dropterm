@@ -398,6 +398,15 @@ impl StyleSet {
             .retain(|rule| !rule.origin.is_runtime_of(plugin));
     }
 
+    /// Every runtime sheet, dropped — the interpreter's whole birth
+    /// marks it (a fresh interpreter holds no sheets). Returns the
+    /// rule count dropped; manifest sheets stand.
+    pub fn clear_runtime_sheets(&mut self) -> usize {
+        let dropped = self.runtime.len();
+        self.runtime.clear();
+        dropped
+    }
+
     /// The cascade's answer for one node: every matching rule
     /// competes per property by specificity, source order breaks
     /// ties (the layers' fixed order is that order), and the node's
@@ -424,6 +433,62 @@ impl StyleSet {
         }
         resolved
     }
+}
+
+/// Parse one rule object — the `{ "selector", "declarations" }`
+/// shape both sources cross as (the manifest's `styles` array and
+/// the `dropterm.styles` verb's rules table). Unknown keys
+/// warn-and-ignore (the key ignored, the rule stands); an empty
+/// selector or declarations, a wrong-shaped part, or an unparseable
+/// selector drops the rule — `None` — with one line each in `logs`,
+/// naming the selector. The caller attaches the rule's origin.
+pub fn parse_rule_object(
+    value: &serde_json::Value,
+    logs: &mut Vec<String>,
+) -> Option<(Selector, Vec<Declaration>)> {
+    const RULE_KEYS: [&str; 2] = ["selector", "declarations"];
+    let Some(map) = value.as_object() else {
+        logs.push("the rule is not a table".to_owned());
+        return None;
+    };
+    for key in map.keys() {
+        if !RULE_KEYS.contains(&key.as_str()) {
+            logs.push(format!("ignoring unknown style-rule key '{key}'"));
+        }
+    }
+    let raw_selector = match map.get("selector") {
+        Some(serde_json::Value::String(raw)) => raw.as_str(),
+        Some(_) => {
+            logs.push("the rule's selector is not a string".to_owned());
+            return None;
+        }
+        None => {
+            logs.push("the rule's selector is missing".to_owned());
+            return None;
+        }
+    };
+    let selector = match parse_selector(raw_selector) {
+        Ok(selector) => selector,
+        Err(line) => {
+            logs.push(line);
+            return None;
+        }
+    };
+    let Some(declarations) = map.get("declarations") else {
+        logs.push("the rule's declarations are missing".to_owned());
+        return None;
+    };
+    if declarations.as_object().is_none() {
+        logs.push("the rule's declarations are not a table".to_owned());
+        return None;
+    }
+    let parsed = parse_declarations(declarations);
+    logs.extend(parsed.drops);
+    if parsed.declarations.is_empty() {
+        logs.push("the rule carries no usable declarations".to_owned());
+        return None;
+    }
+    Some((selector, parsed.declarations))
 }
 
 #[cfg(test)]
@@ -828,6 +893,81 @@ mod tests {
         let set = layered(vec![], vec![], vec![]);
         let node = make_node("span", &[], None, &[]);
         assert_eq!(set.resolve(&node), ResolvedStyle::default());
+    }
+
+    // --- the rule object (the sources' shared shape, SE3) ---
+
+    #[test]
+    fn a_rule_object_parses_into_selector_and_declarations() {
+        let mut logs = Vec::new();
+        let parsed = parse_rule_object(
+            &json!({
+                "selector": "tab.active",
+                "declarations": { "color": "accent", "font-weight": "bold" },
+            }),
+            &mut logs,
+        );
+        assert!(logs.is_empty(), "{logs:?}");
+        let (selector, declarations) = parsed.expect("parses");
+        assert_eq!(selector, parse_selector("tab.active").expect("parses"));
+        assert_eq!(
+            declarations,
+            vec![
+                Declaration::Color(SlotColor::Token("accent".to_owned())),
+                Declaration::Weight(FontWeight::Bold),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_bad_rule_shape_drops_its_rule_with_one_line() {
+        let drop = |value: serde_json::Value| {
+            let mut logs = Vec::new();
+            let parsed = parse_rule_object(&value, &mut logs);
+            (parsed, logs)
+        };
+        // An unknown key warns and the rule stands.
+        let (parsed, logs) = drop(json!({
+            "selector": ".warn",
+            "declarations": { "color": "red" },
+            "bogus": 1,
+        }));
+        assert!(parsed.is_some());
+        assert_eq!(
+            logs,
+            vec!["ignoring unknown style-rule key 'bogus'".to_owned()]
+        );
+        // Empty selector, junk selector, missing declarations.
+        let (parsed, logs) = drop(json!({ "selector": "", "declarations": { "color": "red" } }));
+        assert!(parsed.is_none());
+        assert_eq!(
+            logs,
+            vec!["the selector '' does not parse: empty".to_owned()]
+        );
+        let (parsed, logs) =
+            drop(json!({ "selector": "a>span", "declarations": { "color": "red" } }));
+        assert!(parsed.is_none());
+        assert!(logs[0].contains("does not parse"));
+        let (parsed, logs) = drop(json!({ "selector": ".warn" }));
+        assert!(parsed.is_none());
+        assert_eq!(logs, vec!["the rule's declarations are missing".to_owned()]);
+        // Empty usable declarations: the rule drops.
+        let (parsed, logs) = drop(json!({ "selector": ".warn", "declarations": {} }));
+        assert!(parsed.is_none());
+        assert_eq!(
+            logs,
+            vec!["the rule carries no usable declarations".to_owned()]
+        );
+        // All-bad declarations: the drops name each, the rule drops.
+        let (parsed, logs) = drop(json!({ "selector": ".warn", "declarations": { "frob": "x" } }));
+        assert!(parsed.is_none());
+        assert_eq!(
+            logs,
+            vec![
+                "ignoring unknown style property 'frob'".to_owned(),
+                "the rule carries no usable declarations".to_owned(),
+            ]
+        );
     }
 
     // --- the layers ---
