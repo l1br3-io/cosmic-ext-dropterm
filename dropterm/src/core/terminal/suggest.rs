@@ -1524,6 +1524,46 @@ fn specs_stop<'o>(typed: &str, obs: &'o Observation<'_>) -> Option<walker::StopP
     walker::walk(&tokens[1..], entry, obs.specs_table)
 }
 
+/// The segment the caret's completion lives in (rich-input RI-8):
+/// the typed segment after its last segment-opening boundary — a
+/// `;`, a `|`, or an opening `$(` — with quotes and backslash
+/// escapes suppressing boundaries the shell would not split on.
+/// Substitutions, pipes, and `;`-chains complete where the cursor
+/// stands: the substitution's own line is a command line, the
+/// pipe's right side likewise, and the ranking never moves (the
+/// carve only chooses WHICH segment the seats read).
+pub(crate) fn current_segment(typed: &str) -> &str {
+    let mut start = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut chars = typed.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            } else if ch == '\\' && open == '"' {
+                escaped = true;
+            }
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' | '"' => quote = Some(ch),
+            ';' | '|' => start = idx + ch.len_utf8(),
+            '$' if chars.peek().is_some_and(|&(_, next)| next == '(') => {
+                chars.next();
+                start = idx + 2;
+            }
+            _ => {}
+        }
+    }
+    typed[start..].trim_start()
+}
+
 /// The typed segment's completed shell words (flag-specs spec):
 /// split on unescaped whitespace — a backslash-escaped space keeps
 /// its word open, the same carve `is_command_position` and
@@ -1854,6 +1894,9 @@ pub(crate) fn candidates(
     suggest: &Suggest,
     obs: &Observation<'_>,
 ) -> Vec<MenuCandidate> {
+    // The seats read the segment the cursor stands in (rich-input
+    // RI-8): through substitutions, pipes, and `;`-chains.
+    let typed = current_segment(typed);
     if typed.is_empty() {
         return Vec::new();
     }

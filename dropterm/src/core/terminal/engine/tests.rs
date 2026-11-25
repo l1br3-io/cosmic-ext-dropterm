@@ -5599,3 +5599,33 @@ fn editor_accept_suggestion_returns_the_suffix_for_the_buffer() {
         Some("p".to_string())
     );
 }
+
+#[test]
+fn mid_pipeline_lines_complete_their_own_segment() {
+    // RI-8's acceptance, over the editor lane: each mid-pipeline
+    // line opens the menu on the segment the cursor stands in — a
+    // recorded EXTERNAL command (the harness lessons: not-found
+    // words never fork, and a bare grep is a usage error that exits
+    // before the poll can see it — "grep x" waits on stdin, holding
+    // the foreground until SIGINT) answering every shape.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "grep x");
+
+    for line_to_caret in ["echo $(gr", "git status | gr", "cd a; gr"] {
+        assert!(
+            terminal.editor_menu_open(line_to_caret),
+            "{line_to_caret} opens"
+        );
+        let labels: Vec<&str> = terminal
+            .menu_rows()
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        assert!(
+            labels.contains(&"grep x"),
+            "{line_to_caret} completes grep x"
+        );
+        terminal.menu_close();
+    }
+}

@@ -5119,3 +5119,53 @@ fn the_command_counter_counts_only_top_level_tables() {
         "the generated extended tier carries its census'd 532 commands"
     );
 }
+
+// --- the segment carve (rich-input RI-8) ---
+
+#[test]
+fn the_carve_takes_the_last_segment_boundary() {
+    // Through substitutions, pipes, and `;`-chains: the cursor's own
+    // segment is what completes.
+    assert_eq!(super::current_segment("git sta"), "git sta");
+    assert_eq!(super::current_segment("cd a; gi"), "gi");
+    assert_eq!(super::current_segment("git status | gr"), "gr");
+    assert_eq!(super::current_segment("echo $(gi"), "gi");
+    assert_eq!(super::current_segment("echo $(git sta"), "git sta");
+    // Nested: the pipe inside the substitution splits the
+    // substitution's own segment.
+    assert_eq!(super::current_segment("echo $(git status | gr"), "gr");
+    // The second char of `||` rides the first.
+    assert_eq!(super::current_segment("a || b; gi"), "gi");
+}
+
+#[test]
+fn quotes_and_escapes_never_split_a_segment() {
+    // A boundary inside quotes or escaped is no boundary.
+    assert_eq!(super::current_segment("echo \"a;b\" gi"), "echo \"a;b\" gi");
+    assert_eq!(super::current_segment("echo 'a|b' | gr"), "gr");
+    assert_eq!(super::current_segment("echo \\; gi"), "echo \\; gi");
+    // A boundary after a closing quote still splits.
+    assert_eq!(super::current_segment("echo \"x\"; gi"), "gi");
+}
+
+#[test]
+fn the_seats_read_the_carved_segment() {
+    // The mid-pipeline acceptance, seat-level: the pipe's right
+    // side, the `;`-chain's tail, and the substitution's own line
+    // are all command positions.
+    assert!(super::is_command_position(super::current_segment(
+        "git status | gr"
+    )));
+    assert!(super::is_command_position(super::current_segment(
+        "cd a; gi"
+    )));
+    assert!(super::is_command_position(super::current_segment(
+        "echo $(gi"
+    )));
+    // The specs scope reads the segment's own first word — without
+    // the carve this would have read "echo".
+    assert_eq!(
+        super::completed_words(super::current_segment("echo $(git sta"))[0],
+        "git"
+    );
+}
