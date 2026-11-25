@@ -2292,12 +2292,15 @@ fn a_two_branch_repo_yields_both_names_after_revalidation() {
         runner.sets_for(Some(&dir)).is_none(),
         "nothing cached before the first trigger"
     );
+    let spawns_before = runner.lock_generator_state().spawns;
     runner.revalidate(Some(&dir));
-    // The SWR bookkeeping: all three argv keys in flight the moment
-    // the trigger returns, none left when the fetches land.
+    // The SWR bookkeeping: one worker dispatched per argv (read off
+    // the spawn counter — a worker whose fetch lands quickly has
+    // already retired its in-flight mark by the time this thread
+    // takes the lock), none left in flight when the fetches land.
     {
         let state = runner.lock_generator_state();
-        assert_eq!(state.in_flight.len(), 3, "one worker per argv");
+        assert_eq!(state.spawns - spawns_before, 3, "one worker per argv");
     }
     let sets = poll_generator_sets(&runner, &dir);
     {
