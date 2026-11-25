@@ -12,7 +12,7 @@ use dropterm::core::terminal::suggest::SuggestionSource;
 // Re-exported for the view, which owns the pane-side instance and
 // routes the lane's menu outcomes and paints the token classes.
 pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress, TokenClass};
-use gpui::Keystroke;
+use gpui::{Keystroke, px};
 
 /// The strip's colored segments under the toggle (rich-input
 /// RI-6): the tokenizer's tiling when highlight is on, one plain
@@ -475,6 +475,33 @@ impl EditorMenuPaint {
     }
 }
 
+/// The strip's dock (rich-input RI-9, OQ-7's relocation reading):
+/// `Top` pins the strip at the head of the grid region — the flow a
+/// normal terminal either way, the grid scrolling beneath. The
+/// strip lives inside the pane's own frame, so the status band's
+/// slot outside is never at stake (the band's own logic untouched).
+#[must_use]
+pub(crate) fn strip_docked_top(position: dropterm::core::config::InputPosition) -> bool {
+    matches!(position, dropterm::core::config::InputPosition::Top)
+}
+
+/// The menu panel's anchor line under the dock (rich-input RI-9):
+/// the top dock re-anchors the panel BELOW the strip (the grid
+/// region's head), the bottom dock keeps it above the strip (the
+/// region's foot). Pure pixel math over the region's bounds.
+#[must_use]
+pub(crate) fn menu_anchor_y(
+    top: bool,
+    region: gpui::Bounds<gpui::Pixels>,
+    panel_h: gpui::Pixels,
+) -> gpui::Pixels {
+    if top {
+        region.origin.y + px(4.)
+    } else {
+        region.origin.y + region.size.height - panel_h
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,6 +707,31 @@ mod tests {
             description: description.map(str::to_string),
             source,
         }
+    }
+
+    // --- the top dock (rich-input RI-9) ---
+
+    #[test]
+    fn the_strip_docks_by_position_and_the_menu_follows() {
+        use super::{menu_anchor_y, strip_docked_top};
+        use dropterm::core::config::InputPosition;
+
+        assert!(
+            !strip_docked_top(InputPosition::Bottom),
+            "the default dock is the bottom"
+        );
+        assert!(strip_docked_top(InputPosition::Top));
+
+        // The menu's anchor follows the dock: the top dock anchors
+        // at the region's head, the bottom dock at its foot (the
+        // panel growing away from the strip it serves).
+        let region = gpui::Bounds {
+            origin: gpui::point(px(0.), px(100.)),
+            size: gpui::size(px(400.), px(500.)),
+        };
+        let panel_h = px(200.);
+        assert_eq!(menu_anchor_y(true, region, panel_h), px(104.));
+        assert_eq!(menu_anchor_y(false, region, panel_h), px(400.));
     }
 
     #[test]

@@ -195,6 +195,7 @@ pub(crate) fn pane_options(
         // pass like the toggles (rich-input RI-3); the per-profile
         // resolution lands where the spawn knows its profile.
         input_mode: config.input_mode,
+        input_position: config.input_position,
         input_highlight: config.input_highlight,
         input_descriptions: config.input_descriptions,
         input_badges: config.input_badges,

@@ -2236,6 +2236,7 @@ impl gpui::Render for TerminalPane {
         // The editor menu's paint bundle (rich-input RI-7): the
         // chrome capture under one engine read — None when the menu
         // stands closed, the paint's whole gate.
+        let strip_top_dock = editor::strip_docked_top(self.options.input_position);
         let editor_menu = {
             let engine = self.terminal.lock().expect("engine lock");
             let state = self.editor.lock().expect("editor lock");
@@ -2267,6 +2268,7 @@ impl gpui::Render for TerminalPane {
                     &image_cache,
                     &viewport_origin,
                     editor_menu.as_ref(),
+                    strip_top_dock,
                     bounds,
                     window,
                     cx,
@@ -2274,6 +2276,10 @@ impl gpui::Render for TerminalPane {
             },
         );
         if self.options.input_mode == dropterm::core::config::InputMode::Rich {
+            // The dock (rich-input RI-9): `top` pins the strip at the
+            // head of the grid region — the column's order flips, the
+            // flow a normal terminal either way.
+            let strip_first = editor::strip_docked_top(self.options.input_position);
             let strip_editor = Arc::clone(&self.editor);
             let strip_terminal = Arc::clone(&self.terminal);
             let strip_skin = self.skin.clone();
@@ -2298,14 +2304,21 @@ impl gpui::Render for TerminalPane {
             )
             .w_full()
             .h(px(30.));
-            frame.child(
+            let column = div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(grid.flex_1().min_h_0());
+            frame.child(if strip_first {
                 div()
                     .flex()
                     .flex_col()
                     .size_full()
-                    .child(grid.flex_1().min_h_0())
-                    .child(strip),
-            )
+                    .child(strip)
+                    .child(column)
+            } else {
+                column.child(strip)
+            })
         } else {
             frame.child(grid.size_full())
         }
@@ -2333,6 +2346,7 @@ fn paint_pane(
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
     viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
     editor_menu: Option<&editor::EditorMenuPaint>,
+    strip_top_dock: bool,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -2697,7 +2711,15 @@ fn paint_pane(
     // above the strip — the grid panel above stays dark in rich
     // mode, this is the menu's rich-mode surface.
     if let Some(menu) = editor_menu {
-        paint_editor_menu(menu, skin, bounds, geometry.font_size, window, cx);
+        paint_editor_menu(
+            menu,
+            strip_top_dock,
+            skin,
+            bounds,
+            geometry.font_size,
+            window,
+            cx,
+        );
     }
 
     if display_offset == 0 && !terminal.rich_input() && terminal.menu_is_open() {
@@ -2833,6 +2855,7 @@ fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
 )]
 fn paint_editor_menu(
     menu: &editor::EditorMenuPaint,
+    top_dock: bool,
     skin: &PaneSkin,
     bounds: gpui::Bounds<Pixels>,
     font_px: Pixels,
@@ -2862,7 +2885,7 @@ fn paint_editor_menu(
     let panel = gpui::Bounds {
         origin: point(
             bounds.origin.x + px(8.),
-            bounds.origin.y + bounds.size.height - rows_height - hint_h,
+            editor::menu_anchor_y(top_dock, bounds, rows_height + hint_h),
         ),
         size: gpui::Size::new(width, rows_height + hint_h),
     };

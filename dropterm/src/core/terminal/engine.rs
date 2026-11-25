@@ -216,6 +216,11 @@ pub struct TerminalOptions {
     /// off. Carried for the pane's paint (the engine's lane never
     /// reads it), flipping live on the config echo.
     pub input_highlight: bool,
+    /// Where the rich-mode strip docks (rich-input RI-9, OQ-7):
+    /// `Bottom` (the default) under the grid; `Top` above it — the
+    /// flow a normal terminal either way. Carried for the pane like
+    /// the chrome toggles.
+    pub input_position: crate::core::config::InputPosition,
     /// The menu chrome's toggles (rich-input RI-7): descriptions,
     /// badges, icons, the argument hint line (each default on), and
     /// the compact density (default off) — resolved from the RI-1
@@ -254,6 +259,7 @@ impl Default for TerminalOptions {
             autosuggestions_history_context: true,
             history_state_path: None,
             input_mode: InputMode::default(),
+            input_position: crate::core::config::InputPosition::default(),
             input_highlight: true,
             input_descriptions: true,
             input_badges: true,
