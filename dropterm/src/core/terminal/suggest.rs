@@ -1092,6 +1092,13 @@ impl SpecCommand {
         self.name == command || self.aliases.iter().any(|alias| alias == command)
     }
 
+    /// The command's hint pair (rich-input RI-7): the canonical name
+    /// and its corpus description — the argument hint line's
+    /// content.
+    pub(crate) fn hint_pair(&self) -> (String, Option<String>) {
+        (self.name.clone(), self.description.clone())
+    }
+
     /// The ruled order, recursive (suggest-schema spec): every entry
     /// list — subcommands, flags, and the literal suggestions under a
     /// command's or a flag's arguments — sorts by name at every
@@ -2170,6 +2177,15 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
 /// eight rows with a scroll offset — Warp/VS Code show ~10; eight
 /// fits the drop-down's short surface. Shared by the model's scroll
 /// arithmetic and the renderer's window.
+/// The top-level spec a command name resolves to (rich-input
+/// RI-7): its hint pair, `None` when no spec carries the name.
+pub(crate) fn spec_hint(table: &[SpecCommand], command: &str) -> Option<(String, Option<String>)> {
+    table
+        .iter()
+        .find(|spec| spec.carries_name(command))
+        .map(SpecCommand::hint_pair)
+}
+
 pub const MENU_VISIBLE_ROWS: usize = 8;
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped

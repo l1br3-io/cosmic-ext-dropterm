@@ -2233,6 +2233,24 @@ impl gpui::Render for TerminalPane {
                     pane.update(cx, |pane, cx| pane.on_key(&tab_keystroke(true), window, cx));
                 }
             });
+        // The editor menu's paint bundle (rich-input RI-7): the
+        // chrome capture under one engine read — None when the menu
+        // stands closed, the paint's whole gate.
+        let editor_menu = {
+            let engine = self.terminal.lock().expect("engine lock");
+            let state = self.editor.lock().expect("editor lock");
+            editor::EditorMenuPaint::capture(
+                &engine,
+                &state,
+                editor::MenuChrome {
+                    descriptions: self.options.input_descriptions,
+                    badges: self.options.input_badges,
+                    icons: self.options.input_icons,
+                    argument_hint: self.options.input_argument_hint,
+                    compact_rows: self.options.input_compact_rows,
+                },
+            )
+        };
         // The rich-input strip (rich-input spec, RI-4): in rich mode
         // the owned line paints in its own docked row under the grid
         // and the grid's prompt-row overlays stand down — the column
@@ -2248,6 +2266,7 @@ impl gpui::Render for TerminalPane {
                     &walk_log,
                     &image_cache,
                     &viewport_origin,
+                    editor_menu.as_ref(),
                     bounds,
                     window,
                     cx,
@@ -2313,6 +2332,7 @@ fn paint_pane(
     walk_log: &Arc<Mutex<WalkLog>>,
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
     viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
+    editor_menu: Option<&editor::EditorMenuPaint>,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -2673,6 +2693,13 @@ fn paint_pane(
     // the panel quad and its rows issued after the grid float above
     // it with no layering ceremony (the libcosmic build needed
     // `with_layer` for the same effect — wgpu sorts by kind there).
+    // The editor's own menu panel (rich-input RI-7): the chrome
+    // above the strip — the grid panel above stays dark in rich
+    // mode, this is the menu's rich-mode surface.
+    if let Some(menu) = editor_menu {
+        paint_editor_menu(menu, skin, bounds, geometry.font_size, window, cx);
+    }
+
     if display_offset == 0 && !terminal.rich_input() && terminal.menu_is_open() {
         let all_rows = terminal.menu_rows();
         let range = suggest::menu_visible_window(terminal.menu_scroll(), all_rows.len());
@@ -2792,9 +2819,199 @@ fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
     gpui::rgb(u32::from(color.r()) << 16 | u32::from(color.g()) << 8 | u32::from(color.b())).into()
 }
 
-/// One overlay text line — the ghost's visible string or a menu row
-/// — shaped once in the pane's font at its color, natural width (no
-/// cell-grid forcing: the overlays are not the grid).
+/// The editor menu's panel paint (rich-input RI-7): the mock's
+/// chrome above the strip — icon, the marked label (the typed
+/// prefix semibold), the badge chip in its class color, the
+/// description dim (its own line comfortable, inline compact), the
+/// selection's tint, the visible window from the scroll offset, the
+/// argument hint line above the panel, and the popover surface the
+/// grid menu itself rides — every element behind its toggle at
+/// capture time (the bundle carries None).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one panel painted in one pass — rows, chrome, and hint share the one geometry"
+)]
+fn paint_editor_menu(
+    menu: &editor::EditorMenuPaint,
+    skin: &PaneSkin,
+    bounds: gpui::Bounds<Pixels>,
+    font_px: Pixels,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let theme = cx.theme();
+    let panel_bg = theme.popover;
+    let panel_border = theme.border;
+    let fg = theme.popover_foreground;
+    let dim = gpui::hsla(fg.h, fg.s, fg.l, 0.55);
+    let palette = TokenPalette::for_scheme(fg.l > 0.5);
+
+    let row_h = px(editor::menu_row_height_px(menu.chrome.compact_rows));
+    let range = suggest::menu_visible_window(menu.scroll, menu.rows.len());
+    if range.is_empty() {
+        return;
+    }
+    let visible = &menu.rows[range.clone()];
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the visible row count is the menu's budget (<=8), exact in f32"
+    )]
+    let rows_height = row_h * visible.len() as f32;
+    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| px(26.));
+    let width = (px(460.)).min(bounds.size.width - px(16.));
+    let panel = gpui::Bounds {
+        origin: point(
+            bounds.origin.x + px(8.),
+            bounds.origin.y + bounds.size.height - rows_height - hint_h,
+        ),
+        size: gpui::Size::new(width, rows_height + hint_h),
+    };
+    let mut panel_quad = fill(panel, panel_bg);
+    panel_quad.corner_radii = gpui::Corners::all(px(6.));
+    panel_quad.border_widths = gpui::Edges::all(px(1.));
+    panel_quad.border_color = panel_border;
+    window.paint_quad(panel_quad);
+
+    // The argument hint line (the mock's own seat: the panel's top
+    // strip, the command semibold, its description dim).
+    let mut y = panel.origin.y;
+    if let Some((name, description)) = &menu.hint {
+        let mut hint_font = skin.font.clone();
+        hint_font.weight = FontWeight::SEMIBOLD;
+        let shaped = shape_overlay_line(name, &hint_font, fg, font_px, window);
+        let _ = shaped.paint(
+            point(panel.origin.x + px(10.), y + px(4.)),
+            font_px,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let x_after = panel.origin.x + px(10.) + shaped.width + px(8.);
+        if let Some(description) = description {
+            let shaped = shape_overlay_line(description, &skin.font, dim, font_px, window);
+            let _ = shaped.paint(
+                point(x_after, y + px(4.)),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        y += hint_h;
+    }
+
+    // The rows: icon, the marked label, the badge, the description —
+    // the selected one tinted.
+    let badge_color = |badge: &str| -> gpui::Hsla {
+        match badge {
+            "cmd" => palette.cmd,
+            "flag" => palette.flag,
+            "path" => palette.string,
+            "env" => palette.err,
+            "hist" => dim,
+            _ => fg,
+        }
+    };
+    for (index, row) in visible.iter().enumerate() {
+        let absolute = range.start + index;
+        let row_bounds = gpui::Bounds {
+            origin: point(panel.origin.x, y),
+            size: gpui::Size::new(panel.size.width, row_h),
+        };
+        if absolute == menu.selected {
+            window.paint_quad(fill(
+                gpui::Bounds {
+                    origin: point(row_bounds.origin.x + px(2.), row_bounds.origin.y + px(1.)),
+                    size: gpui::Size::new(row_bounds.size.width - px(4.), row_h - px(2.)),
+                },
+                gpui::hsla(fg.h, fg.s, fg.l, 0.12),
+            ));
+        }
+        let mut x = row_bounds.origin.x + px(10.);
+        if let Some(icon) = row.icon {
+            let shaped = shape_overlay_line(&icon.to_string(), &skin.font, dim, font_px, window);
+            let _ = shaped.paint(
+                point(x, y + (row_h - font_px) / 2.),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width + px(8.);
+        }
+        // The marked label: the typed prefix semibold, the rest
+        // normal — two shapes split at the char mark.
+        let marked_byte = row
+            .label
+            .char_indices()
+            .nth(row.marked)
+            .map_or(row.label.len(), |(byte, _)| byte);
+        let (before, after) = row.label.split_at(marked_byte);
+        let mut mark_font = skin.font.clone();
+        mark_font.weight = FontWeight::SEMIBOLD;
+        let shaped = shape_overlay_line(before, &mark_font, fg, font_px, window);
+        let _ = shaped.paint(
+            point(x, y + (row_h - font_px) / 2.),
+            font_px,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        x += shaped.width;
+        if !after.is_empty() {
+            let shaped = shape_overlay_line(after, &skin.font, fg, font_px, window);
+            let _ = shaped.paint(
+                point(x, y + (row_h - font_px) / 2.),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width;
+        }
+        if let Some(badge) = row.badge {
+            x += px(8.);
+            let shaped = shape_overlay_line(badge, &skin.font, badge_color(badge), font_px, window);
+            let _ = shaped.paint(
+                point(x, y + (row_h - font_px) / 2.),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width;
+        }
+        if let Some(description) = &row.description {
+            let desc_x = if menu.chrome.compact_rows {
+                x + px(8.)
+            } else {
+                row_bounds.origin.x + px(28.)
+            };
+            let desc_y = if menu.chrome.compact_rows {
+                y + (row_h - font_px) / 2.
+            } else {
+                y + row_h - font_px - px(4.)
+            };
+            let shaped = shape_overlay_line(description, &skin.font, dim, font_px, window);
+            let _ = shaped.paint(
+                point(desc_x, desc_y),
+                font_px,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        y += row_h;
+    }
+}
+
 /// The mock's token palette (rich-input RI-6): the light/dark pairs
 /// keyed on the scheme's foreground luminance — command, flag,
 /// string, and the unknown-command error red (the variable rides
@@ -2988,6 +3205,9 @@ fn paint_strip(
     }
 }
 
+/// One overlay text line — the ghost's visible string or a menu row
+/// — shaped once in the pane's font at its color, natural width (no
+/// cell-grid forcing: the overlays are not the grid).
 fn shape_overlay_line(
     text: &str,
     font: &gpui::Font,

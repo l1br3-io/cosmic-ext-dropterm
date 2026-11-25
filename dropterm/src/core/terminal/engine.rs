@@ -216,6 +216,15 @@ pub struct TerminalOptions {
     /// off. Carried for the pane's paint (the engine's lane never
     /// reads it), flipping live on the config echo.
     pub input_highlight: bool,
+    /// The menu chrome's toggles (rich-input RI-7): descriptions,
+    /// badges, icons, the argument hint line (each default on), and
+    /// the compact density (default off) — resolved from the RI-1
+    /// keys, carried for the pane's paint like `input_highlight`.
+    pub input_descriptions: bool,
+    pub input_badges: bool,
+    pub input_icons: bool,
+    pub input_argument_hint: bool,
+    pub input_compact_rows: bool,
 }
 
 impl Default for TerminalOptions {
@@ -246,6 +255,11 @@ impl Default for TerminalOptions {
             history_state_path: None,
             input_mode: InputMode::default(),
             input_highlight: true,
+            input_descriptions: true,
+            input_badges: true,
+            input_icons: true,
+            input_argument_hint: true,
+            input_compact_rows: false,
             autosuggestions_menu_fuzzy: true,
             spawn_env_names: Arc::from(Vec::new()),
         }
@@ -2958,6 +2972,13 @@ impl Terminal {
             .iter()
             .any(|spec| spec.carries_name(name))
             || self.command_catalog.iter().any(|known| known == name)
+    }
+
+    /// The argument hint line's content (rich-input RI-7): the
+    /// command's canonical name and its corpus description, `None`
+    /// when no spec carries the name.
+    pub fn editor_menu_hint(&self, command: &str) -> Option<(String, Option<String>)> {
+        suggest::spec_hint(&self.autosuggestions_specs_table, command)
     }
 
     /// The completion menu's open attempt from the editor lane

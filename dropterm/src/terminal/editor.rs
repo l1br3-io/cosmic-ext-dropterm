@@ -8,6 +8,7 @@
 //! in its docked row (the view's own paint).
 
 use dropterm::core::terminal::editor::Key;
+use dropterm::core::terminal::suggest::SuggestionSource;
 // Re-exported for the view, which owns the pane-side instance and
 // routes the lane's menu outcomes and paints the token classes.
 pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress, TokenClass};
@@ -303,6 +304,177 @@ pub(crate) fn tab_fill(labels: &[&str], typed: &str) -> TabFill {
     }
 }
 
+// --- the menu chrome (rich-input RI-7) ---
+
+/// The menu chrome's toggles (rich-input RI-7): the RI-1 keys as
+/// one pure bundle, the pane's options folded once per paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the RI-1 keys' fold: each bool is its own serialized config field, regrouping changes the settings contract"
+)]
+pub(crate) struct MenuChrome {
+    pub(crate) descriptions: bool,
+    pub(crate) badges: bool,
+    pub(crate) icons: bool,
+    pub(crate) argument_hint: bool,
+    pub(crate) compact_rows: bool,
+}
+
+#[cfg(test)]
+impl MenuChrome {
+    /// Every element on, comfortable rows — the defaults' fold.
+    pub(crate) const fn all_on() -> Self {
+        Self {
+            descriptions: true,
+            badges: true,
+            icons: true,
+            argument_hint: true,
+            compact_rows: false,
+        }
+    }
+}
+
+/// One rendered menu row (rich-input RI-7): the mock's row model —
+/// the marked label (the typed prefix, matched case-insensitively,
+/// the paint bolds), the badge vocabulary word, the corpus
+/// description, and the icon glyph — pure data for the paint and
+/// the pins; each element is `None` when its toggle is off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MenuRowModel {
+    pub(crate) label: String,
+    /// How many leading CHARS of the label the typed segment
+    /// matched (the mock's marking rule).
+    pub(crate) marked: usize,
+    /// The badge vocabulary: cmd/flag/path/hist/env/sub.
+    pub(crate) badge: Option<&'static str>,
+    pub(crate) description: Option<String>,
+    pub(crate) icon: Option<char>,
+}
+
+/// The badge vocabulary word a row carries (rich-input RI-7): a
+/// `-`-prefixed label is a flag whatever its source; otherwise the
+/// provider decides — catalog cmd, specs subcommand sub, path,
+/// history hist, env; the generator's value sets (git branches,
+/// tags) read as the command's own sub vocabulary.
+fn badge_of(source: SuggestionSource, label: &str) -> &'static str {
+    if label.starts_with('-') {
+        return "flag";
+    }
+    match source {
+        SuggestionSource::Catalog => "cmd",
+        SuggestionSource::Specs | SuggestionSource::Generator => "sub",
+        SuggestionSource::Path => "path",
+        SuggestionSource::History => "hist",
+        SuggestionSource::Env => "env",
+    }
+}
+
+/// The icon glyph per badge (rich-input RI-7): the mock's lucide
+/// set as single glyphs — refined against the mock at the RI-C
+/// review.
+fn icon_for(badge: &str) -> char {
+    match badge {
+        "cmd" => '\u{276f}',
+        "flag" => '\u{2013}',
+        "path" => '/',
+        "hist" => '\u{21bb}',
+        "env" => '$',
+        _ => '\u{25b8}',
+    }
+}
+
+/// The menu's rendered rows (rich-input RI-7): the engine's
+/// candidates into the mock's row model under the toggles.
+pub(crate) fn menu_row_models(
+    rows: &[dropterm::core::terminal::suggest::MenuCandidate],
+    typed: &str,
+    chrome: MenuChrome,
+) -> Vec<MenuRowModel> {
+    rows.iter()
+        .map(|row| {
+            let badge = badge_of(row.source, &row.label);
+            let marked = if !typed.is_empty()
+                && row.label.to_lowercase().starts_with(&typed.to_lowercase())
+            {
+                typed.chars().count()
+            } else {
+                0
+            };
+            MenuRowModel {
+                label: row.label.clone(),
+                marked,
+                badge: chrome.badges.then_some(badge),
+                description: chrome
+                    .descriptions
+                    .then(|| row.description.clone())
+                    .flatten(),
+                icon: chrome.icons.then(|| icon_for(badge)),
+            }
+        })
+        .collect()
+}
+
+/// One menu row's height under the density switch (rich-input
+/// RI-7): comfortable carries the description on its own line,
+/// compact inlines it beside the label — the mock's padding pair.
+#[must_use]
+pub(crate) fn menu_row_height_px(compact: bool) -> f32 {
+    if compact { 22. } else { 34. }
+}
+
+/// The editor menu's paint bundle (rich-input RI-7): the rendered
+/// rows under the toggles, the selection and scroll the engine
+/// holds, and the hint line — built in the render pass under one
+/// engine read, painted by the pane above the strip.
+pub(crate) struct EditorMenuPaint {
+    pub(crate) rows: Vec<MenuRowModel>,
+    pub(crate) selected: usize,
+    pub(crate) scroll: usize,
+    pub(crate) hint: Option<(String, Option<String>)>,
+    pub(crate) chrome: MenuChrome,
+}
+
+impl EditorMenuPaint {
+    /// Capture the menu's paint state, `None` when the editor's
+    /// menu stands closed (or empty) — the paint's whole gate.
+    pub(crate) fn capture(
+        engine: &dropterm::core::terminal::Terminal,
+        editor_state: &Editor,
+        chrome: MenuChrome,
+    ) -> Option<Self> {
+        if !engine.rich_input() || !engine.menu_is_open() {
+            return None;
+        }
+        let (to_caret, _) = editor_state.step_inputs();
+        let typed = to_caret
+            .split_whitespace()
+            .next_back()
+            .unwrap_or_default()
+            .to_string();
+        let rows = menu_row_models(engine.menu_rows(), &typed, chrome);
+        if rows.is_empty() {
+            return None;
+        }
+        let hint = chrome
+            .argument_hint
+            .then(|| {
+                to_caret
+                    .split_whitespace()
+                    .next()
+                    .and_then(|command| engine.editor_menu_hint(command))
+            })
+            .flatten();
+        Some(Self {
+            rows,
+            selected: engine.menu_selected(),
+            scroll: engine.menu_scroll(),
+            hint,
+            chrome,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +665,101 @@ mod tests {
         ] {
             let _ = input::translate(&key(modifiers, name, typed), &binds, modes);
         }
+    }
+
+    // --- the menu chrome (rich-input RI-7) ---
+
+    fn candidate(
+        label: &str,
+        source: SuggestionSource,
+        description: Option<&str>,
+    ) -> dropterm::core::terminal::suggest::MenuCandidate {
+        dropterm::core::terminal::suggest::MenuCandidate {
+            label: label.to_string(),
+            suffix: String::new(),
+            description: description.map(str::to_string),
+            source,
+        }
+    }
+
+    #[test]
+    fn rows_carry_the_badge_vocabulary() {
+        use super::{MenuChrome, menu_row_models};
+        use dropterm::core::terminal::suggest::SuggestionSource as S;
+
+        let rows = vec![
+            candidate("git", S::Catalog, None),
+            candidate("status", S::Specs, None),
+            candidate("--short", S::Specs, None),
+            candidate("src/", S::Path, None),
+            candidate("sleep 30", S::History, None),
+            candidate("$HOME", S::Env, None),
+            candidate("feature/x", S::Generator, None),
+        ];
+        let models = menu_row_models(&rows, "", MenuChrome::all_on());
+        let badges: Vec<&str> = models.iter().filter_map(|row| row.badge).collect();
+        assert_eq!(
+            badges,
+            vec!["cmd", "sub", "flag", "path", "hist", "env", "sub"]
+        );
+        // A flag label wins over its source: the specs' flags are
+        // flags, not subs.
+        assert_eq!(models[2].badge, Some("flag"));
+    }
+
+    #[test]
+    fn the_typed_prefix_marks_case_insensitively() {
+        use super::{MenuChrome, menu_row_models};
+
+        let rows = vec![candidate("Git-Status", SuggestionSource::Specs, None)];
+        let models = menu_row_models(&rows, "GIT", MenuChrome::all_on());
+        assert_eq!(models[0].marked, 3);
+        // A non-matching prefix marks nothing.
+        let models = menu_row_models(&rows, "zzz", MenuChrome::all_on());
+        assert_eq!(models[0].marked, 0);
+    }
+
+    #[test]
+    fn each_chrome_element_disappears_with_its_toggle() {
+        use super::{MenuChrome, menu_row_models};
+
+        let rows = &[candidate(
+            "git",
+            SuggestionSource::Catalog,
+            Some("the thing"),
+        )];
+        let on = &menu_row_models(rows, "gi", MenuChrome::all_on())[0];
+        assert_eq!(on.badge, Some("cmd"));
+        assert_eq!(on.description.as_deref(), Some("the thing"));
+        assert_eq!(on.icon, Some('\u{276f}'));
+
+        let off = &menu_row_models(
+            rows,
+            "gi",
+            MenuChrome {
+                descriptions: false,
+                badges: false,
+                icons: false,
+                ..MenuChrome::all_on()
+            },
+        )[0];
+        assert_eq!(off.badge, None);
+        assert_eq!(off.description, None);
+        assert_eq!(off.icon, None);
+        // The label and its mark survive every toggle.
+        assert_eq!(off.label, "git");
+        assert_eq!(off.marked, 2);
+    }
+
+    #[test]
+    fn the_density_switch_flips_the_row_height() {
+        use super::menu_row_height_px;
+        let comfortable = menu_row_height_px(false);
+        let compact = menu_row_height_px(true);
+        assert!(
+            compact < comfortable,
+            "compact rows are the tighter density"
+        );
     }
 
     #[test]
