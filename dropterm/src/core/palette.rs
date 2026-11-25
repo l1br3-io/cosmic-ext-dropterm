@@ -35,6 +35,10 @@ pub enum Section {
     OpenTabs,
     Settings,
     ColorSchemes,
+    /// The script commands (script-commands spec): the merged
+    /// declared + runtime rows, one seat per slug, appended through
+    /// the caller's `extra` seam (plugin-manifest advertising).
+    ScriptCommands,
 }
 
 impl Section {
@@ -46,6 +50,7 @@ impl Section {
             Section::OpenTabs => "Open tabs",
             Section::Settings => "Settings",
             Section::ColorSchemes => "Color schemes",
+            Section::ScriptCommands => "Script commands",
         }
     }
 }
@@ -84,6 +89,12 @@ pub enum Verb {
     /// matching the resolved theme mode — the pickers' own rule
     /// (theming's per-mode pairing).
     ApplyScheme(String),
+    /// Run the named script command (script-commands spec): the
+    /// slug under the `script/` namespace, dispatched through the
+    /// same `RunCommand` funnel a bound chord rides. The plugins
+    /// initiative's append-by-id row — the reserved seam's first
+    /// consumer (plugin-manifest advertising).
+    ScriptCommand(String),
 }
 
 /// One palette row: pure data the bin renders and routes — the

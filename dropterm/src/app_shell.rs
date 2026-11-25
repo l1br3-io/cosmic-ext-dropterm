@@ -632,12 +632,27 @@ pub(crate) struct Shell {
     /// drain lands replies through it. Idle by construction with no
     /// plugins dir (no provider ever reports, no ask ever fires).
     tab_titles: dropterm::core::tabs::TabTitleAsks,
-    /// The live script-command set (script-commands spec): the host's
-    /// sync reports, the keybind editor's runtime rows read. Empty by
-    /// construction with no plugins dir; empty after a reload into no
-    /// commands — rows exist only for live commands, while persisted
+    /// The live script-command set (script-commands spec): the
+    /// declared + runtime merge, one seat per slug (plugin-manifest
+    /// advertising) — the keybind editor's rows and the palette's
+    /// `ScriptCommands` section read it. Empty by construction with
+    /// no plugins dir; empty after a reload into no commands — rows
+    /// exist only for live or declared commands, while persisted
     /// `script/<name>` bindings stay in the file, inert.
     pub(crate) script_commands: Vec<dropterm::core::keybinds::CommandRow>,
+    /// The runtime half of that merge: the host's sync reports,
+    /// verbatim — re-merged against the declared set on every
+    /// manifest rescan without touching the host.
+    runtime_script_commands: Vec<dropterm::core::keybinds::CommandRow>,
+    /// The manifest scan's registry (plugin-manifest advertising):
+    /// PM1's pure scan at boot, re-run on the watcher's shell-side
+    /// wake — the declared commands' and (PM5) the settings rows'
+    /// source. No interpreter, ever.
+    plugin_manifests: Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+    /// The watcher's shell-side wake (plugin-manifest): the same
+    /// notify callback that queues the host's `Reload` pings this
+    /// channel; the pump drains it into [`Self::rescan_manifests`].
+    manifest_wake: Receiver<()>,
     /// The completions table's shared load (gpui-parity Task 1): the
     /// loaded table beside the channel its background loads land on —
     /// `None` is the loading placeholder the panes carry.
@@ -814,6 +829,40 @@ fn plugin_surfaces() -> (PanelContainer, PanelContainer, PanelRail) {
     )
 }
 
+/// The manifest-declared commands as advertising rows, in dir order —
+/// the scan's registry speaking, no interpreter (plugin-manifest).
+fn declared_command_rows_of(
+    manifests: &[dropterm::core::plugins_manifest::ScannedPlugin],
+) -> Vec<dropterm::core::keybinds::CommandRow> {
+    manifests
+        .iter()
+        .flat_map(|plugin| plugin.commands.iter())
+        .map(|command| dropterm::core::keybinds::CommandRow {
+            name: command.id.clone(),
+            description: command.description.clone(),
+        })
+        .collect()
+}
+
+/// The advertising merge (plugin-manifest spec): the manifest-declared
+/// rows and the host's runtime registrations unify one seat per slug —
+/// the manifest wins the row when a slug stands in both (advertising
+/// is the manifest's job; dispatch is the runtime's, PM2's gate).
+/// Declared rows lead in dir order, the runtime-only seats follow in
+/// registration order — deterministic both ways.
+fn merge_script_command_rows(
+    declared: &[dropterm::core::keybinds::CommandRow],
+    runtime: Vec<dropterm::core::keybinds::CommandRow>,
+) -> Vec<dropterm::core::keybinds::CommandRow> {
+    let mut merged: Vec<dropterm::core::keybinds::CommandRow> = declared.to_vec();
+    for row in runtime {
+        if !merged.iter().any(|seat| seat.name == row.name) {
+            merged.push(row);
+        }
+    }
+    merged
+}
+
 impl Shell {
     /// The plain strategy's one inputs patch (gnome-window's
     /// plain-mode ceiling): a toplevel cannot slide itself
@@ -829,6 +878,10 @@ impl Shell {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one struct literal; the boot facts ride their own helpers (plugins_boot_state)"
+    )]
     fn new(
         boot: Instant,
         mode: Verdict,
@@ -853,6 +906,7 @@ impl Shell {
         specs: SpecsWatch,
         tray_actions: Receiver<crate::tray::TrayAction>,
         lua_host: dropterm::core::lua_host::LuaHost,
+        manifest_wake: Receiver<()>,
     ) -> Self {
         // The plain strategy's one inputs patch: no slide. A toplevel
         // cannot slide itself off-screen (xdg-toplevel has no position
@@ -880,7 +934,8 @@ impl Shell {
         // (a dir that appears mid-run is the next launch's, the
         // watcher's own rule) — `None` means no pane ever holds an
         // inlet, and a no-plugins session stays byte-identical.
-        let (lua_bus, status_scripts, tab_titles) = Self::plugins_boot_state(&lua_host);
+        let (lua_bus, status_scripts, tab_titles, script_commands, plugin_manifests) =
+            Self::plugins_boot_state(&lua_host);
         let (images_panel, rail, panel_rail) = plugin_surfaces();
         Self {
             boot,
@@ -922,6 +977,9 @@ impl Shell {
             verbs,
             pending_startup: Some(startup),
             startup_marked: false,
+            plugin_manifests,
+            runtime_script_commands: Vec::new(),
+            manifest_wake,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
             rename: None,
@@ -958,7 +1016,7 @@ impl Shell {
             status_timer_logged: (false, None, None),
             status_scripts,
             tab_titles,
-            script_commands: Vec::new(),
+            script_commands,
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .ok()
                 .map(|host| host.trim().to_string()),
@@ -983,14 +1041,19 @@ impl Shell {
     /// The plugins-dir boot facts, read once at construction: the bus
     /// inlet (`None` when no plugins dir stood at boot — a dir that
     /// appears mid-run is the next launch's, the watcher's own rule),
-    /// the status boot query (SG1), and the tab-title boot ask (TT2).
-    /// Read before the host moves into the shell.
+    /// the status boot query (SG1), the tab-title boot ask (TT2), and
+    /// the manifest scan with its advertising rows (plugin-manifest) —
+    /// pure data over PM1's module, no interpreter and no host wake,
+    /// so a no-plugins boot stays byte-identical (a missing dir scans
+    /// silent-empty).
     fn plugins_boot_state(
         lua_host: &dropterm::core::lua_host::LuaHost,
     ) -> (
         Option<dropterm::core::lua_host::LuaHostHandle>,
         status::ScriptSegmentsState,
         dropterm::core::tabs::TabTitleAsks,
+        Vec<dropterm::core::keybinds::CommandRow>,
+        Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
     ) {
         let stood = lua_host.plugins_dir().exists();
         let lua_bus = stood.then(|| lua_host.handle());
@@ -1002,7 +1065,14 @@ impl Shell {
         if stood {
             asks.arm_boot_ask();
         }
-        (lua_bus, scripts, asks)
+        let plugin_manifests =
+            dropterm::core::plugins_manifest::scan(lua_host.plugins_dir()).plugins;
+        // The advertising rows stand from boot: the declared set merged
+        // over the empty runtime set — the initial state, not a change
+        // event, so no registry log line rides it.
+        let script_commands =
+            merge_script_command_rows(&declared_command_rows_of(&plugin_manifests), Vec::new());
+        (lua_bus, scripts, asks, script_commands, plugin_manifests)
     }
 
     /// The probe's granted-bounds slot, cloned into each measuring
@@ -1235,6 +1305,15 @@ impl Shell {
             cx.notify();
         }
         self.drain_lua_host(cx);
+        // The watcher's shell-side wake (plugin-manifest): the same
+        // notify burst that queued the host's Reload re-merges the
+        // advertising rows. One rescan per burst — the scan reads
+        // current disk, so every queued follower is redundant (the
+        // Reload arm's own fold rule).
+        if self.manifest_wake.try_recv().is_ok() {
+            while self.manifest_wake.try_recv().is_ok() {}
+            self.rescan_manifests(cx);
+        }
         self.panel_ask_tick();
         let granted = self.measured.lock().map_or(None, |mut slot| slot.take());
         if let Some(output) = granted {
@@ -2798,12 +2877,34 @@ impl Shell {
             .map(|tab| tab.title.clone())
             .collect();
         let scheme_names = dropterm::core::theme_source::merged_scheme_names(&self.user_schemes);
+        // The script commands (plugin-manifest advertising): the
+        // merged declared + runtime rows as the palette's
+        // append-by-id extras — searchable from launch, a declared
+        // lazy plugin's row standing with no interpreter alive. The
+        // label is the description (the manifest requires one); the
+        // chord hint resolves through the same effective-binding the
+        // keybind rows use, a bound `script/<name>` showing its chord.
+        let extra: Vec<dropterm::core::palette::Command> = self
+            .script_commands
+            .iter()
+            .map(|row| dropterm::core::palette::Command {
+                id: row.id(),
+                label: if row.description.is_empty() {
+                    row.name.clone()
+                } else {
+                    row.description.clone()
+                },
+                section: dropterm::core::palette::Section::ScriptCommands,
+                chord: dropterm::core::keybinds::effective_binding(&row.id(), &custom_binds),
+                verb: dropterm::core::palette::Verb::ScriptCommand(row.name.clone()),
+            })
+            .collect();
         let catalog = dropterm::core::palette::compose(
             &custom_binds,
             &profiles,
             &tab_titles,
             &scheme_names,
-            &[],
+            &extra,
         );
         // The palette's two callbacks — the wiring only: the pick
         // closes the palette then routes, every dismissal closes.
@@ -3084,6 +3185,23 @@ impl Shell {
                 };
                 self.write_settings(&write);
                 cx.notify();
+            }
+            Route::ScriptCommand(name) => {
+                // The keybind funnel's own dispatch (script-commands
+                // spec): fire-and-forget `RunCommand`, the active
+                // pane's id the handler's ctx. A paneless session has
+                // no tab to hand the handler — one line, the pick
+                // dropped (the stale-pick drop's own culture).
+                let Some(id) = self.tabs.active_id() else {
+                    println!(
+                        "dropterm: palette pick script/{} dropped: no pane at +{}ms",
+                        name,
+                        self.boot.elapsed().as_millis()
+                    );
+                    return;
+                };
+                self.lua_host
+                    .send(dropterm::core::lua_host::HostCommand::RunCommand { name, tab: id.0 });
             }
         }
     }
@@ -5357,27 +5475,55 @@ impl Shell {
     }
 
     /// The commands registry's sync (script-commands spec): the
-    /// keybind editor's runtime rows, the reload-close riding the
-    /// dialog's rule.
+    /// keybind editor's runtime rows, merged with the manifest-declared
+    /// set one seat per slug (plugin-manifest advertising — the
+    /// manifest wins the row when a slug stands in both), the
+    /// reload-close riding the dialog's rule.
     fn note_script_commands(
         &mut self,
         commands: Vec<dropterm::core::keybinds::CommandRow>,
         cx: &mut Context<Self>,
     ) {
-        if commands == self.script_commands {
+        self.runtime_script_commands = commands;
+        self.remerge_script_commands(cx);
+    }
+
+    /// Re-merge the declared and runtime command sets into the
+    /// advertising rows — the rescan's own re-entry point, so a
+    /// manifest change drops or adds its rows without touching the
+    /// runtime seats.
+    fn remerge_script_commands(&mut self, cx: &mut Context<Self>) {
+        let merged = merge_script_command_rows(
+            &self.declared_command_rows(),
+            self.runtime_script_commands.clone(),
+        );
+        if merged == self.script_commands {
             return;
         }
-        let names: Vec<&str> = commands
-            .iter()
-            .map(|command| command.name.as_str())
-            .collect();
+        let names: Vec<&str> = merged.iter().map(|command| command.name.as_str()).collect();
         println!(
             "dropterm: plugins: commands registry {names:?} at +{}ms",
             self.boot.elapsed().as_millis()
         );
-        self.script_commands = commands;
+        self.script_commands = merged;
         self.close_dialog(cx);
         cx.notify();
+    }
+
+    /// The manifest-declared commands as advertising rows, in dir
+    /// order — the scan's registry speaking, no interpreter.
+    fn declared_command_rows(&self) -> Vec<dropterm::core::keybinds::CommandRow> {
+        declared_command_rows_of(&self.plugin_manifests)
+    }
+
+    /// The watcher's shell-side half (plugin-manifest): the scan
+    /// re-runs and the advertising rows re-merge, so a manifest edit
+    /// or removal lands on the rows at the same reload the host's
+    /// interpreter feels.
+    fn rescan_manifests(&mut self, cx: &mut Context<Self>) {
+        let scan = dropterm::core::plugins_manifest::scan(self.lua_host.plugins_dir());
+        self.plugin_manifests = scan.plugins;
+        self.remerge_script_commands(cx);
     }
 
     fn drain_lua_host(&mut self, cx: &mut Context<Self>) {
@@ -7177,7 +7323,12 @@ pub(crate) fn boot(
     // plugins dir arms nothing and prints nothing (the theme-files
     // posture).
     let lua_host = dropterm::core::lua_host::LuaHost::new(config_dir.join("plugins"));
-    if let Some(plugins_watcher) = lua_host.watch_plugins_dir() {
+    // The watcher's shell-side wake (plugin-manifest): the same
+    // notify callback that queues the host's Reload pings the shell's
+    // manifest channel, so the advertising rows re-merge at the same
+    // reload the interpreter feels.
+    let (manifest_wake_tx, manifest_wake) = std::sync::mpsc::channel::<()>();
+    if let Some(plugins_watcher) = lua_host.watch_plugins_dir(manifest_wake_tx) {
         std::thread::spawn(move || {
             let _guard = plugins_watcher;
             std::thread::park();
@@ -7221,6 +7372,7 @@ pub(crate) fn boot(
             specs,
             tray_actions,
             lua_host,
+            manifest_wake,
         )
     });
     // The plain strategy's retained output: display metadata stands
@@ -7511,6 +7663,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -7642,6 +7795,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -7763,18 +7917,10 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    #[ignore = "the respawn's two live PTY reader threads (the swapped-out pane's and the respawned pane's) cannot satisfy the gpui test scheduler's thread-affinity gate across the suite: every assertion runs and passes, then a surviving reader trips the gate in a later test — read the stdout, not the exit code (just test a_profile_respawn -- --ignored)"]
-    fn a_profile_respawn_seeds_the_departed_pane_repair(cx: &mut gpui::TestAppContext) {
-        // The respawn's keyboard hand-off (the switch-profile focus
-        // loss): the swap drops its pane in place, so the departed
-        // handle belongs to no live pane — the tab swap's repair reads
-        // the panes map and cannot see it — and the render's repair
-        // needs the slot instead. The swap must seed the slot with the
-        // departed pane's handle, never the respawned pane's.
-        cx.update(gpui_component::init);
-        let cx = cx.add_empty_window();
-        let config = DropTermConfig {
+    /// The respawn test's one-profile config: `/bin/sh` under the
+    /// name "sh", everything else default.
+    fn sh_profile_config() -> DropTermConfig {
+        DropTermConfig {
             shell: Some("/bin/sh".to_string()),
             profiles: vec![dropterm::core::profile::Profile {
                 name: "sh".to_owned(),
@@ -7786,7 +7932,21 @@ mod tests {
                 scrollback_lines: None,
             }],
             ..DropTermConfig::default()
-        };
+        }
+    }
+
+    #[gpui::test]
+    #[ignore = "the respawn's two live PTY reader threads (the swapped-out pane's and the respawned pane's) cannot satisfy the gpui test scheduler's thread-affinity gate across the suite: every assertion runs and passes, then a surviving reader trips the gate in a later test — read the stdout, not the exit code (just test a_profile_respawn -- --ignored)"]
+
+    fn a_profile_respawn_seeds_the_departed_pane_repair(cx: &mut gpui::TestAppContext) {
+        // The respawn's keyboard hand-off (the switch-profile focus
+        // loss): the swap drops its pane in place, so the departed
+        // handle belongs to no live pane — the render's repair needs
+        // the slot, seeded with the departed handle, never the
+        // respawned pane's.
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        let config = sh_profile_config();
         let (_verbs_tx, verbs_rx) = std::sync::mpsc::channel();
         let (signals_tx, signals_rx) = std::sync::mpsc::channel();
         let (_config_tx, config_rx) = std::sync::mpsc::channel();
@@ -7832,6 +7992,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -8301,6 +8462,7 @@ mod tests {
                     // Dormant here too: nothing dispatches Lua in
                     // this scaffold.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -8374,6 +8536,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -8905,6 +9068,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -9909,6 +10073,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10004,6 +10169,7 @@ mod tests {
                     // The Lua host rides dormant here: no command is
                     // ever sent, so no thread, no scan, no log.
                     dropterm::core::lua_host::LuaHost::new(std::path::PathBuf::new()),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10129,6 +10295,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(plugins),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         })
@@ -10568,6 +10735,7 @@ mod tests {
                     },
                     std::sync::mpsc::channel::<crate::tray::TrayAction>().1,
                     dropterm::core::lua_host::LuaHost::new(plugins_dir),
+                    std::sync::mpsc::channel::<()>().1,
                 )
             })
         });
@@ -10674,6 +10842,140 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
                 !spawned,
                 "focus flips on a closed gate must never reach the channel"
             );
+        });
+    }
+    // --- the advertising rows (plugin-manifest PM3) ---
+
+    fn write_manifest(plugins: &std::path::Path, id: &str, json: &str) {
+        std::fs::create_dir_all(plugins.join(id)).expect("plugin dir");
+        std::fs::write(plugins.join(id).join("plugin.json"), json).expect("write manifest");
+    }
+
+    fn write_script(plugins: &std::path::Path, id: &str, text: &str) {
+        std::fs::create_dir_all(plugins.join(id)).expect("plugin dir");
+        std::fs::write(plugins.join(id).join("plugin.lua"), text).expect("write script");
+    }
+
+    #[gpui::test]
+    fn declared_commands_advertise_at_launch_without_a_host_thread(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("advertise");
+        // A one-command manifest and nothing else: the row stands from
+        // boot, the interpreter never does.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go places" } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert!(
+                    !shell.lua_host.spawned(),
+                    "the boot scan never wakes the host"
+                );
+                assert_eq!(
+                    shell.script_commands,
+                    vec![dropterm::core::keybinds::CommandRow {
+                        name: "go".to_owned(),
+                        description: "Go places".to_owned(),
+                    }],
+                    "the declared row renders from launch"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn the_declared_and_runtime_merge_is_one_seat_per_slug(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("merge");
+        // The both-seats case: the manifest declares "go", an eager
+        // script also registers it — the manifest wins the row.
+        // The eager activation: the script must load so its runtime
+        // registrations land for the merge.
+        write_manifest(
+            &dir.0.join("plugins"),
+            "declared",
+            r#"{ "commands": [ { "id": "go", "description": "manifest one" } ],
+                "activation": ["on_startup"] }"#,
+        );
+        write_script(
+            &dir.0.join("plugins"),
+            "declared",
+            "local d = require('dropterm')\n\
+             d.command('go', 'runtime one', function() end)\n\
+             d.command('other', 'runtime only', function() end)",
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        // The mark seeds the host (the pump's own boot anchor): the
+        // eager plugin loads, reports its registrations; the drain
+        // merges them with the declared set.
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                shell
+                    .lua_host
+                    .send(dropterm::core::lua_host::HostCommand::StartupMark { elapsed_ms: 10 });
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let done = cx.update(|cx| {
+                shell.update(cx, |shell, cx| {
+                    shell.drain_lua_host(cx);
+                    shell.script_commands.len() == 2
+                })
+            });
+            if done || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            cx.update(|cx| shell.update(cx, |shell, cx| {
+                shell.drain_lua_host(cx);
+                shell.script_commands.clone()
+            })),
+            vec![
+                dropterm::core::keybinds::CommandRow {
+                    name: "go".to_owned(),
+                    description: "manifest one".to_owned(),
+                },
+                dropterm::core::keybinds::CommandRow {
+                    name: "other".to_owned(),
+                    description: "runtime only".to_owned(),
+                },
+            ],
+            "declared rows lead, runtime-only seats follow, the both-seat slug reads the manifest"
+        );
+    }
+
+    #[gpui::test]
+    fn a_manifest_removal_drops_its_rows_on_the_next_rescan(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("removal");
+        write_manifest(
+            &dir.0.join("plugins"),
+            "lazy",
+            r#"{ "commands": [ { "id": "go", "description": "Go places" } ] }"#,
+        );
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, _| {
+                assert_eq!(shell.script_commands.len(), 1);
+            });
+        });
+        // The watcher's wake shape: the dir edit lands, the shell-side
+        // rescan re-runs the scan and re-merges.
+        std::fs::remove_dir_all(dir.0.join("plugins").join("lazy")).expect("remove the plugin");
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.rescan_manifests(cx);
+                assert!(
+                    shell.script_commands.is_empty(),
+                    "the dropped manifest drops its rows"
+                );
+            });
         });
     }
 }

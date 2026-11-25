@@ -65,6 +65,10 @@ pub(crate) enum Route {
     /// The named scheme applied live to the picker slot matching the
     /// resolved theme mode — the drawer picker's own write.
     ApplyScheme(String),
+    /// Run the named script command — the keybind funnel's own
+    /// `RunCommand` dispatch, the palette's append-by-id row (the
+    /// plugins initiative's advertising).
+    ScriptCommand(String),
 }
 
 /// The Verb→funnel table. `None` is a swallowed no-op by design: a
@@ -95,6 +99,7 @@ pub(crate) fn route(verb: Verb, profiles: &[Profile], tab_len: usize) -> Option<
         Verb::SelectTab(one_based) => select_tab_target(tab_len, one_based).map(Route::SelectTab),
         Verb::OpenSettings(page) => Some(Route::OpenSettings(page)),
         Verb::ApplyScheme(name) => Some(Route::ApplyScheme(name)),
+        Verb::ScriptCommand(name) => Some(Route::ScriptCommand(name)),
     }
 }
 
@@ -1258,5 +1263,15 @@ mod tests {
         );
         cx.simulate_keystrokes("alt-p");
         assert_eq!(*log.borrow(), ["dismiss"], "the custom chord toggles");
+    }
+    #[test]
+    fn script_command_picks_route_to_the_run_command_funnel() {
+        // The palette's append-by-id row (plugin-manifest advertising):
+        // the pick routes to the script-command funnel, the same
+        // RunCommand dispatch a bound chord rides.
+        assert_eq!(
+            route(Verb::ScriptCommand("go".to_owned()), &[], 0),
+            Some(Route::ScriptCommand("go".to_owned()))
+        );
     }
 }

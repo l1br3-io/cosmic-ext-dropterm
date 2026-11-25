@@ -435,15 +435,17 @@ impl LuaHost {
     /// (`plugins/<id>/plugin.lua`), so a flat watch would miss every
     /// script edit — and queue a [`HostCommand::Reload`] on any
     /// content-changing event (task L3): the watcher feeds the host's
-    /// command channel — never the UI's event channel. A dir event is
-    /// a first work item (spec assumption 4: "first event to deliver,
-    /// first query, first watcher wake"), so the wake spawns the host
-    /// if it has never spawned — the owning wake's scan is the load,
-    /// with no duplicate beside it. Returns the watcher guard
-    /// (dropping it stops watching); a dir that cannot be watched is
-    /// `None` — missing is the silent first-run norm (the theme-files
-    /// posture), anything else costs one line.
-    pub fn watch_plugins_dir(&self) -> Option<notify::RecommendedWatcher> {
+    /// command channel — never the UI's event channel — and pings
+    /// `shell_wake` beside it, the shell's manifest rescan's own
+    /// signal (the advertising rows re-merge at the same reload). A
+    /// dir event is a first work item (spec assumption 4: "first
+    /// event to deliver, first query, first watcher wake"), so the
+    /// wake spawns the host if it has never spawned — the owning
+    /// wake's scan is the load, with no duplicate beside it. Returns
+    /// the watcher guard (dropping it stops watching); a dir that
+    /// cannot be watched is `None` — missing is the silent first-run
+    /// norm (the theme-files posture), anything else costs one line.
+    pub fn watch_plugins_dir(&self, shell_wake: Sender<()>) -> Option<notify::RecommendedWatcher> {
         let commands = self
             .commands
             .lock()
@@ -473,6 +475,7 @@ impl LuaHost {
                 if changes_content {
                     spawn_from_gate(&dormant, &plugins_dir);
                     let _ = commands.send(HostCommand::Reload);
+                    let _ = shell_wake.send(());
                 }
             }) {
                 Ok(watcher) => watcher,
@@ -2597,7 +2600,10 @@ mod tests {
         let dir = TempDir::new("watch");
         script(&dir, "one.lua", &format!("{PORT}\nprint('one loaded')"));
         let host = LuaHost::new(&dir.0);
-        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        let (wake_tx, _wake_rx) = std::sync::mpsc::channel::<()>();
+        let _watcher = host
+            .watch_plugins_dir(wake_tx)
+            .expect("arm the plugins watcher");
         emit(&host, "boot");
         let _ = logs_until(&host, |line| line.contains("one loaded"), LONG_WAIT);
         // A script dropped into the running host's dir: the watcher
@@ -2631,7 +2637,10 @@ mod tests {
             &format!("{PORT}\nprint('awake')\nd.on('x', function() print('answered') end)"),
         );
         let host = LuaHost::new(&dir.0);
-        let _watcher = host.watch_plugins_dir().expect("arm the plugins watcher");
+        let (wake_tx, _wake_rx) = std::sync::mpsc::channel::<()>();
+        let _watcher = host
+            .watch_plugins_dir(wake_tx)
+            .expect("arm the plugins watcher");
         assert!(
             !host.spawned(),
             "arming the watcher alone spawns nothing — the lazy pin holds"
