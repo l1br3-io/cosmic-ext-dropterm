@@ -603,6 +603,79 @@ pub fn write_store(path: &Path, values: &StoreValues) -> io::Result<()> {
     fs::rename(&temp, path)?;
     Ok(())
 }
+/// One declared row resolved against the store (plugin-manifest PM5):
+/// the row as the Plugins page and the ctx carry both read it — the
+/// stored value when it matches the row's type, the row's default
+/// otherwise. The merge's one copy: the host's logging wrap and the
+/// row source share it, so an editor's seed and a dispatch's ctx can
+/// never disagree.
+pub fn resolved_row_value(
+    kind: &SettingKind,
+    stored: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    match stored {
+        Some(value) if value_matches_kind(kind, value) => value.clone(),
+        _ => kind.default_value(),
+    }
+}
+
+/// One row of the Plugins page's source: the declared row with its
+/// current value resolved against the store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginSettingRow {
+    pub key: String,
+    pub label: String,
+    pub kind: SettingKind,
+    pub description: Option<String>,
+    pub value: serde_json::Value,
+}
+
+/// One plugin's group of the Plugins page's source: the display name
+/// over the dir id (the manifest's `"name"` overrides display only),
+/// the declared rows in declaration order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginGroup {
+    pub id: String,
+    pub display_name: String,
+    pub rows: Vec<PluginSettingRow>,
+}
+
+/// The Plugins page's row source (PM5): the scan's declared rows over
+/// the store's current values, one group per plugin that declares at
+/// least one row, in dir order — no interpreter, no host state. The
+/// page renders from this and nothing else, so the headless pins cover
+/// everything the window can show.
+pub fn settings_rows(manifests: &[ScannedPlugin], values: &StoreValues) -> Vec<PluginGroup> {
+    manifests
+        .iter()
+        .filter(|plugin| !plugin.settings.is_empty())
+        .map(|plugin| {
+            let stored = values.get(&plugin.id);
+            let rows = plugin
+                .settings
+                .iter()
+                .map(|row| PluginSettingRow {
+                    key: row.key.clone(),
+                    label: row.label.clone(),
+                    kind: row.kind.clone(),
+                    description: row.description.clone(),
+                    value: resolved_row_value(
+                        &row.kind,
+                        stored.and_then(|rows| rows.get(&row.key)),
+                    ),
+                })
+                .collect();
+            PluginGroup {
+                id: plugin.id.clone(),
+                display_name: plugin
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| plugin.id.clone()),
+                rows,
+            }
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -1287,5 +1360,104 @@ mod tests {
             leftovers.is_empty(),
             "no temp file left behind: {leftovers:?}"
         );
+    }
+    // --- the row source (plugin-manifest PM5) ---
+
+    fn plugin_with_row(
+        id: &str,
+        name: Option<&str>,
+        key: &str,
+        kind: SettingKind,
+    ) -> ScannedPlugin {
+        ScannedPlugin {
+            id: id.to_owned(),
+            display_name: name.map(std::borrow::ToOwned::to_owned),
+            has_script: true,
+            has_manifest: true,
+            activation: Activation::Lazy,
+            commands: Vec::new(),
+            settings: vec![DeclaredSetting {
+                key: key.to_owned(),
+                label: format!("{key} label"),
+                kind,
+                description: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn the_row_source_groups_in_dir_order_with_the_display_name_over_the_id() {
+        let manifests = vec![
+            plugin_with_row(
+                "uptime-helpers",
+                Some("Uptime helpers"),
+                "prefix",
+                SettingKind::String {
+                    default: String::new(),
+                },
+            ),
+            plugin_with_row(
+                "plain",
+                None,
+                "enabled",
+                SettingKind::Boolean { default: false },
+            ),
+        ];
+        let groups = settings_rows(&manifests, &StoreValues::new());
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].id, "uptime-helpers");
+        assert_eq!(groups[0].display_name, "Uptime helpers");
+        assert_eq!(groups[1].id, "plain");
+        assert_eq!(groups[1].display_name, "plain");
+        assert_eq!(groups[0].rows[0].key, "prefix");
+    }
+
+    #[test]
+    fn the_row_source_resolves_stored_values_and_falls_to_defaults() {
+        let manifests = vec![plugin_with_row(
+            "p",
+            None,
+            "enabled",
+            SettingKind::Boolean { default: false },
+        )];
+        // Stored and valid: the value wins.
+        let mut values = StoreValues::new();
+        values.insert(
+            "p".to_owned(),
+            BTreeMap::from([("enabled".to_owned(), json!(true))]),
+        );
+        assert_eq!(
+            settings_rows(&manifests, &values)[0].rows[0].value,
+            json!(true)
+        );
+        // Stored and wrong-typed: the default stands.
+        values.insert(
+            "p".to_owned(),
+            BTreeMap::from([("enabled".to_owned(), json!("yes"))]),
+        );
+        assert_eq!(
+            settings_rows(&manifests, &values)[0].rows[0].value,
+            json!(false)
+        );
+        // Unset: the default.
+        values.remove("p");
+        assert_eq!(
+            settings_rows(&manifests, &values)[0].rows[0].value,
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn plugins_without_declared_rows_take_no_group() {
+        let mut silent =
+            plugin_with_row("quiet", None, "k", SettingKind::Boolean { default: false });
+        silent.settings.clear();
+        let manifests = vec![
+            silent,
+            plugin_with_row("loud", None, "k", SettingKind::Boolean { default: false }),
+        ];
+        let groups = settings_rows(&manifests, &StoreValues::new());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "loud");
     }
 }

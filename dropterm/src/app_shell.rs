@@ -648,12 +648,16 @@ pub(crate) struct Shell {
     /// PM1's pure scan at boot, re-run on the watcher's shell-side
     /// wake — the declared commands' and (PM5) the settings rows'
     /// source. No interpreter, ever.
-    plugin_manifests: Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
+    pub(crate) plugin_manifests: Vec<dropterm::core::plugins_manifest::ScannedPlugin>,
     /// The settings store's current values (plugin-manifest PM4):
     /// read at boot, held here, pushed to the host at the mark and
     /// after every settings save (PM5's editors update this before
     /// their write). The window is the store's only writer.
-    plugin_settings_values: dropterm::core::plugins_manifest::StoreValues,
+    pub(crate) plugin_settings_values: dropterm::core::plugins_manifest::StoreValues,
+    /// The Plugins page editors' inline errors (plugin-manifest PM5):
+    /// `(plugin id, row key)` → the message, set by a rejected write
+    /// and cleared by the next accepted one. Pure display state.
+    plugin_setting_errors: std::collections::BTreeMap<(String, String), String>,
     /// The watcher's shell-side wake (plugin-manifest): the same
     /// notify callback that queues the host's `Reload` pings this
     /// channel; the pump drains it into [`Self::rescan_manifests`].
@@ -991,6 +995,7 @@ impl Shell {
             plugin_manifests,
             runtime_script_commands: Vec::new(),
             plugin_settings_values,
+            plugin_setting_errors: std::collections::BTreeMap::new(),
             manifest_wake,
             measured: Arc::new(Mutex::new(None)),
             pending_close: None,
@@ -5554,6 +5559,86 @@ impl Shell {
     /// order — the scan's registry speaking, no interpreter.
     fn declared_command_rows(&self) -> Vec<dropterm::core::keybinds::CommandRow> {
         declared_command_rows_of(&self.plugin_manifests)
+    }
+
+    /// The settings store's path (plugin-manifest PM5): the config
+    /// dir's own file — derived from the plugins dir's parent so the
+    /// derivation cannot drift from the dir the host scans (and so a
+    /// test's scratch plugins dir carries its own isolated store).
+    fn plugins_store_path(&self) -> std::path::PathBuf {
+        self.lua_host.plugins_dir().parent().map_or_else(
+            || {
+                dropterm::core::config::store::store_dir()
+                    .join(dropterm::core::plugins_manifest::STORE_FILE_NAME)
+            },
+            |dir| dir.join(dropterm::core::plugins_manifest::STORE_FILE_NAME),
+        )
+    }
+
+    /// One Plugins page editor's write (plugin-manifest PM5): the
+    /// declared row gates the value — an unknown row or a wrong-typed
+    /// value sets the row's inline error and keeps the prior store
+    /// value standing; a valid one clears the error, updates the
+    /// shell's values, writes the store atomically, and pushes the
+    /// host's carry. The window is the store's only writer.
+    pub(crate) fn plugin_setting_write(
+        &mut self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let row = self
+            .plugin_manifests
+            .iter()
+            .find(|plugin| plugin.id == plugin_id)
+            .and_then(|plugin| plugin.settings.iter().find(|row| row.key == key));
+        let Some(row) = row else {
+            self.plugin_setting_errors.insert(
+                (plugin_id.to_owned(), key.to_owned()),
+                "no declared row for this key".to_owned(),
+            );
+            cx.notify();
+            return;
+        };
+        if !dropterm::core::plugins_manifest::value_matches_kind(&row.kind, &value) {
+            self.plugin_setting_errors.insert(
+                (plugin_id.to_owned(), key.to_owned()),
+                format!("the value does not match the row's '{}' type", {
+                    // The kind word the manifest speaks, for the message.
+                    match &row.kind {
+                        dropterm::core::plugins_manifest::SettingKind::Boolean { .. } => "boolean",
+                        dropterm::core::plugins_manifest::SettingKind::String { .. } => "string",
+                        dropterm::core::plugins_manifest::SettingKind::Number { .. } => "number",
+                        dropterm::core::plugins_manifest::SettingKind::Enum { .. } => "enum",
+                        dropterm::core::plugins_manifest::SettingKind::Array { .. } => "array",
+                        dropterm::core::plugins_manifest::SettingKind::Object { .. } => "object",
+                    }
+                }),
+            );
+            cx.notify();
+            return;
+        }
+        self.plugin_setting_errors
+            .remove(&(plugin_id.to_owned(), key.to_owned()));
+        self.plugin_settings_values
+            .entry(plugin_id.to_owned())
+            .or_default()
+            .insert(key.to_owned(), value);
+        let path = self.plugins_store_path();
+        if let Err(err) =
+            dropterm::core::plugins_manifest::write_store(&path, &self.plugin_settings_values)
+        {
+            println!("dropterm: plugins: the settings store would not write: {err}");
+        }
+        self.push_plugin_settings();
+        cx.notify();
+    }
+
+    /// One editor row's inline error (plugin-manifest PM5).
+    pub(crate) fn plugin_setting_error(&self, plugin_id: &str, key: &str) -> Option<&String> {
+        self.plugin_setting_errors
+            .get(&(plugin_id.to_owned(), key.to_owned()))
     }
 
     /// The settings store's push (plugin-manifest PM4): the shell's
@@ -11118,5 +11203,103 @@ d.on('focus-lost', function(p) print('EH focus-lost tab=' .. tostring(p.tab)) en
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(title, "prefix=saved", "the push reached the ctx");
+    }
+    // --- the Plugins page's write path (plugin-manifest PM5) ---
+
+    #[gpui::test]
+    fn a_valid_plugin_setting_write_persists_and_pushes(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-write");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.plugin_setting_write("p", "enabled", serde_json::json!(true), cx);
+                assert!(shell.plugin_setting_error("p", "enabled").is_none());
+                assert_eq!(
+                    shell.plugin_settings_values["p"]["enabled"],
+                    serde_json::json!(true)
+                );
+            });
+        });
+        // The store file holds the write, atomically.
+        let path = dir.0.join("plugins-settings.json");
+        let (values, _) = dropterm::core::plugins_manifest::read_store(&path);
+        assert_eq!(values["p"]["enabled"], serde_json::json!(true));
+    }
+
+    #[gpui::test]
+    fn a_wrong_typed_plugin_setting_write_keeps_the_prior_value_with_an_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-wrong");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                // The prior value lands first.
+                shell.plugin_setting_write("p", "enabled", serde_json::json!(true), cx);
+                // The wrong-typed write: the error sets, the prior stands.
+                shell.plugin_setting_write("p", "enabled", serde_json::json!("yes"), cx);
+                let error = shell
+                    .plugin_setting_error("p", "enabled")
+                    .expect("the inline error")
+                    .clone();
+                assert!(error.contains("boolean"), "{error}");
+                assert_eq!(
+                    shell.plugin_settings_values["p"]["enabled"],
+                    serde_json::json!(true),
+                    "the prior value stands"
+                );
+            });
+        });
+        let (values, _) =
+            dropterm::core::plugins_manifest::read_store(&dir.0.join("plugins-settings.json"));
+        assert_eq!(values["p"]["enabled"], serde_json::json!(true));
+    }
+
+    #[gpui::test]
+    fn an_unknown_plugin_setting_row_writes_nothing(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let dir = ScratchDir::new("pm-unknown");
+        std::fs::create_dir_all(dir.0.join("plugins").join("p")).expect("plugin dir");
+        std::fs::write(
+            dir.0.join("plugins").join("p").join("plugin.json"),
+            r#"{ "settings": [
+                    { "key": "enabled", "type": "boolean", "label": "E", "default": false }
+                ] }"#,
+        )
+        .expect("write manifest");
+        let shell = shell_over_plugins(dir.0.join("plugins"), cx);
+        cx.update(|cx| {
+            shell.update(cx, |shell, cx| {
+                shell.plugin_setting_write("p", "ghost", serde_json::json!(true), cx);
+                assert!(
+                    shell
+                        .plugin_setting_error("p", "ghost")
+                        .is_some_and(|e| e.contains("no declared row"))
+                );
+                assert!(shell.plugin_settings_values.is_empty());
+            });
+        });
+        assert!(
+            !dir.0.join("plugins-settings.json").exists(),
+            "no store file without an accepted write"
+        );
     }
 }

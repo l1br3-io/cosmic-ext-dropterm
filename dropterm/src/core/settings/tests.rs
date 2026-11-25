@@ -65,10 +65,11 @@ fn the_pages_partition_every_section_exactly_once() {
 }
 
 #[test]
-fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
-    // The sidebar's two headers: the seven section pages in page
-    // order under Terminal, then the two manager pages under
-    // "Profiles & keys". The flattened list is ALL — the page
+fn nav_groups_are_terminal_then_profiles_then_plugins_in_page_order() {
+    // The sidebar's headers: the seven section pages in page
+    // order under Terminal, the two manager pages under
+    // "Profiles & keys", then the plugin-declared rows' page under
+    // "Plugins". The flattened list is ALL — the page
     // order the palette's Settings rows follow.
     assert_eq!(
         NAV_GROUPS,
@@ -89,6 +90,7 @@ fn nav_groups_are_terminal_then_profiles_and_keys_in_page_order() {
                 "Profiles & keys",
                 &[SettingsPage::Profiles, SettingsPage::Keybindings][..],
             ),
+            ("Plugins", &[SettingsPage::Plugins][..]),
         ]
     );
     let flattened: Vec<SettingsPage> = NAV_GROUPS

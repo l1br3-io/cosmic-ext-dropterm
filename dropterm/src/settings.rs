@@ -42,7 +42,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::switch::Switch;
@@ -303,6 +303,13 @@ pub(crate) struct SettingsWindow {
     form: (FormIdentity, Option<FormInputs>),
     /// The default-profile picker.
     default_picker: Entity<SelectState<Vec<SharedString>>>,
+    /// The Plugins page's text editors (string and number rows),
+    /// keyed `(plugin id, row key)` — built lazily per row on first
+    /// render, seeded from the row source (plugin-manifest PM5).
+    plugin_text_inputs: Vec<((String, String), Entity<InputState>)>,
+    /// The Plugins page's JSON editors (array and object rows), the
+    /// same keying.
+    plugin_json_inputs: Vec<((String, String), Entity<TextareaState>)>,
     _default_subscription: gpui::Subscription,
     _observe: gpui::Subscription,
 }
@@ -399,6 +406,8 @@ impl SettingsWindow {
                 seen_epoch: 0,
                 form: (None, None),
                 default_picker,
+                plugin_text_inputs: Vec::new(),
+                plugin_json_inputs: Vec::new(),
                 _default_subscription: default_subscription,
                 _observe: observe,
             }
@@ -769,6 +778,391 @@ impl SettingsWindow {
         row_card(label, description, control, cx).into_any_element()
     }
 
+    /// The Plugins page (plugin-manifest PM5): the scan's declared
+    /// rows over the store's current values, grouped by plugin
+    /// (display name over dir id) in dir order — no interpreter, no
+    /// host activity. Each row's editor matches its declared kind:
+    /// a toggle, a text field, a number field, a choice strip, or a
+    /// JSON text area; a rejected write sets the row's inline error
+    /// and keeps the prior store value standing.
+    fn plugins_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (manifests, values) = {
+            let shell = self.shell.read(cx);
+            (
+                shell.plugin_manifests.clone(),
+                shell.plugin_settings_values.clone(),
+            )
+        };
+        let groups = dropterm::core::plugins_manifest::settings_rows(&manifests, &values);
+        if groups.is_empty() {
+            return v_flex()
+                .gap_2()
+                .child(
+                    gpui::div()
+                        .min_w_0()
+                        .text_size(gpui::px(13.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No plugin declares settings yet."),
+                )
+                .child(
+                    gpui::div()
+                        .min_w_0()
+                        .text_size(gpui::px(12.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(
+                            "A plugin's plugin.json settings rows land here — see docs/plugins.md.",
+                        ),
+                )
+                .into_any_element();
+        }
+        let mut page = v_flex().gap_4().min_w_0();
+        for group in &groups {
+            page = page.child(self.plugin_group_card(group, window, cx));
+        }
+        page.into_any_element()
+    }
+
+    /// One plugin's group card: the display name over the dir id, the
+    /// declared rows in a bordered group with hairlines between them
+    /// (the section pages' own shape). The JSON rows' text areas are
+    /// full-width editors, so their cards gap the tail below the
+    /// label rather than holding it beside.
+    fn plugin_group_card(
+        &mut self,
+        group: &dropterm::core::plugins_manifest::PluginGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut rows = v_flex().min_w_0();
+        let count = group.rows.len();
+        for (index, row) in group.rows.iter().enumerate() {
+            rows =
+                rows.child(self.plugin_setting_card(&group.id, row, index + 1 < count, window, cx));
+        }
+        v_flex()
+            .gap_3()
+            .min_w_0()
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(gpui::px(15.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().popover_foreground)
+                            .child(group.display_name.clone()),
+                    )
+                    .when(group.display_name != group.id, |head| {
+                        head.child(
+                            gpui::div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(gpui::px(12.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(group.id.clone()),
+                        )
+                    }),
+            )
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .border_1()
+                    .rounded_md()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .overflow_hidden()
+                    .child(rows),
+            )
+            .into_any_element()
+    }
+
+    /// One declared row's card: the label and description over the
+    /// kind's editor, the inline error beside it, the hairline between
+    /// cards. The JSON rows' text areas need the width the inline
+    /// control column cannot give, so their cards gap the tail below
+    /// the label.
+    fn plugin_setting_card(
+        &mut self,
+        plugin_id: &str,
+        row: &dropterm::core::plugins_manifest::PluginSettingRow,
+        hairline: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let control = self.plugin_row_editor(plugin_id, row, window, cx);
+        let error = self
+            .shell
+            .read(cx)
+            .plugin_setting_error(plugin_id, &row.key)
+            .cloned();
+        let json_row = matches!(
+            row.kind,
+            dropterm::core::plugins_manifest::SettingKind::Array { .. }
+                | dropterm::core::plugins_manifest::SettingKind::Object { .. }
+        );
+        let head = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_0p5()
+            .child(
+                gpui::div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(gpui::px(13.))
+                    .child(row.label.clone()),
+            )
+            .when_some(row.description.clone(), |col, description| {
+                col.child(
+                    gpui::div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(gpui::px(12.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(description),
+                )
+            });
+        let tail = v_flex()
+            .items_end()
+            .gap_1()
+            .child(control)
+            .when_some(error, |col, error| {
+                col.child(
+                    gpui::div()
+                        .max_w(gpui::px(320.))
+                        .text_size(gpui::px(12.))
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
+            });
+        v_flex()
+            .min_w_0()
+            .px_4()
+            .py_3()
+            .when(hairline, |card| {
+                card.border_b_1().border_color(cx.theme().border)
+            })
+            .when(json_row, gpui::Styled::gap_2)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .gap_4()
+                    .min_w_0()
+                    .child(head)
+                    .child(tail),
+            )
+            .into_any_element()
+    }
+
+    /// One Plugins row's editor, matched to its declared kind. The
+    /// editors write through [`Shell::plugin_setting_write`] — the
+    /// shell's validation is the single gate, the inline error its
+    /// display.
+    fn plugin_row_editor(
+        &mut self,
+        plugin_id: &str,
+        row: &dropterm::core::plugins_manifest::PluginSettingRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use dropterm::core::plugins_manifest::SettingKind;
+        let key = row.key.clone();
+        match &row.kind {
+            SettingKind::Boolean { .. } => {
+                let checked = row.value.as_bool().unwrap_or_default();
+                let target = self.shell.clone();
+                let owner_id = plugin_id.to_owned();
+                Switch::new(SharedString::from(format!(
+                    "plugin-setting-{plugin_id}-{key}"
+                )))
+                .checked(checked)
+                .on_click(move |next: &bool, _window, cx| {
+                    target.update(cx, |shell, cx| {
+                        shell.plugin_setting_write(&owner_id, &key, serde_json::json!(next), cx);
+                    });
+                })
+                .into_any_element()
+            }
+            SettingKind::Enum { values, .. } => {
+                let target = self.shell.clone();
+                let current = row.value.as_str().map(std::borrow::ToOwned::to_owned);
+                let mut strip = h_flex().gap_1().min_w_0().flex_wrap();
+                for word in values {
+                    let selected = current.as_deref() == Some(word.as_str());
+                    strip = strip.child(
+                        Button::new(SharedString::from(format!(
+                            "plugin-enum-{plugin_id}-{key}-{word}"
+                        )))
+                        .label(word.clone())
+                        .when(selected, gpui_component::button::ButtonVariants::primary)
+                        .small()
+                        .on_click({
+                            let target = target.clone();
+                            let plugin_id = plugin_id.to_owned();
+                            let key = key.clone();
+                            let word = word.clone();
+                            move |_, _window, cx| {
+                                target.update(cx, |shell, cx| {
+                                    shell.plugin_setting_write(
+                                        &plugin_id,
+                                        &key,
+                                        serde_json::json!(word),
+                                        cx,
+                                    );
+                                });
+                            }
+                        }),
+                    );
+                }
+                strip.into_any_element()
+            }
+            SettingKind::Number { .. } => {
+                let seed = match row.value.as_f64() {
+                    Some(number) if number.fract() == 0.0 => format!("{number:.0}"),
+                    Some(number) => format!("{number}"),
+                    None => String::new(),
+                };
+                let state = self.ensure_plugin_text_input(plugin_id, &key, &seed, window, cx);
+                Input::new(&state).w(gpui::px(160.)).into_any_element()
+            }
+            SettingKind::String { .. } => {
+                let seed = row.value.as_str().unwrap_or_default().to_owned();
+                let state = self.ensure_plugin_text_input(plugin_id, &key, &seed, window, cx);
+                Input::new(&state).w(gpui::px(240.)).into_any_element()
+            }
+            kind @ (SettingKind::Array { .. } | SettingKind::Object { .. }) => {
+                let seed = serde_json::to_string_pretty(&row.value).unwrap_or_default();
+                let state = self.ensure_plugin_json_input(plugin_id, &key, &seed, window, cx);
+                let kind_word = match kind {
+                    SettingKind::Array { .. } => "array",
+                    SettingKind::Object { .. } => "object",
+                    _ => unreachable!("the outer pattern matched only these two"),
+                };
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .text_size(gpui::px(12.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("JSON {kind_word} — one value, enter to commit")),
+                    )
+                    .child(Textarea::new(&state).h(gpui::px(96.)).w_full())
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// The text editors' lazy build (plugin-manifest PM5): one
+    /// `InputState` per `(plugin id, key)`, seeded from the row source,
+    /// subscribed to the shell's write path — string rows write their
+    /// text verbatim, number rows write the parsed number and let a
+    /// non-parseable string fall to the shell's wrong-type error.
+    fn ensure_plugin_text_input(
+        &mut self,
+        plugin_id: &str,
+        key: &str,
+        seed: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some((_, state)) = self
+            .plugin_text_inputs
+            .iter()
+            .find(|((id, row), _)| *id == plugin_id && *row == key)
+        {
+            return state.clone();
+        }
+        let state = cx.new(|cx| InputState::new(window, cx).default_value(seed.to_string()));
+        let row_key = (plugin_id.to_owned(), key.to_owned());
+        let closure_key = row_key.clone();
+        cx.subscribe_in(
+            &state,
+            window,
+            move |this: &mut Self,
+                  emitter: &Entity<InputState>,
+                  event: &gpui_component::input::InputEvent,
+                  _window: &mut gpui::Window,
+                  cx: &mut gpui::Context<Self>| {
+                if matches!(
+                    event,
+                    gpui_component::input::InputEvent::Change
+                        | gpui_component::input::InputEvent::PressEnter { .. }
+                ) {
+                    let text = emitter.read(cx).value().to_string();
+                    let (plugin_id, key) = closure_key.clone();
+                    this.shell.update(cx, |shell, cx| {
+                        // The number gate: a parseable text writes the
+                        // number; anything else writes the string — the
+                        // shell's row-type check rejects it with the
+                        // inline error.
+                        let value = text
+                            .parse::<f64>()
+                            .map(serde_json::Value::from)
+                            .unwrap_or(serde_json::Value::String(text.clone()));
+                        shell.plugin_setting_write(&plugin_id, &key, value, cx);
+                    });
+                }
+            },
+        )
+        .detach();
+        self.plugin_text_inputs.push((row_key, state.clone()));
+        state
+    }
+
+    /// The JSON editors' lazy build: one `TextareaState` per
+    /// `(plugin id, key)`, seeded with the resolved value's pretty
+    /// JSON; the edit parses as JSON and writes — a parse failure
+    /// writes the raw text, the shell's row-type check rejects it,
+    /// the prior store value stands with the inline error.
+    fn ensure_plugin_json_input(
+        &mut self,
+        plugin_id: &str,
+        key: &str,
+        seed: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextareaState> {
+        if let Some((_, state)) = self
+            .plugin_json_inputs
+            .iter()
+            .find(|((id, row), _)| *id == plugin_id && *row == key)
+        {
+            return state.clone();
+        }
+        let state = cx.new(|cx| TextareaState::new(window, cx).default_value(seed.to_string()));
+        let row_key = (plugin_id.to_owned(), key.to_owned());
+        let closure_key = row_key.clone();
+        cx.subscribe_in(
+            &state,
+            window,
+            move |this: &mut Self,
+                  emitter: &Entity<TextareaState>,
+                  event: &gpui_component::input::InputEvent,
+                  _window: &mut gpui::Window,
+                  cx: &mut gpui::Context<Self>| {
+                if matches!(
+                    event,
+                    gpui_component::input::InputEvent::Change
+                        | gpui_component::input::InputEvent::PressEnter { .. }
+                ) {
+                    let text = emitter.read(cx).value().to_string();
+                    let (plugin_id, key) = closure_key.clone();
+                    this.shell.update(cx, |shell, cx| {
+                        let value = serde_json::from_str::<serde_json::Value>(&text)
+                            .unwrap_or(serde_json::Value::String(text.clone()));
+                        shell.plugin_setting_write(&plugin_id, &key, value, cx);
+                    });
+                }
+            },
+        )
+        .detach();
+        self.plugin_json_inputs.push((row_key, state.clone()));
+        state
+    }
+
     /// The open page: the section cards (the Profiles and
     /// Keybindings pages carry their own bodies — their increments).
     fn page_element(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -788,6 +1182,9 @@ impl SettingsWindow {
             }
             SettingsPage::Keybindings => {
                 content = content.child(self.keybindings_page(cx));
+            }
+            SettingsPage::Plugins => {
+                content = content.child(self.plugins_page(window, cx));
             }
             _ => {
                 if let Some(section) = page_section(page) {
