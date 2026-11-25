@@ -1410,15 +1410,6 @@ impl TerminalPane {
                     }
                 }
             }
-            // The trigger's own arm is a documented no-op (the
-            // libcosmic precedent): the routing in [`Self::on_key`]
-            // owns the open and the toggle where a declined chord's
-            // shell bytes live. This arm fires only when the map
-            // swallow sees the chord unmolested — a declined open
-            // that fell through translate, nothing to do.
-            TermAction::ShowCompletions => {
-                println!("dropterm: pane show-completions action (the routing owns it)");
-            }
             // The shell family never reaches the pane's own dispatch
             // (on_key routes every shell verb to the handoff first);
             // a future caller that lands here gets a log, never a

@@ -5637,6 +5637,77 @@ fn editor_steps_auto_pop_the_menu_with_the_parity_gates() {
 }
 
 #[test]
+fn editor_recollects_a_tab_opened_menu_while_typing() {
+    // The manual lane's freshness (rich-input RI-5): a menu the
+    // conditioned Tab opener opened re-collects fresh rows while the
+    // line moves — frozen rows would leave Tab filling and cycling
+    // against a set that no longer matches the typed segment. The
+    // auto-pop being on is irrelevant here: the opener marked the
+    // menu manual, and the freshness is the showing menu's rule.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(terminal.editor_menu_open("slee"), "the opener opens");
+    let opened = terminal.menu_rows().to_vec();
+    terminal.editor_step("sl", true);
+    assert!(
+        terminal.menu_is_open(),
+        "the fresh set still qualifies, the menu stands"
+    );
+    let recollected = terminal.menu_rows().to_vec();
+    assert_ne!(
+        opened, recollected,
+        "the rows re-collected over the moved segment"
+    );
+    assert!(
+        recollected.iter().all(|row| row.label.starts_with("sl")),
+        "every row answers the typed segment as it now stands"
+    );
+
+    // Nothing left to insert closes the menu — the manual lane
+    // included, the same rule the auto-opened menu always had.
+    terminal.editor_step("sleep 30", true);
+    assert!(
+        !terminal.menu_is_open(),
+        "an insert-less set closes the Tab-opened menu"
+    );
+}
+
+#[test]
+fn editor_recollects_a_tab_opened_menu_with_the_auto_pop_off() {
+    // `input_auto_popup` off leaves Tab the only opener — and the
+    // re-collect rides the showing menu, not the auto arm: the manual
+    // menu follows the line with the auto-pop wired dark.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: false,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+
+    terminal.editor_step("sl", true);
+    assert!(
+        !terminal.menu_is_open(),
+        "auto off never pops the menu on its own"
+    );
+    assert!(terminal.editor_menu_open("slee"), "Tab's opener opens");
+    terminal.editor_step("sleep 30", true);
+    assert!(!terminal.menu_is_open(), "nothing to insert closes it");
+    assert!(terminal.editor_menu_open("sleep 3"), "Tab re-opens");
+    let rows = terminal.menu_rows().to_vec();
+    assert!(
+        rows.iter().all(|row| row.label.starts_with("sleep 3")),
+        "the fresh rows match the typed segment"
+    );
+}
+
+#[test]
 fn editor_menu_press_accepts_and_two_stages_over_the_owned_line() {
     // The lane's write shape: an accept's suffix RETURNS for the
     // buffer — the PTY never sees it, the grid stays bare — and the

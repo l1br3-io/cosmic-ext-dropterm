@@ -10,7 +10,7 @@ The catalog composes fresh at every open, so it always matches the session as it
 - **Close Other Tabs** and **Close Tabs to the Right** - the per-tab menu's verbs, acting on the active tab
 - **New tab: <profile>** and **Switch to profile: <profile>** - one pair per profile, in config order
 - **Go to tab: <title>** - one row per open tab, covering positions beyond the nine keybound slots
-- **Settings: <page>** - each of the [Settings window](settings.md)'s nine pages, opening the window directly at it
+- **Settings: <page>** - each of the [Settings window](settings.md)'s ten pages, opening the window directly at it
 - **Scheme: <name>** - every scheme in the merged registry (the built-ins plus your own [theme files](theming.md#user-defined-scheme-files)), applied live
 
 With an empty query the rows show under their section headers in registry order. Typing replaces the sections with one flat list of the matches, best first.

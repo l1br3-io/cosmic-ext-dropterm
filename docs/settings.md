@@ -11,20 +11,20 @@ Four ways in:
 - press `Ctrl+Shift+I` while the terminal has keyboard focus,
 - pick "Settings…" in the terminal's context menu,
 - click the gear button at the right end of the tab strip,
-- pick a `Settings: …` row in the command palette (nine, one per page, [command palette](command-palette.md)).
+- pick a `Settings: …` row in the command palette (ten, one per page, [command palette](command-palette.md)).
 
 Every trigger opens exactly one window at the requested page (Appearance when none is named) and hides the drop-down in both `hide_on_focus_loss` modes - unless `settings_coexist` is on, which skips the hide. A trigger while the window is open switches the page and asks for focus instead of opening a second window. Summoning the terminal while the window is open - the summon key, the tray toggle, any forwarded verb - closes the window first and queues no return: the show that closed it is the show. With `settings_coexist` on the summon closes nothing: both windows stand together.
 
 ## The sidebar
 
-The window's left column lists nine pages under two headers, the open page marked:
+The window's left column lists ten pages under two headers, the open page marked:
 
 | Header | Pages |
 |---|---|
-| **Terminal** | Appearance (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown), Window (height, width, alignment, edge), Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, keep Settings open with the terminal, slide animation), Terminal (shell, arguments, default directory, scrollback, bell notifications, autosuggestions, inline images), Advanced (`respect_panel`, `layer`, `keyboard_mode`). |
+| **Terminal** | Appearance (the font picker - every installed monospace family, each row previewed in its own face; a name no installed family matches stays as a leading row and re-selects, so a hand-edited `font_name` is never lost - plus size, opacity, the dark and light scheme pickers - each previewing its scheme's actual eighteen colors, [themeing](theming.md#color-schemes) - and the Application theme dropdown), Window (height, width, alignment, edge), Tabs (tab bar position, tab titles, the minimum tab count, new-tab placement and directory, close confirmation, session persistence), Status bar (the master toggle plus one row per segment, [configuration](configuration.md#status-bar)), Dropdown (hide on focus loss, keep Settings open with the terminal, slide animation), Terminal (shell, arguments, default directory, scrollback, bell notifications, inline images, shell integration), Auto complete (the prompt-line surfaces - input mode and position, the ghost, the menu and its pop, the per-surface chrome toggles, and the provider knobs, [configuration](configuration.md#auto-complete)), Advanced (`respect_panel`, `layer`, `keyboard_mode`). |
 | **Profiles & keys** | Profiles (the profile manager - its own section below), Keybindings (the shortcut editor - its own section below). |
 
-Every exposed control appears exactly once across the nine pages - none lost, none duplicated. A section page renders its title over one bordered group of its rows; nothing folds away.
+Every exposed control appears exactly once across the ten pages - none lost, none duplicated. A section page renders its title over one bordered group of its rows; nothing folds away.
 
 Clicking a page swaps the content pane and writes nothing - navigation, never a write path. An in-flight draft elsewhere survives the turn (start typing in a field, flip pages, flip back - the text is still there); the one exception is leaving Profiles, which clears its draft and any armed delete, so a reopened Profiles page starts from the config.
 
@@ -94,15 +94,18 @@ Each control states next to it when its edit applies. With the terminal hidden w
 | `layer`, `keyboard_mode` | next show - a shown surface is never recreated for these |
 | `custom_key_binds` | instant - the very next key press uses the new chord |
 | `shell`, `args`, `scrollback_lines`, `new_tab_cwd`, `default_cwd` | new tabs only |
+| `shell_integration` | next spawn - the key reads once per spawn, a flip governing the shells spawned after it (a running shell keeps the integration it was spawned with) |
 | `profiles` (color_scheme, font_size) | live - an edit recolors or re-sizes the profile's running tabs without a respawn |
 | `profiles` (command, cwd, env, scrollback_lines), `default_profile` | next spawn - a running tab is never re-launched |
 | `hide_on_focus_loss` | live - a shown drop-down's keyboard hold re-resolves in place (the stay-open flip downgrades an exclusive grab to shared before the next focus loss); a hidden one resolves at its next show. The hide gate itself reads the flip at the next focus loss |
 | `session_persistence_enabled`, `slide_animation_enabled`, `bell_notification_enabled`, `new_tab_after_current` | next trigger - the session toggle at the next save/restore, the slide toggle at the next transition, the bell toggle at the next bell, placement at the next new tab |
 | `close_confirmation_enabled` | next close - the key is read at request time |
-| `autosuggestions_enabled` | live - a showing suggestion disappears on the echo; re-enabling suggests again at the next typed prefix |
+| `input_ghost` | live - a showing ghost disappears on the echo; re-enabling suggests again at the next typed prefix (the menu untouched) |
+| `input_menu` | live - a showing menu closes the moment the switch lands; re-enabling re-arms Tab and the auto-pop at the next typed prefix |
+| `input_auto_popup` | live - the next typed prefix pops (or declines) the menu on its own; off leaves Tab the only opener |
+| `input_mode`, `input_position`, `input_highlight`, `input_descriptions`, `input_badges`, `input_icons`, `input_argument_hint`, `input_compact_rows` | live - the echo re-renders the strip and its surfaces in place (a mode flip stands the editor down to the bare shell or claims the line again) |
+| `autosuggestions_paths_enabled`, `autosuggestions_commands_enabled`, `autosuggestions_history_context` | live - the next typed prefix answers under the new providers |
 | `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |
-| `autosuggestions_menu_enabled` | live - a showing menu closes the moment the switch lands; re-enabling arms the chord again at its next press |
-| `autosuggestions_menu_auto` | live - the next typed prefix pops (or declines) the menu on its own; off restores the chord as the only opener |
 | `autosuggestions_completions_extended` | live - the table reloads on the echo: off answers the embedded floor alone (the installed file's commands stop completing), on adds the tier beside it again (a re-toggle reuses the already-parsed file; a system data file does not change under a running app) |
 | `images_enabled` | live - off makes the next OSC 1337 sequence inert (nothing decodes or places, no error; already-placed images keep rendering), on renders from the next sequence ([images](images.md)) |
 
