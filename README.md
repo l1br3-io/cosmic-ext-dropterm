@@ -91,6 +91,7 @@ The details live in the `docs/` directory:
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Command palette](docs/command-palette.md) - `Ctrl+Shift+P` over every app verb: fuzzy search, every action one keystroke away
 - [Rich input](docs/rich-input.md) - the Warp-behavior editor behind `input_mode`: DropTerm-owned prompt line with highlight, completion, and history, `native` (the bare shell) the default
+- [Shell integration](docs/shell-integration.md) - DropTerm's own emitter scripts for bash, zsh, and fish, injected at spawn: prompt truth, exit codes, and cwd with no configuration, and the kill switch
 - [Settings window](docs/settings.md) - the nine pages and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu
 - [Session persistence](docs/sessions.md) - what is saved, when, and how restore behaves

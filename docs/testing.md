@@ -126,6 +126,14 @@ Against an installed release build on a desktop with an SNI host; the degrade ro
 - [ ] RI-w3 - The strip's second dock: `input_position = "Top"` moves the strip to the head of the grid region (the menu re-anchoring below it), every Enter dropping the executed command into the flow while the grid scrolls normally; `input_mode = "Native"` ignores the position entirely
 - [ ] RI-w4 - The chrome against the mock (Checkpoint RI-C's review): the menu's rows carry the icon, the marked label, the badge chip, and the description - comfortable rows with the description on its own line, compact under `input_compact_rows`; each element disappears with its own settings key (descriptions, badges, icons, argument hint); the strip and menu match tasks/mock-rich-input.html side by side, both densities and both docks
 
+### Shell integration
+
+- [ ] SI-w1 - bash, rich mode (`input_mode = "Rich"`): the editor claims every prompt, boot included (the very first prompt after the shell starts); a failing command (`false`) populates the status band's exit segment with no user configuration; `cd` moves the path seat through the shell's own report
+- [ ] SI-w2 - zsh with a themed or multiline prompt, rich mode: the editor claims the line the grid-read went unsure on (the map row's headline case - before this feature the strip hid at that prompt)
+- [ ] SI-w3 - fish, rich mode: the same prompt truth as bash; fish's own native cwd report coexists with the emitter's (no fighting over the path seat)
+- [ ] SI-w4 - The kill switch: `shell_integration = false` in `config.ron`, then a new tab - behavior byte-identical to the pre-integration build (no editor at the exotic prompt, no exit-code reports) and `~/.cache/dropterm/shell-integration/` untouched by the new spawn
+- [ ] SI-w5 - The edges: a profile tab (its preamble command runs bare - no exit verdict from the preamble - and the interactive tail after it is integrated); an ssh remote degrades to the grid-read and the local prompt re-arms on exit; `vim` inside an integrated shell stands the editor aside and the editor returns on exit
+
 - [ ] SP-w4 - The unchanged lanes beside the parity work: the ghost accepts with Right (whole) and Alt+Right (one word), the delay key and floors as before; lifecycle closes on resize/focus/scroll; git generators answer at ref seats and stay silent outside repos; `completions.toml` extends and degrades silently; tiers and the user-override rule hold
 
 ### Per-tab menu and pinned tabs
