@@ -1971,18 +1971,21 @@ impl Terminal {
 
     /// The editor's live-prompt gates (rich-input spec, RI-3): the
     /// same facts the ghost lane reads — focus, a fresh foreground
-    /// check, the viewport's bottom — plus the prompt truth: the
-    /// shell's own mark first (shell-integration spec — zone
-    /// `InPrompt` is `Live` with no grid-read at all, the OQ-4
-    /// narrowing), and otherwise the grid-read's verdict unchanged —
-    /// an adopted suggest anchor is a prompt the grid can see
-    /// (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
+    /// check, the viewport at the bottom of the scrollback — plus the
+    /// prompt truth: the shell's own mark first (shell-integration
+    /// spec — zone `InPrompt` is `Live` with no grid-read at all, the
+    /// OQ-4 narrowing), and otherwise the grid-read's verdict
+    /// unchanged — an adopted suggest anchor is a prompt the grid can
+    /// see (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
     pub fn editor_gates(&self) -> editor::Gates {
-        let at_bottom = {
-            let term = self.term.lock();
-            let grid = term.grid();
-            grid.display_offset() == 0 && grid.cursor.point.line == grid.bottommost_line()
-        };
+        // The viewport gate is the scrollback's, not the cursor row's
+        // (the 2026-10-24 fresh-terminal ruling, the ghost lane's
+        // own): a new tab's first prompt — and every prompt after a
+        // `clear` — sits at the top of an unfinished screen with the
+        // viewport at the bottom of its (short) history. Reading the
+        // bottom row there stands the editor aside at exactly the
+        // prompt a fresh tab opens on.
+        let at_bottom = self.term.lock().grid().display_offset() == 0;
         let prompt_detection = match self.prompt_zone {
             PromptZone::InPrompt => editor::PromptDetection::Live,
             PromptZone::InCommand | PromptZone::Unfed => {

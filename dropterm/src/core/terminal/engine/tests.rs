@@ -5351,9 +5351,9 @@ fn grid_text(terminal: &Terminal) -> String {
 /// Scroll the harness to a real prompt at the grid's foot — the
 /// recording pin's own recipe: the settle path anchors the prompt
 /// (arm the close, land the settling resize), then a scrolling
-/// command pushes it to the bottom row. A fresh terminal's cursor
-/// sits at the top of an empty screen, so `at_bottom` cannot read
-/// true until output has pushed the prompt down.
+/// command pushes it to the bottom row. The drive is the pins that
+/// read the bottom line (the recording, the anchor) — ownership
+/// alone no longer needs it, see the unfinished-screen pins below.
 fn drive_to_a_bottom_prompt(terminal: &mut Terminal) {
     terminal.arm_spawn_grid_next_resize();
     resize_cols(terminal, 100);
@@ -5404,6 +5404,78 @@ fn rich_mode_claims_at_a_live_prompt() {
         &mut terminal,
         Terminal::editor_owns_line,
         "the editor to own the line",
+    );
+}
+
+/// The pin's own stage, asserted so the claim below cannot pass on
+/// an accident: the screen is unfinished — the cursor sits above the
+/// bottom row, exactly where a new tab's first prompt leaves it.
+fn assert_cursor_above_the_bottom_row(terminal: &Terminal) {
+    let term = terminal.term.lock();
+    let grid = term.grid();
+    assert_ne!(
+        grid.cursor.point.line,
+        grid.bottommost_line(),
+        "the pin's own stage: an unfinished screen, the cursor off the bottom row"
+    );
+}
+
+#[test]
+fn rich_mode_claims_the_boot_prompt_of_an_unfinished_screen() {
+    // The 2026-10-24 fresh-terminal ruling, now the editor's too: a
+    // new tab's first prompt sits at the top of an empty screen and
+    // the editor owns it all the same — the ghost lane dropped its
+    // bottom-row requirement for this exact screen. The owner's
+    // report: a fresh rich-mode tab passed every keystroke to the
+    // shell (bash echoed it on the prompt row, its own caret
+    // showing) while the strip stood empty. The shell's own mark
+    // speaks first here: an integrated bash reports A for its boot
+    // prompt, so no grid-read is involved.
+    let mut terminal = rich_terminal();
+    terminal.note_prompt_start();
+    poll_update_until(
+        &mut terminal,
+        Terminal::editor_owns_line,
+        "the editor to own the boot prompt",
+    );
+    assert_cursor_above_the_bottom_row(&terminal);
+}
+
+#[test]
+fn the_grid_read_claims_the_boot_prompt_of_an_unfinished_screen() {
+    // The same screen with no mark to speak (the kill switch, a
+    // shell without an emitter): the settle path adopts the first
+    // prompt as the grid-read's anchor, and that verdict owns the
+    // line where the cursor stands.
+    let mut terminal = rich_terminal();
+    terminal.arm_spawn_grid_next_resize();
+    resize_cols(&mut terminal, 100);
+    poll_update_until(
+        &mut terminal,
+        Terminal::editor_owns_line,
+        "the grid read to claim the boot prompt",
+    );
+    assert_cursor_above_the_bottom_row(&terminal);
+}
+
+#[test]
+fn a_scrolled_back_view_still_stands_the_editor_aside() {
+    // The half of the viewport gate that stays: an unfinished screen
+    // is owned, a viewport scrolled into its history is not.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+
+    terminal.scroll(TerminalScroll::Delta(1));
+    assert!(
+        !terminal.editor_owns_line(),
+        "a viewport scrolled back stands the editor aside"
+    );
+
+    terminal.scroll(TerminalScroll::Bottom);
+    assert!(
+        terminal.editor_owns_line(),
+        "back at the bottom the line is owned again"
     );
 }
 
