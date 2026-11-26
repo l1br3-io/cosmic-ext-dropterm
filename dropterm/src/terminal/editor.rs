@@ -451,14 +451,17 @@ pub(crate) struct EditorMenuPaint {
 }
 
 impl EditorMenuPaint {
-    /// Capture the menu's paint state, `None` when the editor's
-    /// menu stands closed (or empty) — the paint's whole gate.
+    /// Capture the menu's paint state, `None` when the editor
+    /// stands aside or its menu stands closed (or is empty) — the
+    /// paint's whole gate. The menu is the owned line's: a foreground
+    /// program, an unsure prompt, an unfocused or scrolled-back pane
+    /// take it down with the strip's caret.
     pub(crate) fn capture(
         engine: &dropterm::core::terminal::Terminal,
         editor_state: &Editor,
         chrome: MenuChrome,
     ) -> Option<Self> {
-        if !engine.rich_input() || !engine.menu_is_open() {
+        if !engine.editor_owns_line() || !engine.menu_is_open() {
             return None;
         }
         let (to_caret, _) = editor_state.step_inputs();
@@ -514,6 +517,32 @@ pub(crate) fn menu_anchor_y(
         region.origin.y + px(4.)
     } else {
         region.origin.y + region.size.height - panel_h
+    }
+}
+
+/// Which of the pane's two carets a frame paints (rich-input): the
+/// editor owns the line or it does not, and exactly one input is
+/// live at a time — a second caret on screen reads as a second
+/// input (the owner's report: the strip's caret beside the grid's
+/// block). Both canvases ask this one question, so "never both" is
+/// the type's, not the paint's discipline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaretSeat {
+    /// The strip: its caret, its line, its ghost.
+    Strip,
+    /// The grid's block caret at the shell's own cursor.
+    Grid,
+}
+
+/// The frame's caret seat: the editor's ownership decides which
+/// input is live, and the grid's seat yields to the terminal's own
+/// cursor visibility (a program that hid the cursor shows none).
+#[must_use]
+pub(crate) fn caret_seat(editor_owns_line: bool, terminal_shows_cursor: bool) -> Option<CaretSeat> {
+    if editor_owns_line {
+        Some(CaretSeat::Strip)
+    } else {
+        terminal_shows_cursor.then_some(CaretSeat::Grid)
     }
 }
 
@@ -976,5 +1005,28 @@ mod tests {
         assert!(!opener_claims_tab(&key(ctrl(), "tab", None)));
         assert!(!opener_claims_tab(&key(alt(), "tab", None)));
         assert!(!opener_claims_tab(&key(plain(), "a", Some("a"))));
+    }
+
+    // --- the frame's one caret (the two-inputs report) ---
+
+    #[test]
+    fn the_owned_line_seats_the_caret_in_the_strip() {
+        // While the editor owns the line the strip is the input on
+        // screen, whatever the terminal's cursor mode says: the
+        // shell's prompt row in the grid paints no caret of its own.
+        // Two carets read as two inputs — the owner's report had the
+        // strip's caret beside the grid's block on the same screen.
+        assert_eq!(caret_seat(true, true), Some(CaretSeat::Strip));
+        assert_eq!(caret_seat(true, false), Some(CaretSeat::Strip));
+    }
+
+    #[test]
+    fn a_standing_aside_editor_leaves_the_caret_to_the_grid() {
+        // The editor stands aside (a foreground program, an unsure
+        // prompt, an unfocused or scrolled-back pane): the grid's own
+        // caret is the one on screen, and the strip paints none.
+        assert_eq!(caret_seat(false, true), Some(CaretSeat::Grid));
+        // A program that hid the terminal's cursor shows none at all.
+        assert_eq!(caret_seat(false, false), None);
     }
 }

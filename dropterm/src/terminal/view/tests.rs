@@ -996,6 +996,189 @@ fn a_released_drag_includes_both_boundary_cells(cx: &mut gpui::TestAppContext) {
     std::mem::forget(terminal);
 }
 
+// --- the two-inputs report: one caret on screen, in the live input ---
+
+/// The strip row's height, the layout's own constant.
+const STRIP_ROW_PX: f32 = 30.;
+
+/// What one frame's scene holds of the pane's carets, counted off
+/// the rendered quads (the raster path needs a headless renderer
+/// this gpui-pre configures on macOS only — the scene walk is the
+/// pane's pixel truth on Linux, the reverse-video pin's own
+/// channel).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CaretQuads {
+    /// A quad the strip caret's size: two pixels wide, one font tall.
+    strip_caret: bool,
+    /// A quad the grid's block caret's size — one cell. Presence,
+    /// not a count: the caret is the block quad plus the inverted
+    /// run background the row painter draws under it.
+    grid_caret: bool,
+    /// A quad the strip row's own size at the dock's own edge — the
+    /// row carries the pane's background like the grid's rows do,
+    /// exactly its own height, where the dock puts it.
+    strip_row_background: bool,
+}
+
+/// Boot a rich-mode pane whose program is the session leader itself
+/// (`sleep`): the foreground check reads idle, since no child exists
+/// to hold the PTY, and nothing ever prints, so the PTY stays quiet
+/// and the editor's ownership is the zone marks' alone.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pane through both states and both docks — the boot, the frame clock, and the four scene reads are one story"
+)]
+#[gpui::test]
+fn one_caret_paints_in_the_live_input(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let config = dropterm::core::config::DropTermConfig {
+        input_mode: dropterm::core::config::InputMode::Rich,
+        input_position: dropterm::core::config::InputPosition::Top,
+        ..request_config()
+    };
+    let (terminal, pane) = cx
+        .update(|cx| {
+            let request = PaneRequest {
+                program: "/bin/sleep".to_string(),
+                args: vec!["60".to_string()],
+                cwd: None,
+                env: std::collections::HashMap::default(),
+                spawned_as: "sh".to_string(),
+                profile_id: None,
+                appearance: PaneAppearance {
+                    colors: boot_colors(&config, &[]),
+                    font_size: config.font_size,
+                    scrollback: config.scrollback_lines,
+                },
+            };
+            boot_pane(cx, &config, request, None, TabId(0), None)
+        })
+        .expect("boot the pane");
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::size(px(900.), px(600.)),
+                    })),
+                    ..Default::default()
+                },
+                |_, _| pane.clone(),
+            )
+        })
+        .expect("open the pane's window");
+    let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.focus(&pane.read(cx).focus_handle(), cx);
+    });
+
+    // The paint clock (the drag pin's own shape): parked so the
+    // pane's own tasks land, then refresh-then-draw — a bare draw
+    // may skip render/paint.
+    let frame = |cx: &mut gpui::VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    };
+    let font_px = f32::from(config.font_size) * 4. / 3.;
+    let (cell_w, cell_h) = {
+        let size = terminal.lock().expect("engine lock").size();
+        (size.cell_width, size.cell_height)
+    };
+    // Quads ride scaled pixels; the pane's own metrics ride logical —
+    // one scale factor reconciles them, and every match is exact to
+    // well under a cell (the two carets differ by less than two
+    // pixels in height, so the tolerance stays under that).
+    let scene = |cx: &mut gpui::VisualTestContext, strip_at_top: bool| -> CaretQuads {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let viewport = window.viewport_size();
+            let (width, height) = (viewport.width.as_f32(), viewport.height.as_f32());
+            let row_top = if strip_at_top {
+                0.
+            } else {
+                height - STRIP_ROW_PX
+            };
+            let near = |got: f32, want: f32| (got - want * scale).abs() <= 0.75 * scale;
+            let mut found = CaretQuads::default();
+            for quad in &window.rendered_scene().quads {
+                let (w, h, top) = (
+                    quad.bounds.size.width.as_f32(),
+                    quad.bounds.size.height.as_f32(),
+                    quad.bounds.origin.y.as_f32(),
+                );
+                if near(w, 2.) && near(h, font_px) {
+                    found.strip_caret = true;
+                } else if near(w, cell_w) && near(h, cell_h) {
+                    found.grid_caret = true;
+                }
+                found.strip_row_background |=
+                    near(w, width) && near(h, STRIP_ROW_PX) && near(top, row_top);
+            }
+            found
+        })
+    };
+    let owns_line =
+        |terminal: &Arc<Mutex<Terminal>>| terminal.lock().expect("engine lock").editor_owns_line();
+    // The two seats, asserted wherever the dock puts the strip: the
+    // editor standing aside leaves the grid's caret as the only one,
+    // the owned line leaves the strip's.
+    let assert_seats = |cx: &mut gpui::VisualTestContext, dock: &str, strip_at_top: bool| {
+        terminal.lock().expect("engine lock").note_terminal_reset();
+        assert!(
+            !owns_line(&terminal),
+            "{dock}: the pin's own stage — an unfed zone stands the editor aside"
+        );
+        frame(cx);
+        assert_eq!(
+            scene(cx, strip_at_top),
+            CaretQuads {
+                strip_caret: false,
+                grid_caret: true,
+                strip_row_background: true,
+            },
+            "{dock}, the editor standing aside: the strip paints nothing and the grid's caret is the one on screen"
+        );
+
+        terminal.lock().expect("engine lock").note_prompt_start();
+        assert!(
+            owns_line(&terminal),
+            "{dock}: the pin's own stage — the prompt-start mark owns the line"
+        );
+        frame(cx);
+        assert_eq!(
+            scene(cx, strip_at_top),
+            CaretQuads {
+                strip_caret: true,
+                grid_caret: false,
+                strip_row_background: true,
+            },
+            "{dock}, the owned line: the strip's caret is the one on screen and the grid's prompt row paints none"
+        );
+    };
+
+    assert_seats(cx, "the top dock", true);
+
+    // The bottom dock through the live settings pass (`apply_options`
+    // is the config echo's route): the same two seats, the row at the
+    // grid's foot.
+    let options = cx.update(|_, cx| dropterm::core::terminal::TerminalOptions {
+        input_position: dropterm::core::config::InputPosition::Bottom,
+        ..pane.read(cx).options.clone()
+    });
+    cx.update(|_, cx| pane.update(cx, |pane, cx| pane.apply_options(options, cx)));
+    assert_seats(cx, "the bottom dock", false);
+
+    // The engine outlives the pin (the drag pin's own note): its PTY
+    // reader must never exit inside the test.
+    std::mem::forget(terminal);
+}
+
 /// The probe window's root: gpui demands a Render entity.
 struct PureApp;
 impl gpui::Render for PureApp {

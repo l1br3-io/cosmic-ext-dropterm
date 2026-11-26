@@ -2007,17 +2007,11 @@ impl Terminal {
     /// The routing decision (rich-input spec, RI-3): whether the
     /// editor owns the line for a keystroke arriving right now — the
     /// mode and the gates in one answer. `native` never opens the
-    /// lane (the bare-mode pin), whatever the gates say.
+    /// lane (the bare-mode pin), whatever the gates say. The pane's
+    /// paint asks the same question: the strip, its menu, and the
+    /// grid's standing-down caret are the owned line's alone.
     pub fn editor_owns_line(&self) -> bool {
         self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
-    }
-
-    /// Whether the prompt line is the rich editor's (rich-input
-    /// RI-4): the mode flag as the paint-side gates read it — the
-    /// grid's own ghost and menu overlays stand down in rich mode
-    /// (the strip carries them).
-    pub fn rich_input(&self) -> bool {
-        self.input_mode == InputMode::Rich
     }
 
     /// Enter's execution (rich-input spec): PTY-write the line plus

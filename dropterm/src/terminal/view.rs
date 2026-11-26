@@ -92,6 +92,9 @@ fn tab_keystroke(shift: bool) -> gpui::Keystroke {
 pub(crate) struct WalkLog {
     grid: Option<(usize, usize)>,
     caret: Option<(usize, usize)>,
+    /// The input holding the caret at the last logged frame (the
+    /// seat evidence row's dedup).
+    caret_seat: Option<editor::CaretSeat>,
     rows: Vec<String>,
     /// The image ids whose placement has been logged (the images
     /// rows' evidence: one line per placed image, not per frame).
@@ -2149,10 +2152,16 @@ impl gpui::Render for TerminalPane {
         // chrome capture under one engine read — None when the menu
         // stands closed, the paint's whole gate.
         let strip_top_dock = editor::strip_docked_top(self.options.input_position);
-        let editor_menu = {
+        // The editor's fact for this frame, under one engine read
+        // beside the menu's bundle: whether it owns the line — asked
+        // once for both canvases, so no frame paints both carets or
+        // neither. The terminal's own cursor mode stays the grid's
+        // post-update read, where it always was.
+        let (editor_menu, editor_owns_line) = {
             let engine = self.terminal.lock().expect("engine lock");
+            let editor_owns_line = engine.editor_owns_line();
             let state = self.editor.lock().expect("editor lock");
-            editor::EditorMenuPaint::capture(
+            let menu = editor::EditorMenuPaint::capture(
                 &engine,
                 &state,
                 editor::MenuChrome {
@@ -2162,7 +2171,8 @@ impl gpui::Render for TerminalPane {
                     argument_hint: self.options.input_argument_hint,
                     compact_rows: self.options.input_compact_rows,
                 },
-            )
+            );
+            (menu, editor_owns_line)
         };
         // The rich-input strip (rich-input spec, RI-4): in rich mode
         // the owned line paints in its own docked row under the grid
@@ -2170,21 +2180,36 @@ impl gpui::Render for TerminalPane {
         // replaces the canvas's size-full so the rows share the
         // frame. The mode flip rides `apply_options`' live pass, so
         // the strip appears and disappears with the config echo.
+        // The row belongs to the mode, not to the owned line: it
+        // stays in the layout while the editor stands aside and
+        // paints nothing, because a row that collapsed at every
+        // prompt-to-program edge would resize the PTY each time, and
+        // a resize repaints the shell's prompt.
         let grid = canvas(
             move |bounds, _, _| bounds,
             move |bounds, _, window, cx| {
-                paint_pane(
+                let seat_moved = paint_pane(
                     &terminal,
                     &skin,
                     &walk_log,
                     &image_cache,
                     &viewport_origin,
                     editor_menu.as_ref(),
+                    editor_owns_line,
                     strip_top_dock,
                     bounds,
                     window,
                     cx,
                 );
+                // The ownership was read for this frame before the
+                // frame's own update ran, and an update can move it
+                // (the grid read adopting a shell's first prompt). A
+                // plain notify is swallowed mid-draw; this asks for
+                // the frame that paints the settled seat, and nothing
+                // further once it has.
+                if seat_moved {
+                    window.request_animation_frame();
+                }
             },
         );
         if self.options.input_mode == dropterm::core::config::InputMode::Rich {
@@ -2206,6 +2231,7 @@ impl gpui::Render for TerminalPane {
                         &strip_editor,
                         &strip_terminal,
                         &strip_skin,
+                        editor_owns_line,
                         bounds,
                         font_px,
                         highlight,
@@ -2216,20 +2242,16 @@ impl gpui::Render for TerminalPane {
             )
             .w_full()
             .h(px(30.));
-            let column = div()
-                .flex()
-                .flex_col()
-                .size_full()
-                .child(grid.flex_1().min_h_0());
+            // One column, the strip at the end the dock names. The
+            // strip is a fixed row and the grid takes the rest on a
+            // zero basis: nothing competes with the strip for the
+            // height, so the row is exactly its own at both docks.
+            let column = div().flex().flex_col().size_full();
+            let grid = grid.flex_1().min_h_0();
             frame.child(if strip_first {
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .child(strip)
-                    .child(column)
+                column.child(strip).child(grid)
             } else {
-                column.child(strip)
+                column.child(grid).child(strip)
             })
         } else {
             frame.child(grid.size_full())
@@ -2243,6 +2265,8 @@ impl gpui::Render for TerminalPane {
 /// reads the whole frame together — the grid walk, the selection
 /// overlay, and the evidence rows share the one lock and the one
 /// geometry; splitting them re-derives the lock order per piece.
+/// Returns whether the frame's own update moved the caret seat it
+/// was painted on — the caller's cue for one more frame.
 #[expect(
     clippy::too_many_lines,
     reason = "the frame reads one lock and one geometry end to end; the walk, the overlay, and the evidence rows are one pass"
@@ -2258,11 +2282,12 @@ fn paint_pane(
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
     viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
     editor_menu: Option<&editor::EditorMenuPaint>,
+    editor_owns_line: bool,
     strip_top_dock: bool,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
-) {
+) -> bool {
     // The pane's window-space origin, this frame's truth: the pointer
     // handlers convert window coordinates through it (GPUI's mouse
     // events carry window coordinates; the painted bounds are the
@@ -2289,6 +2314,12 @@ fn paint_pane(
         terminal.needs_update = false;
         let _ = terminal.update();
     }
+
+    // The ownership this frame was handed was read before the update
+    // above ran; this is the engine's answer after it. The two agree
+    // on every frame but the one whose update moved them. Read before
+    // the term guard below: the gates take that lock themselves.
+    let owns_line_now = terminal.editor_owns_line();
 
     let term = terminal.term.lock();
     let grid = term.grid();
@@ -2318,16 +2349,20 @@ fn paint_pane(
         }
     }
 
-    // The caret: shown when the mode says so, always a block (the
-    // libcosmic build's rule). Grid semantics (pinned by the probe
-    // test in this module): `Line(0)` is the screen's top, lines
-    // grow downward, and the cursor's line is a screen row — so
-    // scrolled state `d` puts it at display row `cursor.line + d`,
-    // on the display only while that lands inside the rows.
+    // The caret: shown while the frame's caret seat is the grid's —
+    // the terminal's cursor mode, read after this frame's update as
+    // ever, and the editor's ownership, folded by `caret_seat` — and
+    // always a block (the libcosmic build's rule). Grid semantics
+    // (pinned by the probe test in this module): `Line(0)` is the
+    // screen's top, lines grow downward, and the cursor's line is a
+    // screen row — so scrolled state `d` puts it at display row
+    // `cursor.line + d`, on the display only while that lands inside
+    // the rows.
     let cursor = grid.cursor.point;
-    let caret_row = term
-        .mode()
-        .contains(TermMode::SHOW_CURSOR)
+    let shows_cursor = term.mode().contains(TermMode::SHOW_CURSOR);
+    let seat = editor::caret_seat(editor_owns_line, shows_cursor);
+    let seat_moved = editor::caret_seat(owns_line_now, shows_cursor) != seat;
+    let caret_row = (seat == Some(editor::CaretSeat::Grid))
         .then(|| usize::try_from(cursor.line.0).unwrap_or(0) + display_offset);
 
     // The visible rows, grouped from `display_iter` — the same walk
@@ -2346,11 +2381,8 @@ fn paint_pane(
         }
     }
 
-    // The window background under every row (the scheme background
-    // at the configured opacity, over the pane's whole bounds).
-    let mut bg = grid::window_background(&skin.colors);
-    bg.a *= skin.opacity_alpha;
-    window.paint_quad(fill(bounds, bg));
+    // The window background under every row.
+    pane_background(skin, bounds, window);
 
     // Inline images, seat collection (gpui-parity Task 2; the
     // libcosmic widget's two-pass rule): every covered cell carries
@@ -2544,6 +2576,26 @@ fn paint_pane(
         }
     }
 
+    // The walk's seat evidence row: which input holds the caret,
+    // once per change — the stand-aside walk reads it beside the
+    // pixels.
+    {
+        let mut log = walk_log.lock().expect("walk log");
+        if log.caret_seat != seat {
+            let row = match seat {
+                Some(editor::CaretSeat::Strip) => {
+                    "caret in the input strip — the editor owns the line, the grid's block caret stands down"
+                }
+                Some(editor::CaretSeat::Grid) => {
+                    "caret in the grid — the shell's line is the input"
+                }
+                None => "no caret — the terminal hides its cursor",
+            };
+            println!("dropterm: {row}");
+            log.caret_seat = seat;
+        }
+    }
+
     // The walk's caret evidence row: the caret cell, once per move.
     if let Some(row) = caret_row {
         let cell_at = (cursor.column.0, row);
@@ -2571,6 +2623,7 @@ fn paint_pane(
             cx,
         );
     }
+    seat_moved
 }
 
 /// A cosmic-text color as GPUI color (the ghost tint and the menu's
@@ -2837,13 +2890,25 @@ fn shape_underlined_line(
     )
 }
 
+/// The pane's own background under a paint: the scheme background
+/// at the configured opacity — the grid's rows and the strip's row
+/// share it, so the strip reads as the terminal's row and not a bar
+/// of its own (the mock's input zone carries no background).
+fn pane_background(skin: &PaneSkin, bounds: gpui::Bounds<Pixels>, window: &mut gpui::Window) {
+    let mut bg = grid::window_background(&skin.colors);
+    bg.a *= skin.opacity_alpha;
+    window.paint_quad(fill(bounds, bg));
+}
+
 /// The rich-input strip's paint (rich-input RI-4 + RI-6): the owned
 /// line shaped in the terminal's own font, segment by colored
 /// segment — the highlight tokenizer's classes when the toggle is
 /// on, one plain tint when it is off — with the caret quad flush at
 /// its byte offset and the ghost's dim suffix after the whole line.
 /// The chrome (RI-7) restyles the row against the mock around this
-/// token floor.
+/// token floor. Only a frame whose editor owns the line paints one;
+/// every other frame the row carries the background alone — the
+/// editor stands aside, and the grid's caret is the one on screen.
 #[expect(
     clippy::too_many_arguments,
     reason = "the strip's paint frame mirrors paint_pane's own handle list; a param struct would bundle six unrelated facts"
@@ -2856,12 +2921,17 @@ fn paint_strip(
     editor_state: &Arc<Mutex<editor::Editor>>,
     terminal: &Arc<Mutex<Terminal>>,
     skin: &PaneSkin,
+    editor_owns_line: bool,
     bounds: gpui::Bounds<Pixels>,
     font_px: Pixels,
     highlight: bool,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
+    pane_background(skin, bounds, window);
+    if !editor_owns_line {
+        return;
+    }
     let (segments, ghost, caret_byte, fg, dim, palette) = {
         let engine = terminal.lock().expect("engine lock");
         let ghost = engine.suggestion().map(str::to_string);
