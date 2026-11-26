@@ -8,18 +8,17 @@ first commit)
 immutability.** Its evidence sections are fixed. Its capability map, the
 Status line of each work package, its checklists, and its results sections
 are updated in place while the work runs, under the rules in "Updating this
-plan". It supersedes [gpui-migration](archive/gpui-migration.md) and
-[portability-roadmap](archive/portability-roadmap.md) (both 2026-11-09,
-archived untouched; "Corrections to the superseded records" lists what
-changed) and carries the evidence of the same-day gpui-kit survey, which was
-never committed as a record of its own. The index row tracks the phase.
+plan". It supersedes the 2026-11-09 GPUI analysis ("Review corrections"
+lists what changed) and carries the evidence of the same-day gpui-kit
+survey, which was never committed as a record of its own. The index row
+tracks the phase.
 
 ## TL;DR
 
 Four verdicts, one order of work:
 
 1. **GPUI can replace libcosmic as a full UI-layer rewrite, gated on a
-   hardware spike, and the spike's crux is wider than the superseded records
+   hardware spike, and the spike's crux is wider than the 2026-11-09 analysis
    said.** Every show creates a full-output measuring surface, then reshapes
    that same surface into the terminal at its first configure: anchor,
    margin, size, layer, keyboard interactivity, and exclusive zone
@@ -268,9 +267,8 @@ and aarch64 `usr/` trees, built on `ubuntu-24.04` runners) and source builds
 through `just deps` (apt, dnf, pacman, zypper). A local release build
 references `GLIBC_2.39` symbols, so the tarball needs glibc 2.39 or later:
 Debian 12 and Ubuntu 22.04 cannot run it (measured on a local build; the CI
-tarball builds on the same Ubuntu base). The deb, AUR, and nix channels in
-the [packaging record](archive/packaging-and-release.md) were proposed and
-never built.
+tarball builds on the same Ubuntu base). The deb, AUR, and nix channels were
+proposed and never built.
 
 **The terminal surface's lifecycle** (the spike's subject):
 
@@ -550,39 +548,33 @@ process's command line** (the `/proc/pid/cmdline` equivalent needs WMI
 `Win32_Process` or undocumented `NtQueryInformationProcess`). That powers
 the suggest and live-cwd features; a real Phase 5 design item.
 
-## Corrections to the superseded records
+## Review corrections (2026-11-10)
 
-The superseded records stay as written; these are the 2026-11-10 review's
-corrections, each re-verified in the tree:
+The 2026-11-10 review re-verified the 2026-11-09 GPUI analysis in the tree
+and corrected it on these points:
 
-1. [gpui-migration](archive/gpui-migration.md) finding 3 described the
-   measure-then-reshape-in-place step correctly;
-   [portability-roadmap](archive/portability-roadmap.md) finding 4's "the
-   per-show destroy/create architecture absorbs the rest" holds for hide and
-   show and misses the shape step at first configure, which mutates anchor,
-   margin, layer, keyboard, and zone on every show. The crux table above
-   replaces finding 4's three-mutation list.
-2. portability-roadmap finding 4 item 3 cited `src/app.rs:3091-3099` as a
-   live layer and zone change on config edit. Those lines are the per-show
-   shape step inside `SurfaceOpened`; layer, keyboard-mode, and
-   `respect_panel` edits apply at the next show (`src/settings.rs:1034-1035`).
-3. portability-roadmap's grounding called the clipboard anchor "the only
-   never-destroyed surface". A presence flip destroys and reopens it
-   (`src/app.rs:2018-2024`), and the compositor can close it (the `Lost`
-   state).
-4. gpui-migration counted "five custom iced widgets". There are nine, the
-   terminal grid itself (`TerminalBox`) the largest.
-5. Both records listed the clipboard, the D-Bus contract, and the engine as
-   surviving untouched. Each carries a libcosmic seam (grounding, second
-   tier).
-6. portability-roadmap's grounding said packaging was already native-first
-   with deb/AUR/nix. Only the GitHub tarball ships, and it needs glibc 2.39
-   or later.
-7. portability-roadmap's Phase 0 used `dropterm`, `dropterm toggle`, and
-   `just build`. Until `app-identity` lands the binary is
-   `cosmic-ext-dropterm`, and the release recipe is `just build-release`.
-8. Neither record knew of zed PRs #61368 and #64994, both on the measuring
-   and resize path.
+1. The analysis described the measure-then-reshape-in-place step correctly.
+   Its claim that "the per-show destroy/create architecture absorbs the rest"
+   holds for hide and show and misses the shape step at first configure,
+   which mutates anchor, margin, layer, keyboard, and zone on every show. The
+   crux table above replaces its three-mutation list.
+2. `src/app.rs:3091-3099` is not a live layer and zone change on config
+   edit. Those lines are the per-show shape step inside `SurfaceOpened`;
+   layer, keyboard-mode, and `respect_panel` edits apply at the next show
+   (`src/settings.rs:1034-1035`).
+3. The clipboard anchor is not "the only never-destroyed surface". A
+   presence flip destroys and reopens it (`src/app.rs:2018-2024`), and the
+   compositor can close it (the `Lost` state).
+4. The custom iced widgets number nine, not five, the terminal grid itself
+   (`TerminalBox`) the largest.
+5. The clipboard, the D-Bus contract, and the engine do not survive
+   untouched: each carries a libcosmic seam (grounding, second tier).
+6. Packaging is not native-first with deb/AUR/nix. Only the GitHub tarball
+   ships, and it needs glibc 2.39 or later.
+7. Until `app-identity` lands the binary is `cosmic-ext-dropterm`, and the
+   release recipe is `just build-release`.
+8. The 2026-11-09 analysis missed zed PRs #61368 and #64994, both on the
+   measuring and resize path.
 
 ## The capability map
 
@@ -683,8 +675,7 @@ code, no dual bus names (owner ruling). Ships in the same release as
 **Success criteria.**
 - Over tracked files, `rg -i 'cosmicextdropterm|cosmic-ext-dropterm|cosmic_ext_dropterm'`
   matches only the deliberate survivors (the released-install section,
-  release-notes history, archived research records), each listed in the
-  merge's description.
+  release-notes history), each listed in the merge's description.
 - `just check` is green, the `dev-identity` builds included, and CI
   validates the renamed desktop and metainfo files.
 - The test pinning the object path to the app id passes under the new id.
@@ -829,8 +820,7 @@ the object path, or forward through a V1 method.
 **Objective.** Where the compositor offers no `zwlr_layer_shell_v1` (GNOME,
 a sandbox, a session without Wayland), DropTerm says so and exits non-zero.
 Today it silently never surfaces while `--is-visible` reports true, as the
-2026-11-08 sandbox walk recorded in the
-[packaging record](archive/packaging-and-release.md), where it was logged as
+2026-11-08 sandbox walk recorded and logged as
 a follow-up.
 
 **Scope.** In: a startup probe of the Wayland connection and its registry
@@ -908,7 +898,7 @@ packages to build.
 
 **Open for its spec** (owner rulings first). Lower the floor (build the
 release binaries on an older base) or document it; which native channels to
-build (the packaging record named AUR first, with
+build (AUR was named first, with
 `cosmic-ext-quake-terminal` as the template) and where their recipes live.
 
 **Success criteria.** Set by the rulings; at minimum README's install
@@ -1190,7 +1180,6 @@ compositor and version, session type, and each output's scale. Until
    deliverable is *how* it fails, to inform the companion-extension design.
    The likely mode is already on record: the 2026-11-08 sandbox walk without
    `zwlr_layer_shell_v1` never surfaced while `--is-visible` reported true
-   ([packaging record](archive/packaging-and-release.md)).
 5. **One X11 session** (Xfce, Cinnamon, or i3; record which): expected to
    fail, since today's build carries only the layer-shell path; record how.
 6. **One non-Pop distro** (Arch or Fedora) under any session above: the
@@ -1710,8 +1699,7 @@ record's date.
   `src/font_list.rs`, `src/terminal/engine.rs`, `src/terminal/widget.rs`,
   `src/terminal/suggest.rs`, `src/terminal/theme_source.rs`, `Cargo.toml`,
   `applet/`, `justfile`, `.github/workflows/{ci,release}.yml`, `README.md`,
-  [known issues](../known-issues.md), [testing](../testing.md), the
-  [packaging record](archive/packaging-and-release.md).
+  [known issues](../known-issues.md), [testing](../testing.md).
 - **Owner rulings (2026-11-09)**: all platforms in scope with Wayland the
   priority; test hardware = COSMIC + Linux sessions/VMs + one Mac (Windows
   later); identity rename to plain `dropterm` approved; greenfield, no

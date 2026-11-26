@@ -308,7 +308,7 @@ On every Kit bump — and any time the border is questioned:
 3. Check the release for a public border opt-out (changelog, `Root`
    docs, the `window_border` constant). If one exists: drop the copy,
    depend on the real crate again, re-run the verification below, and
-   retire the entry — kit-root-border's row moves to its archive.
+   retire the entry — kit-root-border's row is marked retired in the index.
 4. Re-run the verification on the sway-headless rig and the COSMIC
    validation VM (the walk routes are the ones above):
 

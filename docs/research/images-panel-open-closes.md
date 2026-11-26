@@ -1,11 +1,11 @@
 # Research: should the images panel's Open verb close the panel after all?
 
 Date: 2026-11-20
-Supersedes: [images-panel-open-behavior](archive/images-panel-open-behavior.md)
-(2026-11-19), whose evidence stands and whose verdict the owner reversed.
+Supersedes: the 2026-11-19 stay-open ruling, whose evidence stands and whose
+verdict the owner reversed.
 
 Question: *The pasted-images drawer keeps standing while its verbs run — the
-superseded record ruled Open and Open folder stay quiet like the transfer
+2026-11-19 ruling had Open and Open folder stay quiet like the transfer
 verbs, on the toolkit genus (menus close on activation, content panels do
 not), the compositor mechanics (the drawer cannot influence where the
 launched window lands), and the armed-delete cost (every close disarms). The
@@ -17,14 +17,14 @@ what does the supersession change?*
 **The owner ruled the close: Open and Open folder hand the path to the
 system and the drawer closes behind a landed launch; a refused launch (the
 verb's own warn) leaves the panel standing — nothing opened to close for.**
-The superseded record's evidence is unrefuted: the toolkit genus keeps
+The 2026-11-19 evidence is unrefuted: the toolkit genus keeps
 content panels open on button activation, and the drawer's open state was
 never a factor in the viewer's visibility. What changes is the product call:
 the owner prefers the close as the launch's feedback shape — the launched
 window is the confirmation, and the drawer gets out of its way rather than
 lingering behind it. That deliberately adopts Firefox's first and third
 close reasons (eager feedback, no accidental second press) for a standing
-surface, and accepts the superseded record's stated cost without flinching:
+surface, and accepts the earlier ruling's stated cost without flinching:
 every Open close disarms an armed delete pair, exactly as every close always
 has, and a follow-up verb means re-opening through the chip.
 
@@ -38,14 +38,14 @@ surface follows the drawer.
 
 ## Findings
 
-1. **The superseded record's evidence stands; the verdict was a preference,
+1. **The 2026-11-19 evidence stands; the verdict was a preference,
    not a fact fight.** Nothing in a day's use refuted the genus citations or
    the compositor mechanics — the viewer lands on top on COSMIC with or
    without the drawer. The owner heard that complete case and still ruled
    the close: on this surface, an action that launches a window outside the
    app should dismiss the surface that launched it, the way the paste rule
    already dismisses it for a paste. The call is the owner's to make; the
-   record keeps the superseded one so the reasoning survives.
+   summary of that case stays in the sources below so the reasoning survives.
 2. **The close joins a coherent family.** The panel already yields to every
    content event: a fresh paste (text or image) and the panel's own
    Re-paste close it first (the covering report's rule — nothing lands
@@ -59,7 +59,7 @@ surface follows the drawer.
 3. **The armed-pair cost is real and accepted.** `close_images_panel`
    clears `images_armed`, so an Open pressed while a delete pair stands
    disarms it — the same trade the paste rule already made for pastes, and
-   the same rule every close has always carried. The superseded record
+   the same rule every close has always carried. The 2026-11-19 ruling
    called this the one destructive thing Open could do; the owner accepted
    it as the price of the feedback shape.
 4. **Refusals keep the panel.** `open::that_detached` is fire-and-forget:
@@ -115,9 +115,9 @@ owns the exit, and the launch must not race it with a second funnel run.
 ## Recommendation
 
 **Shipped as ruled — both Open-shaped verbs close on a landed launch.**
-Rejected: keeping Open open (the superseded stance — retained for its
+Rejected: keeping Open open (the 2026-11-19 stance — retained for its
 evidence, overridden by the owner's call), and the half-split of closing on
-Open only while Open folder stays open (the superseded record's own
+Open only while Open folder stays open (the 2026-11-19 ruling's own
 unlearnable-split rejection stands — the two verbs are one act aimed at a
 file or its directory). Revisit trigger: if the disarm-on-Open cost bites in
 real use — an armed pair repeatedly dying under launches — a future record
@@ -132,10 +132,10 @@ stands); no such ruling exists today.
   `dropterm/src/images_panel.rs:62-64`, `:77-79` (verb docs);
   `dropterm/src/app_shell.rs:6034` (the pin test);
   `docs/images.md:19`, `docs/testing.md:465`
-- Superseded record: [images-panel-open-behavior](archive/images-panel-open-behavior.md)
-  (2026-11-19) — the toolkit genus (GTK4, WinUI, Apple HIG), Firefox's
+- The 2026-11-19 stay-open case, restated:
+  the toolkit genus (GTK4, WinUI, Apple HIG), Firefox's
   downloads-popup close reasons, Chromium's no-action-dismiss bubble, the
   Wayland mechanics (cosmic-comp's missing focus-stealing prevention, GNOME's
   tokenless-launch path); all retained unrefuted
 - Owner instruction: 2026-11-20, "proceed" on the close-on-Open offer after
-  the superseded record's convention case was presented and understood
+  the stay-open convention case was presented and understood

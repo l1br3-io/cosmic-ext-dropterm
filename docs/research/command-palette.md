@@ -330,8 +330,7 @@ All web sources fetched 2026-11-22 unless noted.
   buffer picker is often a dozen rows) run nucleo too. Nobody at palette
   scale ships bare substring filtering, and the cost is trivial: scoring
   200 rows with nucleo-matcher is microseconds, batch, no worker thread
-  needed. DropTerm's in-house completion engine precedent
-  ([completions-engine-rea](archive/completions-engine-rea.md)) argues for
+  needed. DropTerm's in-house completion engine precedent argues for
   keeping dependencies out when the domain logic is DropTerm's own — but
   ranked fuzzy scoring is a solved, Unicode-subtle problem (graphemes,
   normalization, case folding) where every serious peer standardized on one

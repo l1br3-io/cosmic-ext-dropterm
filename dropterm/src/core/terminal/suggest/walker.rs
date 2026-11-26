@@ -2,11 +2,10 @@
 
 //! The spec walker (suggest-walker spec): the engine's lexer and
 //! three-function walk over the [`SpecCommand`] tree, ported from
-//! microsoft/inshellisense's runtime as recorded in
-//! `docs/research/completions-engine-rea.md` §2–§4. Pure over tokens
-//! and the tree — no I/O, no clock, no spawn — and the one source of
-//! the stop point both surfaces consume: the menu lists its rows, the
-//! ghost takes its single choice from the same rows under its
+//! microsoft/inshellisense's runtime as recorded in engine-rea §2–§4. Pure
+//! over tokens and the tree — no I/O, no clock, no spawn — and the one
+//! source of the stop point both surfaces consume: the menu lists its rows,
+//! the ghost takes its single choice from the same rows under its
 //! unchanged policy.
 
 use std::borrow::Cow;

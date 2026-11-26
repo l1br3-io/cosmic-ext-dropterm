@@ -12,7 +12,7 @@ git
 npm
 systemctl
 #
-# The audited seed's fourteen (docs/research/completions-seed-audit.md)
+# The audited seed's fourteen (the completions-seed-audit record)
 # minus the five already seated:
 apt
 curl

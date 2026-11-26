@@ -14,12 +14,10 @@ compositor dismissal), an in-surface dialog rejected (capped at the
 drop-down's ~430 px height at 1080p), and the Kit's composite `setting::Settings`
 rejected (its per-window keyed state bypasses the shell-owned page model the
 triggers and tests read; its sidebar is a flat list with no group headers).
-The decision reverses [settings-sidebar](archive/settings-sidebar.md)
-(2026-10-03, "the second window deleted") knowing why it was made, and
-supersedes [settings-tabs](archive/settings-tabs.md) (2026-10-05, five tabs)
-and the settings-navigation parts of [settings-trigger](archive/settings-trigger.md)
-(2026-10-02); the archive is never edited, this row is the supersession by
-link. The cost, accepted by the owner: the drop-down hides while Settings is
+The decision reverses the 2026-10-03 drawer ruling ("the second window
+deleted") knowing why it was made, and supersedes the 2026-10-05 five-tab
+navigation and the settings-navigation parts of the 2026-10-02 context-menu
+trigger. The cost, accepted by the owner: the drop-down hides while Settings is
 open, so the terminal is not visible while a setting is changed — edits
 still apply to the running tabs immediately and are seen on return.**
 
@@ -29,7 +27,7 @@ still apply to the running tabs immediately and are seen on return.**
    surface, which the compositor stacks above every ordinary window
    (`core/surface_lifecycle.rs`, the `Verdict::LayerShell` arm). An ordinary
    toplevel opened while the drop-down stands would draw *beneath* it —
-   the same fact the archived settings-sidebar record documented for the
+   the same fact the 2026-10-03 drawer ruling documented for the
    libcosmic era (its "hide-first rule"), and the one
    `Shell::dismiss_for_summon_setup` encoded for the onboarding window.
    The exclusive-pair lifecycle is therefore not a choice but a constraint:
@@ -48,8 +46,8 @@ still apply to the running tabs immediately and are seen on return.**
    `DEFAULT_WIDTH_PERCENT = 100` (`core/config.rs`): a dialog drawn inside
    the drop-down gets about 430 px of height at 1080p — less than the
    Profiles page's form alone. The drawer-era width cap
-   (`WIDTH_CAP_FRACTION`, 616 px by default) was why the 2026-10-05 tabs
-   record rejected a vertical nav inside the drawer on width. A window has
+   (`WIDTH_CAP_FRACTION`, 616 px by default) was why a vertical nav inside
+   the drawer was rejected on width (2026-10-05). A window has
    neither cap.
 
 4. **Precedents in-tree.** `tray.rs::open_about` and
@@ -108,8 +106,8 @@ The separate window as built. Rejected along the way:
 - **The in-surface dialog**: capped at the drop-down's height; re-creates
   the exact constraint that produced the five-tab drawer.
 - **The wider drawer**: still capped at half the surface and still inside
-  the 40%-height drop-down; the tabs record already rejected the nav on
-  drawer width.
+  the 40%-height drop-down; a vertical nav was already rejected on
+  drawer width (2026-10-05).
 - **The composite `setting::Settings`**: bypasses the shell-owned state
   (its `SettingsState` is per-window keyed), no group headers, and adopts
   the generator-missing `sidebar_accent` tokens.
@@ -144,6 +142,5 @@ being ported as bugs.
 - `dropterm/src/tray.rs::open_about`, `dropterm/src/onboarding.rs::open_onboarding`
   — the toplevel precedents; read 2026-11-23.
 - The owner's Obsidian Settings screenshot, 2026-11-23 — the layout reference.
-- [settings-sidebar](archive/settings-sidebar.md) (2026-10-03) and
-  [settings-tabs](archive/settings-tabs.md) (2026-10-05) — the reversed
-  predecessors, quoted from the archive.
+- The reversed predecessors, the 2026-10-03 drawer ruling and the
+  2026-10-05 five-tab navigation, quoted.
