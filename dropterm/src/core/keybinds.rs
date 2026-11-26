@@ -196,8 +196,6 @@ const BINDING_ROWS: &[BindingRow] = &[
         defaults: &[(CS, "O")] },
     BindingRow { id: "toggle_status_bar", label: "Toggle the status bar", group: "Other",
         defaults: &[(CS, "B")] },
-    BindingRow { id: "show_completions", label: "Show completions", group: "Other",
-        defaults: &[(CTRL, "Space")] },
 ];
 
 /// The human form of one chord — `Ctrl + Shift + C` — over the

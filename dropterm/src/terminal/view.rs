@@ -1018,12 +1018,10 @@ impl TerminalPane {
         // with a qualifying row opens the menu; the decline falls
         // through and Tab forwards to the shell verbatim — SP-D10's
         // Tab stays the native lane's rule, the lift is the
-        // editor's own.
-        if !keystroke.modifiers.control
-            && !keystroke.modifiers.alt
-            && !keystroke.modifiers.platform
-            && keystroke.key == "tab"
-        {
+        // editor's own. Bare Tab alone claims (tab-surface OQ-1):
+        // Shift+Tab forwards as the shell's back-tab while the menu
+        // is closed.
+        if editor::opener_claims_tab(keystroke) {
             let (to_caret, _) = self.editor_to_caret();
             if self
                 .terminal
@@ -1411,15 +1409,6 @@ impl TerminalPane {
                         println!("dropterm: pane hide action (no shell in the walk harness)");
                     }
                 }
-            }
-            // The trigger's own arm is a documented no-op (the
-            // libcosmic precedent): the routing in [`Self::on_key`]
-            // owns the open and the toggle where a declined chord's
-            // shell bytes live. This arm fires only when the map
-            // swallow sees the chord unmolested — a declined open
-            // that fell through translate, nothing to do.
-            TermAction::ShowCompletions => {
-                println!("dropterm: pane show-completions action (the routing owns it)");
             }
             // The shell family never reaches the pane's own dispatch
             // (on_key routes every shell verb to the handoff first);

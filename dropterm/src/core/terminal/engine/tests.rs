@@ -2292,12 +2292,15 @@ fn a_two_branch_repo_yields_both_names_after_revalidation() {
         runner.sets_for(Some(&dir)).is_none(),
         "nothing cached before the first trigger"
     );
+    let spawns_before = runner.lock_generator_state().spawns;
     runner.revalidate(Some(&dir));
-    // The SWR bookkeeping: all three argv keys in flight the moment
-    // the trigger returns, none left when the fetches land.
+    // The SWR bookkeeping: one worker dispatched per argv (read off
+    // the spawn counter — a worker whose fetch lands quickly has
+    // already retired its in-flight mark by the time this thread
+    // takes the lock), none left in flight when the fetches land.
     {
         let state = runner.lock_generator_state();
-        assert_eq!(state.in_flight.len(), 3, "one worker per argv");
+        assert_eq!(state.spawns - spawns_before, 3, "one worker per argv");
     }
     let sets = poll_generator_sets(&runner, &dir);
     {
@@ -5634,6 +5637,77 @@ fn editor_steps_auto_pop_the_menu_with_the_parity_gates() {
 }
 
 #[test]
+fn editor_recollects_a_tab_opened_menu_while_typing() {
+    // The manual lane's freshness (rich-input RI-5): a menu the
+    // conditioned Tab opener opened re-collects fresh rows while the
+    // line moves — frozen rows would leave Tab filling and cycling
+    // against a set that no longer matches the typed segment. The
+    // auto-pop being on is irrelevant here: the opener marked the
+    // menu manual, and the freshness is the showing menu's rule.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(terminal.editor_menu_open("slee"), "the opener opens");
+    let opened = terminal.menu_rows().to_vec();
+    terminal.editor_step("sl", true);
+    assert!(
+        terminal.menu_is_open(),
+        "the fresh set still qualifies, the menu stands"
+    );
+    let recollected = terminal.menu_rows().to_vec();
+    assert_ne!(
+        opened, recollected,
+        "the rows re-collected over the moved segment"
+    );
+    assert!(
+        recollected.iter().all(|row| row.label.starts_with("sl")),
+        "every row answers the typed segment as it now stands"
+    );
+
+    // Nothing left to insert closes the menu — the manual lane
+    // included, the same rule the auto-opened menu always had.
+    terminal.editor_step("sleep 30", true);
+    assert!(
+        !terminal.menu_is_open(),
+        "an insert-less set closes the Tab-opened menu"
+    );
+}
+
+#[test]
+fn editor_recollects_a_tab_opened_menu_with_the_auto_pop_off() {
+    // `input_auto_popup` off leaves Tab the only opener — and the
+    // re-collect rides the showing menu, not the auto arm: the manual
+    // menu follows the line with the auto-pop wired dark.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    record_command(&mut terminal, "sleep 30");
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: false,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+
+    terminal.editor_step("sl", true);
+    assert!(
+        !terminal.menu_is_open(),
+        "auto off never pops the menu on its own"
+    );
+    assert!(terminal.editor_menu_open("slee"), "Tab's opener opens");
+    terminal.editor_step("sleep 30", true);
+    assert!(!terminal.menu_is_open(), "nothing to insert closes it");
+    assert!(terminal.editor_menu_open("sleep 3"), "Tab re-opens");
+    let rows = terminal.menu_rows().to_vec();
+    assert!(
+        rows.iter().all(|row| row.label.starts_with("sleep 3")),
+        "the fresh rows match the typed segment"
+    );
+}
+
+#[test]
 fn editor_menu_press_accepts_and_two_stages_over_the_owned_line() {
     // The lane's write shape: an accept's suffix RETURNS for the
     // buffer — the PTY never sees it, the grid stays bare — and the
@@ -5723,4 +5797,85 @@ fn mid_pipeline_lines_complete_their_own_segment() {
         );
         terminal.menu_close();
     }
+}
+
+// --- the conditioned opener's decline (tab-surface TS-1) ---
+
+#[test]
+fn the_conditioned_opener_declines_a_line_nothing_answers() {
+    // The opener's decline over a non-qualifying line: the control
+    // first — the recorded line qualifies — then a typed segment no
+    // provider answers (nothing else is recorded in this harness)
+    // declines: false, the menu closed, the press the caller's to
+    // forward verbatim.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    assert!(
+        !terminal.editor_menu_open("zzz"),
+        "a line no provider answers declines"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}
+
+#[test]
+fn the_conditioned_opener_declines_while_the_pane_is_unfocused() {
+    // The opener's decline behind a closed gate: the same line that
+    // qualifies with the pane focused declines unfocused.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    terminal.set_focused(false);
+    assert!(
+        !terminal.editor_menu_open("sleep 30"),
+        "an unfocused pane declines the qualifying line"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}
+
+#[test]
+fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
+    // The opener's decline behind the menu's own key: the settings
+    // flip's live route (`set_config`) turns the key off, and the
+    // qualifying line declines from then on.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    record_command(&mut terminal, "sleep 30");
+
+    assert!(
+        terminal.editor_menu_open("sleep 30"),
+        "the control: the recorded line qualifies"
+    );
+    terminal.menu_close();
+
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_enabled: false,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert!(
+        !terminal.editor_menu_open("sleep 30"),
+        "the menu's key off declines the qualifying line"
+    );
+    assert!(!terminal.menu_is_open(), "the decline opens nothing");
 }

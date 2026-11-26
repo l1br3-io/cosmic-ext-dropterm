@@ -32,9 +32,8 @@ Every app-level shortcut and its default chords, in the same groups the Settings
 | Open the command palette | `Ctrl+Shift+P` | `command_palette` |
 | Open the images panel | `Ctrl+Shift+O` | `images_panel` |
 | Toggle the status bar | `Ctrl+Shift+B` | `toggle_status_bar` |
-| Show completions | `Ctrl+Space` | `show_completions` |
 
-Every default binds `Ctrl+Shift+<key>` - the only exceptions are the four sanctioned families: the zoom cluster (`Ctrl+=`/`Ctrl++`/`Ctrl+-`/`Ctrl+0`), tab cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`Ctrl+PageDown`), `Shift+Insert` for primary paste, and `Ctrl+Space` for the completion menu. New defaults follow this standard; a bare `Ctrl+<letter>` is always the shell's byte, never the app's.
+Every default binds `Ctrl+Shift+<key>` - the only exceptions are the three sanctioned families: the zoom cluster (`Ctrl+=`/`Ctrl++`/`Ctrl+-`/`Ctrl+0`), tab cycling (`Ctrl+Tab`, `Ctrl+PageUp`/`Ctrl+PageDown`), and `Shift+Insert` for primary paste. New defaults follow this standard; a bare `Ctrl+<letter>` is always the shell's byte, never the app's. `Ctrl+Space` stays the shell's too - the NUL byte (readline's set-mark), which is why no completion binding ever claimed it: the completion menu opens on a bare Tab, never a chord ([the menu](autosuggestions.md#the-menu)).
 
 The numbered activation binds are cosmic-term's exact rule: digits 1-8 activate that tab strictly, and 9 always takes the last tab. The cycling pair is browser-style - `Ctrl+Tab` / `Ctrl+Shift+Tab` walk the tab list alongside `Ctrl+PageUp`/`PageDown`. `copy_primary` ships unbound because middle-click already pastes the primary selection; it is still bindable like every other action.
 

@@ -2878,13 +2878,15 @@ impl Terminal {
     /// after every buffer mutation), stepping the same state machine
     /// the grid lane steps — the ghost and the anchor bookkeeping
     /// ride it unchanged. `after_blank` is the caret-at-line-end
-    /// fact the auto-popup's line-end gate reads. The auto-pop
-    /// re-collect runs on the same gates (two-char floor, a
-    /// qualifying row, fresh rows in place while typing, an
-    /// auto-opened menu closing when the set empties); no echo
-    /// one-shot on this lane — an accept's insert flows through the
-    /// buffer (the re-collect is wanted), and execution's echo
-    /// arrives on the grid lane already suppressed.
+    /// fact the auto-popup's line-end gate reads. Any showing menu —
+    /// the auto-pop's own or a Tab-opened one — re-collects fresh
+    /// rows on the typed change (no floor: the Tab opener opened
+    /// without one), closing when no row qualifies; the auto-pop
+    /// itself keeps its gates (focused, the line end, the two-char
+    /// floor, a qualifying row) and never opens over a showing menu.
+    /// No echo one-shot on this lane — an accept's insert flows
+    /// through the buffer (the re-collect is wanted), and
+    /// execution's echo arrives on the grid lane already suppressed.
     /// The editor lane's line bridge (rich-input RI-5): the grid
     /// lane's before-cursor text is the anchor plus the typed
     /// segment — the editor's buffer is the segment alone — so the
@@ -2955,26 +2957,41 @@ impl Terminal {
         {
             log::warn!("failed to persist history store: {err}");
         }
-        // The auto-pop (suggest-parity spec): the editor's step is
-        // the typed change itself.
-        if self.autosuggestions_menu_auto
-            && self.autosuggestions_menu_enabled
-            && self.autosuggestions_enabled
-            && observation.focused
-            && after_blank
-            && typed_changed
-            && let Some(typed) = self.suggest.typed_segment(before_cursor)
-            && typed.chars().count() >= 2
-        {
-            let collected = suggest::candidates(typed, &self.suggest, &observation);
-            let qualifying = collected.iter().any(|row| !row.suffix.is_empty());
-            if !qualifying {
-                if self.menu.is_open() && self.menu_auto_opened {
-                    self.menu.close();
+        // The auto-pop and the open menu's re-collect (suggest-parity
+        // spec): the editor's step is the typed change itself. The
+        // re-collect serves every showing menu — the Tab-opened one
+        // included, `menu_auto_opened` recording only which opener
+        // opened, never gating the freshness — because frozen rows
+        // under a moving line leave Tab filling and cycling against
+        // a set that no longer matches the typed segment.
+        if typed_changed {
+            let typed = self.suggest.typed_segment(before_cursor);
+            if self.menu.is_open() {
+                // A fresh qualifying set lands in place; nothing left
+                // to insert — or nothing typed at all — closes the
+                // menu, the manual lane included.
+                if let Some(typed) = typed {
+                    let collected = suggest::candidates(typed, &self.suggest, &observation);
+                    if collected.iter().any(|row| !row.suffix.is_empty()) {
+                        self.menu.open(collected);
+                        return;
+                    }
                 }
-            } else if !self.menu.is_open() || self.menu_auto_opened {
-                self.menu_auto_opened = true;
-                self.menu.open(collected);
+                self.menu.close();
+                self.menu_auto_opened = false;
+            } else if self.autosuggestions_menu_auto
+                && self.autosuggestions_menu_enabled
+                && self.autosuggestions_enabled
+                && observation.focused
+                && after_blank
+                && let Some(typed) = typed
+                && typed.chars().count() >= 2
+            {
+                let collected = suggest::candidates(typed, &self.suggest, &observation);
+                if collected.iter().any(|row| !row.suffix.is_empty()) {
+                    self.menu_auto_opened = true;
+                    self.menu.open(collected);
+                }
             }
         }
     }

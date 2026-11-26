@@ -79,6 +79,25 @@ pub(crate) enum ControlKind {
     ShellPicker,
 }
 
+/// The closed-list keys the window builds a `SelectState` for, in
+/// build order — the one list `build_dropdowns` draws from, pinned
+/// against `control_kind`'s Dropdown arm by test: a key the arm
+/// classifies but this list omits renders its row as a bare
+/// placeholder (the `AutoComplete` page's two input dropdowns did,
+/// until the pin forced them in).
+const DROPDOWN_KEYS: &[ConfigKey] = &[
+    ConfigKey::HAlign,
+    ConfigKey::Edge,
+    ConfigKey::TabPosition,
+    ConfigKey::TabTitleMode,
+    ConfigKey::NewTabCwd,
+    ConfigKey::Layer,
+    ConfigKey::KeyboardMode,
+    ConfigKey::ThemePreference,
+    ConfigKey::InputMode,
+    ConfigKey::InputPosition,
+];
+
 /// The control a section-hosted key renders. Every key a `Section`
 /// lists resolves — pinned against `page_section`'s partition below.
 pub(crate) fn control_kind(key: ConfigKey) -> ControlKind {
@@ -593,16 +612,8 @@ impl SettingsWindow {
         // The merged scheme vocabulary the scheme-keyed arms resolve
         // against (theme-files F3): the shell's holder at build time.
         let user_schemes = shell.read(cx).user_schemes.clone();
-        for key in [
-            ConfigKey::HAlign,
-            ConfigKey::Edge,
-            ConfigKey::TabPosition,
-            ConfigKey::TabTitleMode,
-            ConfigKey::NewTabCwd,
-            ConfigKey::Layer,
-            ConfigKey::KeyboardMode,
-            ConfigKey::ThemePreference,
-        ] {
+        for key in DROPDOWN_KEYS {
+            let key = *key;
             let options = dropdown_options(key);
             let selected = Some(dropdown_selected(key, config, &user_schemes).unwrap_or(0))
                 .map(|row| gpui_component::IndexPath::default().row(row));
@@ -2579,11 +2590,46 @@ impl SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dropterm::core::settings::Section;
+
+    /// Every key the drawer classifies as a dropdown is one
+    /// `build_dropdowns` builds a state for, and every built state
+    /// serves a dropdown-classified key — the partition between
+    /// `control_kind`'s Dropdown arm and `DROPDOWN_KEYS`. A key on
+    /// one side only renders as a bare placeholder row (the
+    /// `AutoComplete` page's Input mode / Input strip position did,
+    /// until this pin forced them into the build list), and a
+    /// stale list entry would build a state nothing renders.
+    #[test]
+    fn every_dropdown_key_has_a_built_state() {
+        let classified: Vec<ConfigKey> = Section::ALL
+            .iter()
+            .flat_map(|section| section.keys().iter().copied())
+            .filter(|key| control_kind(*key) == ControlKind::Dropdown)
+            .collect();
+        for key in &classified {
+            assert!(
+                DROPDOWN_KEYS.contains(key),
+                "{key:?} is dropdown-classified but DROPDOWN_KEYS never builds its state"
+            );
+            assert!(
+                !dropdown_options(*key).is_empty(),
+                "{key:?} builds a dropdown over no options"
+            );
+        }
+        for key in DROPDOWN_KEYS {
+            assert!(
+                classified.contains(key),
+                "DROPDOWN_KEYS builds a state for {key:?}, which no section lists as a dropdown"
+            );
+        }
+    }
 
     /// The dispatch's classes spot-pinned: the pickers and the shell
-    /// control, the four sliders, the eight dropdowns, the seven texts,
+    /// control, the four sliders, the ten dropdowns, the seven texts,
     /// and one toggle representative — the full partition is the
-    /// section-map tests' own exactly-once pin.
+    /// section-map tests' own exactly-once pin, and the dropdown
+    /// set's own partition is `every_dropdown_key_has_a_built_state`.
     #[test]
     fn the_control_classes_dispatch_as_the_libcosmic_drawer_drew_them() {
         assert_eq!(control_kind(ConfigKey::FontName), ControlKind::FontPicker);
@@ -2600,17 +2646,8 @@ mod tests {
         ] {
             assert_eq!(control_kind(key), ControlKind::Slider);
         }
-        for key in [
-            ConfigKey::HAlign,
-            ConfigKey::Edge,
-            ConfigKey::TabPosition,
-            ConfigKey::TabTitleMode,
-            ConfigKey::NewTabCwd,
-            ConfigKey::Layer,
-            ConfigKey::KeyboardMode,
-            ConfigKey::ThemePreference,
-        ] {
-            assert_eq!(control_kind(key), ControlKind::Dropdown);
+        for key in DROPDOWN_KEYS {
+            assert_eq!(control_kind(*key), ControlKind::Dropdown);
         }
         for key in [
             ConfigKey::Args,

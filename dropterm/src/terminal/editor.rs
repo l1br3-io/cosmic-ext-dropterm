@@ -183,10 +183,12 @@ impl StripLine {
 /// the shell's key in the native lane, restored to the menu inside
 /// the editor by the rich-input lift: the LCP fill of the filtered
 /// case-sensitive prefix rows (closing the last) else a cycle of
-/// the selection.
+/// the selection; Shift+Tab is the backwards step (tab-surface
+/// OQ-1 — the lift's own named claim, SP2's shape).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditorMenuRouting {
-    /// Up/Down (wrap is the transition's own).
+    /// Up/Down (wrap is the transition's own); Shift+Tab's backwards
+    /// press.
     Navigate(dropterm::core::terminal::suggest::MenuKey),
     /// The menu's Accept press (a differing line; the equal line is
     /// [`Self::CloseThenRun`]).
@@ -195,7 +197,7 @@ pub(crate) enum EditorMenuRouting {
     CloseThenRun,
     /// Escape: close, insert nothing, nothing else.
     Close,
-    /// Tab: the LCP-fill-else-cycle decision.
+    /// Bare Tab: the LCP-fill-else-cycle decision.
     FillOrCycle,
     /// A printable edit: the press flows to the buffer, the menu
     /// stays, the rows re-collect on the lane's step.
@@ -234,13 +236,15 @@ pub(crate) fn editor_menu_routing(keystroke: &Keystroke, equal_line: bool) -> Ed
                     };
                 }
                 "escape" => return EditorMenuRouting::Close,
+                // The lift (rich-input spec): Tab is the menu's fill
+                // inside the editor.
+                "tab" => return EditorMenuRouting::FillOrCycle,
                 _ => {}
             }
-        }
-        // The lift (rich-input spec): Tab fills or cycles inside the
-        // editor, bare and shifted alike.
-        if key == "tab" {
-            return EditorMenuRouting::FillOrCycle;
+        } else if key == "tab" {
+            // Shift+Tab: the backwards step (tab-surface OQ-1 — the
+            // lift's own named claim, SP2's shape).
+            return EditorMenuRouting::Navigate(dropterm::core::terminal::suggest::MenuKey::Up);
         }
         // The as-you-type edit: printables keep the menu open.
         if keystroke
@@ -253,6 +257,17 @@ pub(crate) fn editor_menu_routing(keystroke: &Keystroke, equal_line: bool) -> Ed
         }
     }
     EditorMenuRouting::CloseThenProcess
+}
+
+/// The conditioned opener's key gate (tab-surface OQ-1): bare Tab
+/// alone may open the closed menu — the opener is SP2's own, and
+/// Shift+Tab stays the shell's back-tab here (its backwards claim is
+/// the showing menu's, in [`editor_menu_routing`]). Whether the line
+/// qualifies is the engine's answer, not this gate's.
+pub(crate) fn opener_claims_tab(keystroke: &Keystroke) -> bool {
+    let modifiers = &keystroke.modifiers;
+    keystroke.key == "tab"
+        && !(modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform)
 }
 
 /// Tab's decision (the restored LCP-fill-else-cycle): the longest
@@ -886,16 +901,18 @@ mod tests {
             editor_menu_routing(&key(plain(), "escape", None), false),
             EditorMenuRouting::Close
         );
-        // The lift: Tab is the menu's fill inside the editor, bare
-        // and shifted alike (the native lane's verbatim forward is
-        // the claim's own exclusion, not this table's).
+        // The lift: bare Tab is the menu's fill inside the editor,
+        // and Shift+Tab its backwards step — the claim the lift
+        // names, SP2's shape (tab-surface OQ-1). The native lane's
+        // verbatim forward is the claim's own exclusion, not this
+        // table's.
         assert_eq!(
             editor_menu_routing(&key(plain(), "tab", None), false),
             EditorMenuRouting::FillOrCycle
         );
         assert_eq!(
             editor_menu_routing(&key(shift(), "tab", None), false),
-            EditorMenuRouting::FillOrCycle
+            EditorMenuRouting::Navigate(MenuKey::Up)
         );
         // Printables keep the menu open; command chords close it.
         assert_eq!(
@@ -941,5 +958,23 @@ mod tests {
         assert_eq!(tab_fill(&["Git", "Gimp"], "gi"), TabFill::Cycle);
         // No prefix rows at all: cycle.
         assert_eq!(tab_fill(&["cargo"], "gi"), TabFill::Cycle);
+    }
+
+    // --- the conditioned opener's key gate (tab-surface TS-1) ---
+
+    #[test]
+    fn the_conditioned_opener_is_bare_tab_alone() {
+        use super::opener_claims_tab;
+
+        // Bare Tab is the opener's key while the menu is closed...
+        assert!(opener_claims_tab(&key(plain(), "tab", None)));
+        // ...and nothing else claims: Shift+Tab is the shell's
+        // back-tab here (tab-surface OQ-1 — its backwards claim is
+        // the showing menu's), and the command modifiers were never
+        // the opener's.
+        assert!(!opener_claims_tab(&key(shift(), "tab", None)));
+        assert!(!opener_claims_tab(&key(ctrl(), "tab", None)));
+        assert!(!opener_claims_tab(&key(alt(), "tab", None)));
+        assert!(!opener_claims_tab(&key(plain(), "a", Some("a"))));
     }
 }

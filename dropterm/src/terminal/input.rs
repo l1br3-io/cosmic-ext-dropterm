@@ -32,13 +32,6 @@ pub(crate) enum TermAction {
     ZoomOut,
     ZoomReset,
     Hide,
-    /// Open (or close) the completion menu at the prompt
-    /// (`Ctrl+Space`, suggest-menu spec — the libcosmic
-    /// `ShowCompletions`): a soft trigger owned by the pane's key
-    /// routing, where a declined chord's shell bytes live; the
-    /// action arm itself is a documented no-op (the engine's menu
-    /// state is the action).
-    ShowCompletions,
     /// Scroll the viewport to the bottom (`Ctrl+Shift+End`) — the
     /// status band's scrolled chip's jump verb as a chord, the same
     /// engine call the chip's click routes.
@@ -127,7 +120,6 @@ pub(crate) fn action_id(action: &TermAction) -> Option<String> {
         TermAction::ZoomOut => Some("zoom_out".into()),
         TermAction::ZoomReset => Some("zoom_reset".into()),
         TermAction::Hide => Some("hide".into()),
-        TermAction::ShowCompletions => Some("show_completions".into()),
         TermAction::ScrollToBottom => Some("scroll_to_bottom".into()),
         TermAction::NewTab => Some("new_tab".into()),
         TermAction::NewTabHome => Some("new_tab_home".into()),
@@ -172,7 +164,6 @@ pub(crate) fn action_from_id(id: &str) -> Option<TermAction> {
         "zoom_out" => Some(TermAction::ZoomOut),
         "zoom_reset" => Some(TermAction::ZoomReset),
         "hide" => Some(TermAction::Hide),
-        "show_completions" => Some(TermAction::ShowCompletions),
         "scroll_to_bottom" => Some(TermAction::ScrollToBottom),
         "new_tab" => Some(TermAction::NewTab),
         "new_tab_home" => Some(TermAction::NewTabHome),
@@ -261,14 +252,6 @@ pub(crate) fn default_key_binds() -> HashMap<Chord, TermAction> {
     map.insert(chord(&[ModifierName::Ctrl], "0"), TermAction::ZoomReset);
     map.insert(chord(cs, "q"), TermAction::Hide);
     map.insert(chord(cs, "end"), TermAction::ScrollToBottom);
-    // The completion menu's soft trigger (suggest-menu spec): the
-    // pane's key routing owns the open/toggle before this map's
-    // swallow sees the chord; the map entry carries a custom
-    // `show_completions` binding into the same routing.
-    map.insert(
-        chord(&[ModifierName::Ctrl], "space"),
-        TermAction::ShowCompletions,
-    );
     // The shell-owned family — the reference table's own defaults
     // (core `keybinds::BINDING_ROWS`), one chord for one verb, the
     // pane matching and the shell executing. The pair audit against
@@ -793,7 +776,6 @@ mod tests {
             TermAction::ZoomOut,
             TermAction::ZoomReset,
             TermAction::Hide,
-            TermAction::ShowCompletions,
             TermAction::ScrollToBottom,
             TermAction::NewTab,
             TermAction::NewTabHome,
@@ -883,15 +865,14 @@ mod tests {
                 "chord {chord:?} fires {action:?}"
             );
         }
-        // And the counts stay honest: the pane's fifteen (the
+        // And the counts stay honest: the pane's fourteen (the
         // clipboard pair, the primary paste, select-all,
         // clear-scrollback, the scroll-to-bottom jump, the zoom
-        // cluster's six, the hide, the completion trigger) plus the
-        // shell family's twenty-four (the six letter verbs, the
-        // cycle pair's four, the moves' two, the eight numbered
-        // seats, the last seat, settings, images, the band, the
-        // palette).
-        assert_eq!(default_key_binds().len(), 39);
+        // cluster's six, the hide) plus the shell family's
+        // twenty-four (the six letter verbs, the cycle pair's four,
+        // the moves' two, the eight numbered seats, the last seat,
+        // settings, images, the band, the palette).
+        assert_eq!(default_key_binds().len(), 38);
     }
 
     #[test]
@@ -1126,7 +1107,8 @@ mod tests {
             KeyInput::Bytes(b"\x7f".to_vec())
         );
         // Ctrl+Backspace sends BS, Alt+Enter the ESC-prefixed CR,
-        // Shift+Tab the back-tab sequence.
+        // Tab the tab byte (the native lane's, and every declined
+        // claim's, forward), Shift+Tab the back-tab sequence.
         assert_eq!(
             translate(
                 &key(ctrl(), "backspace", None),
@@ -1142,6 +1124,14 @@ mod tests {
                 plain_modes()
             ),
             KeyInput::Bytes(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            translate(
+                &key(Modifiers::default(), "tab", None),
+                &default_key_binds(),
+                plain_modes()
+            ),
+            KeyInput::Bytes(b"\x09".to_vec())
         );
         assert_eq!(
             translate(
