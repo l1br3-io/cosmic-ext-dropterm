@@ -9,7 +9,7 @@ This page covers the two modes, the keys the rich editor claims, and the setting
 `input_mode` in [Configuration](configuration.md) (globally, or per profile through the profile field of the same name):
 
 - **`native` (the default)** - the bare shell. Every keystroke reaches the PTY verbatim; the whole suggestion lane is dark. There is no v1 release yet, so this is a deliberate clean cut, not a regression: the old overlay surfaces retired when the editor shipped, and `native` is genuinely bare.
-- **`rich`** - the editor. At a live prompt (focused, nothing running in the foreground, viewport at the bottom) DropTerm owns the line: it buffers your typing, edits it, highlights it, completes it, and runs it. While a program owns the screen (vim, ssh, cargo), or when DropTerm cannot decide whether the cursor sits at a real prompt, the editor stands aside and every key passes through - a hidden editor costs a little richness, a wrongly-shown one would eat a program's input.
+- **`rich`** - the editor. At a live prompt (focused, nothing running in the foreground, not scrolled back - a new tab's first prompt, at the top of its still-empty screen, is one) DropTerm owns the line: it buffers your typing, edits it, highlights it, completes it, and runs it. While a program owns the screen (vim, ssh, cargo), or when DropTerm cannot decide whether the cursor sits at a real prompt, the editor stands aside and every key passes through - a hidden editor costs a little richness, a wrongly-shown one would eat a program's input.
 
 Enter runs the line by writing it to the PTY with a single newline - the shell keeps its own line discipline, echo, and history. No shell integration is required.
 
@@ -40,6 +40,12 @@ Completions see through `$(...)` substitutions, pipes, and `;` chains: the segme
 ## The strip and its docks
 
 `input_position` (default `bottom`) moves the strip: `bottom` sits under the grid where the prompt is; `top` pins it at the head of the grid region - every Enter drops the executed command into the flow below while the grid keeps scrolling like a normal terminal. The menu re-anchors with the strip.
+
+## One input on screen
+
+Exactly one caret is on screen, in the input that is live. While the editor owns the line it is the strip's. The shell still prints its prompt in the grid (under the strip with `top`, above it with `bottom`), and the command lands on that row when Enter runs it, but the row shows no caret of its own. Whenever the editor stands aside, the grid's caret is the only one and the strip paints nothing.
+
+The strip's row belongs to the mode, not to the owned line: it keeps its place while the editor stands aside instead of collapsing, so the terminal never changes size between a prompt and a running program. `native` removes the row.
 
 ## The settings
 
