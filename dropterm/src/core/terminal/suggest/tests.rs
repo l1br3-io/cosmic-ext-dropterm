@@ -2968,20 +2968,14 @@ fn env_rows_stay_silent_over_ssh() {
     );
 }
 
-// --- the dot chain (suggest-depth, SP-D6) ---
-
-/// A listing as the engine now builds one: `.` and `..` always
-/// chained ahead of the directory's own entries (std never yields
-/// them).
-fn chained_listing(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
-    let mut chained = vec![(".".to_string(), true), ("..".to_string(), true)];
-    chained.extend(listing(entries));
-    chained
-}
+// --- the path rows: `./` and `../` leave every listing (suggest-overlay, SO-1) ---
 
 #[test]
-fn the_menu_path_tier_inherits_the_dot_chain() {
-    let entries = chained_listing(&[("src", true)]);
+fn the_menu_path_tier_never_offers_the_dot_chain() {
+    // `.` and `..` are dot-prefixed names like any other: behind a
+    // non-dot component they hide, and no listing offers `./` or
+    // `../`.
+    let entries = listing(&[(".", true), ("..", true), ("src", true)]);
     let suggest = adopted();
     let o = Observation {
         path_listing: Some(&entries),
@@ -2996,32 +2990,39 @@ fn the_menu_path_tier_inherits_the_dot_chain() {
         .collect::<Vec<_>>();
     assert_eq!(
         rows,
-        vec![
-            ("./".to_string(), "./".to_string()),
-            ("../".to_string(), "../".to_string()),
-            ("src/".to_string(), "src/".to_string()),
-        ],
-        "the chain leads every listing — `.` and `..` bypass the dotfile rule (Warp chains always); an empty component's suffix is the whole entry"
+        vec![("src/".to_string(), "src/".to_string())],
+        "no `./` and no `../` row; an empty component's suffix is the whole entry"
     );
 }
 
 #[test]
-fn the_ghost_path_tier_inherits_the_dot_chain() {
-    let entries = chained_listing(&[]);
+fn the_ghost_path_tier_is_silent_on_dotdot_over_an_empty_listing() {
+    // The engine's listing for an empty directory is empty
+    // (`an_empty_directory_lists_nothing`), so `~/..` has nothing to
+    // match. Control: one entry extending the `..` still answers,
+    // so the silence is the listing's, not a dead provider.
     let mut suggest = adopted();
+    let empty: Vec<(String, bool)> = Vec::new();
     let o = Observation {
-        path_listing: Some(&entries),
+        path_listing: Some(&empty),
         before_cursor: "$ ~/..",
         cursor_column: 6,
         ..obs()
     };
-    let showing = step(&o, &mut suggest).expect("the ghost answers the chained `..`");
-    assert_eq!(showing.suffix, "/", "`~/..` ghosts its directory slash");
+    assert_eq!(
+        step(&o, &mut suggest),
+        None,
+        "`~/..` ghosts nothing over an empty listing"
+    );
+    let entries = listing(&[("..cache", true)]);
+    let showing = step_path("~/..", Some(&entries), &mut suggest)
+        .expect("a real entry extending the `..` still ghosts");
+    assert_eq!(showing.suffix, "cache/");
 }
 
 #[test]
 fn the_dotfile_rule_stands_for_ordinary_dotfiles() {
-    let entries = chained_listing(&[(".hidden", false), ("readme", false)]);
+    let entries = listing(&[(".hidden", false), ("readme", false)]);
     let suggest = adopted();
     let o = Observation {
         path_listing: Some(&entries),
@@ -3037,7 +3038,24 @@ fn the_dotfile_rule_stands_for_ordinary_dotfiles() {
     assert_eq!(
         rows,
         vec!["readme".to_string()],
-        "an ordinary dotfile still hides behind a non-dot component — the chain is the only bypass"
+        "an ordinary dotfile hides behind a non-dot component"
+    );
+    // Control: the dot-prefixed component is what shows it.
+    let dot = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/.",
+        cursor_column: 4,
+        ..obs()
+    };
+    let rows = candidates("~/.", &suggest, &dot)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Path)
+        .map(|row| row.label)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![".hidden".to_string()],
+        "the typed dot shows the dotfile"
     );
 }
 

@@ -994,7 +994,9 @@ fn resolve_token_parent(token: &str, home: Option<&str>, cwd: Option<&Path>) -> 
 /// never be safely suggested) yields the empty listing. The
 /// is-a-directory bit is readdir's own `d_type` truth: a symlink to
 /// a directory completes without the `/`, the honest no-follow
-/// answer.
+/// answer. The listing is the directory's own entries only: `./` and
+/// `../` are never rows (suggest-overlay spec, SO-1); a token typed
+/// `../` reaches its parent through `resolve_token_parent`.
 fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
     let Some(read_dir) = fs::read_dir(dir).ok() else {
         return Vec::new();
@@ -1008,11 +1010,6 @@ fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
         })
         .collect::<Option<Vec<(String, bool)>>>()
         .unwrap_or_default();
-    // The chain (suggest-depth spec, LG4 / depth finding 6): std's
-    // readdir never yields them, so `.` and `..` prepend themselves
-    // — always, every listing, both tiers inheriting.
-    entries.push((".".to_string(), true));
-    entries.push(("..".to_string(), true));
     entries.sort_unstable();
     entries
 }

@@ -114,34 +114,64 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
 }
 
 #[test]
-fn read_sorted_entries_chains_dot_and_dotdot() {
-    // The chain's source (suggest-depth spec, LG4 / depth finding 6):
-    // std's readdir never yields `.` or `..`, so the listing
-    // prepends them itself — always, every directory, both menu and
-    // ghost inheriting. The root's synthetic `/` stays out of scope.
-    let dir = std::env::temp_dir().join(format!("dropterm-chain-test-{}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create the chain test dir");
+fn read_sorted_entries_lists_the_directorys_own_entries_only() {
+    // A listing is the directory's own entries, sorted
+    // (suggest-overlay spec, SO-1): `./` and `../` are never rows.
+    // A token typed `../` reaches its parent through the token's own
+    // prefix, never through a listed entry.
+    let dir = std::env::temp_dir().join(format!("dropterm-listing-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create the listing test dir");
     fs::write(dir.join("a-file"), b"x").expect("seed one entry");
+    fs::write(dir.join(".hidden"), b"x").expect("seed a dotfile");
     let entries = read_sorted_entries(&dir);
     assert_eq!(
         entries
-            .first()
-            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
-        Some((".", true)),
-        "`.` chains first"
-    );
-    assert_eq!(
-        entries
-            .get(1)
-            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
-        Some(("..", true)),
-        "`..` chains second"
-    );
-    assert!(
-        entries.iter().any(|(name, _)| name == "a-file"),
-        "the directory's own entries follow"
+            .iter()
+            .map(|(name, is_dir)| (name.as_str(), *is_dir))
+            .collect::<Vec<_>>(),
+        vec![(".hidden", false), ("a-file", false)],
+        "the directory's own entries sorted by name, no `.` and no `..`"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_directory_lists_nothing() {
+    // The ghost's half of the path rows (suggest-overlay spec, SO-1):
+    // `~/..` ghosts nothing over an empty directory, because its
+    // listing carries nothing to match the `..`.
+    let dir = path_fixture("empty");
+    assert!(
+        read_sorted_entries(&dir).is_empty(),
+        "an empty directory's listing is empty"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_token_ending_in_dotdot_slash_still_lists_the_parent() {
+    // `../` typed by hand keeps its listing (suggest-overlay spec,
+    // SO-1): the parent is resolved from the token's prefix. Control:
+    // the cwd's own entry stays out: the listing is the parent's.
+    let base = path_fixture("dotdot");
+    fs::write(base.join("main.rs"), b"").expect("fixture file");
+    fs::create_dir_all(base.join("sub")).expect("fixture directory");
+    fs::write(base.join("sub/inner.rs"), b"").expect("fixture file");
+    let cwd = base.join("sub");
+    let mut cache = PathListingCache::default();
+    let parent = cache
+        .listing_for(true, Some("../"), None, Some(&cwd))
+        .expect("`../` resolves its parent against the cwd");
+    assert!(
+        parent.contains(&("main.rs".to_string(), false))
+            && parent.contains(&("sub".to_string(), true)),
+        "the parent's own entries list"
+    );
+    assert!(
+        !parent.contains(&("inner.rs".to_string(), false)),
+        "the cwd's own entry is not the parent's"
+    );
+    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -1779,13 +1809,8 @@ fn the_listing_cache_reads_once_per_parent_not_per_keystroke() {
         .to_vec();
     assert_eq!(
         first,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("a.txt".to_string(), false),
-            ("sub".to_string(), true),
-        ],
-        "the chain leads, then entries sorted by name, directories flagged"
+        &[("a.txt".to_string(), false), ("sub".to_string(), true),],
+        "the directory's own entries sorted by name, directories flagged"
     );
     // A file created between two tokens in the SAME parent stays
     // invisible: the second call is not a re-read.
@@ -1823,11 +1848,8 @@ fn an_unreadable_directory_yields_an_empty_listing_never_a_stale_one() {
         .to_vec();
     assert_eq!(
         good,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("here.txt".to_string(), false),
-        ]
+        &[("here.txt".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // Unreadable now: a later visit — the key changed away and back —
     // reads silence, never the stale list.
@@ -1856,11 +1878,8 @@ fn tilde_rooted_tokens_resolve_against_the_spawn_time_home() {
         .to_vec();
     assert_eq!(
         listing,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("notes.md".to_string(), false),
-        ]
+        &[("notes.md".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // The bare HOME root is the same parent — the cached listing.
     let root = cache
@@ -1884,11 +1903,8 @@ fn relative_parents_resolve_against_the_tab_cwd() {
         .expect("a relative parent joins the cwd");
     assert_eq!(
         listing,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("main.rs".to_string(), false),
-        ]
+        &[("main.rs".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // No cwd: a relative parent is unresolvable — silence.
     let mut no_cwd = PathListingCache::default();
