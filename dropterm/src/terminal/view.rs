@@ -1552,26 +1552,6 @@ impl TerminalPane {
                     cx.notify();
                     return;
                 }
-                // The autosuggest soft keys (autosuggest spec): accept
-                // only while the engine shows a suggestion — with
-                // nothing showing the arm falls through, and Right
-                // maps to its escape code exactly as before.
-                if let Some(kind) = suggest::accept_kind(&keystroke.key, keystroke.modifiers)
-                    && self
-                        .terminal
-                        .lock()
-                        .expect("engine lock")
-                        .suggestion()
-                        .is_some()
-                {
-                    println!("dropterm: pane accept {kind:?} — the showing suffix lands");
-                    let mut engine = self.terminal.lock().expect("engine lock");
-                    engine.accept_suggestion(kind);
-                    engine.needs_update = true;
-                    drop(engine);
-                    cx.notify();
-                    return;
-                }
                 self.terminal
                     .lock()
                     .expect("engine lock")

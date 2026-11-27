@@ -441,6 +441,189 @@ fn a_dispatched_tab_reaches_the_pane_under_the_kit_root(cx: &mut gpui::TestAppCo
     let _ = std::fs::remove_file(&sink);
 }
 
+// --- suggest-overlay: the overlay lane's seats ---
+//
+// A real pane under the Kit Root (the key-delivery pin's mount shape),
+// focused, driven by its own paint clock: the engine's update runs in
+// the paint, so a prompt's adoption and an echo's suggestion land
+// between frames. The seats are live I/O (a real PTY, the engine's own
+// threads): every caller owes `allow_parking` before the boot.
+
+/// Boot `request` under the Kit Root, focus the pane, and hand back
+/// the engine, the pane, and the visual context that drives it.
+fn pane_under_kit_root(
+    cx: &mut gpui::TestAppContext,
+    config: &dropterm::core::config::DropTermConfig,
+    request: PaneRequest,
+) -> (
+    Arc<Mutex<Terminal>>,
+    gpui::Entity<TerminalPane>,
+    gpui::VisualTestContext,
+) {
+    let (terminal, pane) = cx
+        .update(|cx| boot_pane(cx, config, request, None, TabId(0), None))
+        .expect("boot the pane");
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::size(px(600.), px(400.)),
+                    })),
+                    ..Default::default()
+                },
+                |window, cx| cx.new(|cx| gpui_component::Root::new(pane.clone(), window, cx)),
+            )
+        })
+        .expect("open the pane's window");
+    let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+    let cx = &mut visual;
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.focus(&pane.read(cx).focus_handle(), cx);
+    });
+    (terminal, pane, visual)
+}
+
+/// One paint-clock frame: the pane's queued events land, then the
+/// refresh-then-draw the engine's update rides.
+fn paint_frame(cx: &mut gpui::VisualTestContext) {
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+}
+
+/// Paint frames until `ready` holds over the engine, ten seconds at
+/// most; the pane's visible rows name a timeout.
+fn paint_until(
+    cx: &mut gpui::VisualTestContext,
+    terminal: &Arc<Mutex<Terminal>>,
+    ready: impl Fn(&Terminal) -> bool,
+    what: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready(&terminal.lock().expect("engine lock")) {
+        paint_frame(cx);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: {:?}",
+            terminal.lock().expect("engine lock").visible_rows()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The witness file's first non-empty read (five seconds at most).
+fn poll_witness(sink: &std::path::Path) -> String {
+    for _ in 0..500 {
+        if let Ok(read) = std::fs::read_to_string(sink)
+            && !read.is_empty()
+        {
+            return read;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    String::new()
+}
+
+/// A `/bin/sh` spawn whose session leader is the reader: the shell
+/// prints `P$ `, then execs `cat` with the witness as its stdout. No
+/// child ever holds the foreground, and echo stays on, so the typed
+/// text reaches the grid.
+fn prompt_then_cat(
+    sink: &std::path::Path,
+    config: &dropterm::core::config::DropTermConfig,
+) -> PaneRequest {
+    PaneRequest {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!("printf 'P$ '; exec cat > '{}'", sink.display()),
+        ],
+        cwd: None,
+        env: std::collections::HashMap::default(),
+        spawned_as: "sh".to_string(),
+        profile_id: None,
+        appearance: PaneAppearance {
+            colors: boot_colors(config, &[]),
+            font_size: config.font_size,
+            scrollback: config.scrollback_lines,
+        },
+    }
+}
+
+// --- suggest-overlay SO-2: the ghost's accept is never the default
+// mode's ---
+
+#[gpui::test]
+fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpui::TestAppContext) {
+    // The ghost's accept arm in `on_key` had no mode gate, and the
+    // engine's screen-read step computes suggestions in every mode:
+    // in `native`, the default, a bare Right completed an invisible
+    // ghost into the shell and swallowed the key. `gi` is typed until
+    // the engine shows a suggestion; then Right, then Enter to flush
+    // the canonical line to the witness. The witness must hold the
+    // key's own bytes and nothing of the suffix.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let mut config = request_config();
+    // The menu is not this pin's; the ghost stays on, because the
+    // engine has to show a suggestion for the press to mean anything.
+    config.input_menu = false;
+    let sink = std::env::temp_dir().join(format!(
+        "dropterm-native-right-pin-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&sink);
+    let (terminal, _pane, mut visual) =
+        pane_under_kit_root(cx, &config, prompt_then_cat(&sink, &config));
+    let cx = &mut visual;
+
+    // A fresh prompt sits at the top of an empty screen (the rows
+    // below it stay blank), so the painted check is any row's.
+    paint_until(
+        cx,
+        &terminal,
+        |engine| {
+            engine.with_buffer(|buffer| buffer.lines.iter().any(|line| line.text().contains("P$")))
+        },
+        "the prompt never painted",
+    );
+    // One frame past the paint: the prompt's update adopted it.
+    paint_frame(cx);
+
+    cx.simulate_keystrokes("g");
+    cx.simulate_keystrokes("i");
+    paint_until(
+        cx,
+        &terminal,
+        |engine| engine.suggestion().is_some(),
+        "the typed prefix never showed a suggestion",
+    );
+    let showing = terminal
+        .lock()
+        .expect("engine lock")
+        .suggestion()
+        .map(str::to_owned);
+
+    cx.simulate_keystrokes("right");
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        poll_witness(&sink),
+        "gi\x1b[C\n",
+        "in native a Right press is the shell's own key while the engine shows {showing:?}: \
+         the line gains the key's bytes and nothing of the suffix"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
+}
+
 // --- the covering report's third telling: a pasted path hides
 // until a backspace redraws the line ---
 
