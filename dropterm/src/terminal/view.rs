@@ -999,15 +999,19 @@ impl TerminalPane {
         if !overlays_live {
             return false;
         }
-        if menu_open {
-            return self.route_overlay_menu_press(keystroke, equal_line, cx);
+        // While the menu shows the table decides first. A press it
+        // consumes ends here; one it keeps open, or closes before its
+        // own meaning runs, falls through to the rest of the lane's
+        // routing (the ghost's accept), and then to the bytes.
+        if menu_open && self.route_overlay_menu_press(keystroke, equal_line, cx) {
+            return true;
         }
         // Tab while closed (the conditioned opener): a line with a
         // qualifying row opens the menu; the decline falls through,
         // and Tab forwards to the shell verbatim. Bare Tab alone
         // claims (tab-surface OQ-1): Shift+Tab is the shell's
         // back-tab while the menu is closed.
-        if suggest::opener_claims_tab(keystroke) {
+        if !menu_open && suggest::opener_claims_tab(keystroke) {
             let opened = self.terminal.lock().expect("engine lock").menu_open();
             if opened {
                 cx.notify();

@@ -635,6 +635,53 @@ fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpu
     let _ = std::fs::remove_file(&sink);
 }
 
+// --- suggest-overlay SO-5's key table, the Right row: with the menu
+// --- showing, Right closes it and still accepts the ghost ---
+
+#[gpui::test]
+fn a_right_press_closes_the_showing_menu_and_still_accepts_the_ghost(
+    cx: &mut gpui::TestAppContext,
+) {
+    // The key table's Right row: with the menu showing, the press
+    // closes the menu first, "then the same": the ghost's accept. The
+    // ghost shows while the menu does, so the row is real.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let config = rich_config();
+    let (terminal, sink, showing, mut visual) = ghost_showing(cx, "rich-right-menu", &config);
+    let cx = &mut visual;
+    let suffix = showing.expect("the pin's own stage: a suggestion shows");
+
+    // A bare Tab opens the menu; the ghost stands behind it.
+    cx.simulate_keystrokes("tab");
+    assert!(
+        terminal.lock().expect("engine lock").menu_is_open(),
+        "the pin's own stage: the menu opened"
+    );
+    assert_eq!(
+        terminal.lock().expect("engine lock").suggestion(),
+        Some(suffix.as_str()),
+        "the pin's own stage: the ghost shows behind the menu"
+    );
+
+    cx.simulate_keystrokes("right");
+    assert!(
+        !terminal.lock().expect("engine lock").menu_is_open(),
+        "Right closed the menu first"
+    );
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        poll_witness(&sink),
+        format!("gi{suffix}\n"),
+        "then the same as with the menu closed: the ghost's accept writes the suffix, \
+         and Right's own bytes never reach the shell"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
+}
+
 // --- suggest-overlay SO-5: the switch. The overlays are the live
 // rich pane's alone ---
 
