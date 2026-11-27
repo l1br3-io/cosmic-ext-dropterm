@@ -2037,6 +2037,14 @@ impl Terminal {
         self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
     }
 
+    /// The overlay lane's one predicate (suggest-overlay spec): rich
+    /// mode and the four live-prompt gates, the paint, the key
+    /// routing, and the update's close all asking it, so a menu state
+    /// left open behind a running program is never consulted.
+    pub fn overlays_live(&self) -> bool {
+        self.editor_owns_line()
+    }
+
     /// Enter's execution (rich-input spec): PTY-write the line plus
     /// the single newline byte — the shell keeps its line
     /// discipline, echo, and history (the record's deliberate
@@ -2873,6 +2881,19 @@ impl Terminal {
         }
     }
 
+    /// The typed text before the cursor on the screen's line, the
+    /// adopted anchor stripped (suggest-overlay spec): the text the
+    /// pane's overlays read, the same carve [`Self::menu_press`]
+    /// presses with. Empty at a bare prompt and on a line that left
+    /// the anchor.
+    pub fn typed_text(&self) -> String {
+        let (before_cursor, ..) = self.scrape_cursor_line();
+        self.suggest
+            .typed_segment(&before_cursor)
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// Whether the typed line already equals the menu's selected
     /// row's label (suggest-parity spec): the two-stage Enter's
     /// pre-check, the same carve [`Self::menu_press`] presses with —
@@ -3137,7 +3158,7 @@ impl Terminal {
     /// The argument hint line's content (rich-input RI-7): the
     /// command's canonical name and its corpus description, `None`
     /// when no spec carries the name.
-    pub fn editor_menu_hint(&self, command: &str) -> Option<(String, Option<String>)> {
+    pub fn menu_hint(&self, command: &str) -> Option<(String, Option<String>)> {
         suggest::spec_hint(&self.autosuggestions_specs_table, command)
     }
 
@@ -3685,8 +3706,13 @@ impl Terminal {
         if self.input_mode != options.input_mode {
             // The mode truth (rich-input spec, RI-3): the switch
             // flips live on this pass — the routing reads it at the
-            // next keystroke, and nothing else moves.
+            // next keystroke. A flip to native spends a showing menu
+            // (suggest-overlay SO-4): nothing paints it there, and
+            // its keys are the shell's.
             self.input_mode = options.input_mode;
+            if self.input_mode == InputMode::Native {
+                self.menu.close();
+            }
             update = true;
         }
 
@@ -4057,18 +4083,76 @@ impl Terminal {
                     if observation.display_offset != 0 && self.menu.is_open() {
                         self.menu.close();
                     }
-                    // The auto-popup gate (suggest-parity spec, the
-                    // record's as-you-type path): with the key on, an
-                    // update whose typed segment just changed — at the
-                    // line end, past the two-character floor — collects
-                    // the providers' full sets. A single qualifying row
-                    // pops the menu without the chord now, and an
-                    // auto-opened one re-collects fresh rows in place
-                    // (only an empty set closes it). A chord- or
-                    // Tab-opened session is the user's: only its own
-                    // rules touch it. Default off never runs a byte of
-                    // this — the chord is today's only opener (SP4
-                    // flips the default).
+                    // The overlay lane's live fact for this update
+                    // (suggest-overlay spec): rich mode and the four
+                    // live-prompt gates, read off facts the update
+                    // already holds.
+                    let rich_live = self.input_mode == InputMode::Rich
+                        && editor::owns_line(&gates_over(
+                            self.is_focused,
+                            foreground_child,
+                            observation.display_offset == 0,
+                            prompt_detection(self.prompt_zone, self.suggest.anchored()),
+                        ));
+                    // The accept-echo suppression (suggest-parity
+                    // spec): a menu accept's write echoes back as a
+                    // typed change, and the update that lands it must
+                    // not re-collect, or the menu pops over the line
+                    // the accept just completed. One-shot; a fill's
+                    // write arms it too (suggest-overlay SO-3). In
+                    // rich mode the first update that sees a typed
+                    // change on a live pane spends it, whichever way
+                    // the popup switch stands: spent only inside the
+                    // popup's chain, it lingered with the popup off
+                    // and swallowed the first two-character keystroke
+                    // after the switch was turned on. `native` keeps
+                    // the chain's own spend, where nothing paints the
+                    // menu.
+                    let echo_spent =
+                        rich_live && typed_changed && std::mem::take(&mut self.menu_accept_echo);
+                    // The overlays are the live prompt's
+                    // (suggest-overlay SO-4): when the gates drop in
+                    // rich mode (a program taking the foreground, a
+                    // paste that runs a line), a showing menu closes.
+                    // No other moment closed it there, and the editor
+                    // lane leaned on its ownership gate for the paint
+                    // and the routing instead.
+                    if self.input_mode == InputMode::Rich && !rich_live && self.menu.is_open() {
+                        self.menu.close();
+                    }
+                    // Every showing menu follows the line
+                    // (suggest-overlay SO-4): on a typed change in a
+                    // live rich pane the rows re-collect with no
+                    // floor, however the menu opened (a Tab-opened one
+                    // included), and close when no row has anything
+                    // left to insert. Frozen rows under a moving line
+                    // leave Tab filling and cycling against a set that
+                    // no longer matches the typed segment. No line-end
+                    // gate rides it: a cursor moved off the line's end
+                    // closes the menu by its own key first.
+                    if rich_live && typed_changed && !echo_spent && self.menu.is_open() {
+                        let typed = self
+                            .suggest
+                            .typed_segment(observation.before_cursor)
+                            .unwrap_or_default();
+                        let collected = suggest::candidates(typed, &self.suggest, &observation);
+                        if collected.iter().any(|row| !row.suffix.is_empty()) {
+                            self.menu.open(collected);
+                        } else {
+                            self.menu.close();
+                        }
+                    }
+                    // The auto-popup's open rule (suggest-parity spec,
+                    // the record's as-you-type path): with the key on,
+                    // an update whose typed segment just changed (at
+                    // the line end, past the two-character floor)
+                    // collects the providers' full sets, and a single
+                    // qualifying row pops the menu. In rich mode the
+                    // rule opens closed menus alone; a showing one is
+                    // the re-collect's above. `native` keeps its whole
+                    // old chain: an auto-opened menu re-collects fresh
+                    // rows in place and closes on nothing left, and a
+                    // Tab-opened one obeys only its own rules.
                     //
                     // The typed-changed gate is the menu's own keys'
                     // survival: every menu-scoped press repaints
@@ -4080,30 +4164,6 @@ impl Terminal {
                     // never stuck, and the standing menu kept
                     // consuming Enter as the next accept). Nothing
                     // changed, nothing to re-evaluate.
-                    //
-                    // The accept-echo suppression (suggest-parity
-                    // spec): a menu accept's write echoes back as a
-                    // typed change — the update that lands it must not
-                    // re-collect, or the menu pops over the line the
-                    // accept just completed. One-shot, and a fill's
-                    // write arms it too (suggest-overlay SO-3). In
-                    // rich mode the first update that sees a typed
-                    // change on a live pane spends it, whichever way
-                    // the popup switch stands: spent only inside the
-                    // popup's chain, it lingered with the popup off
-                    // and swallowed the first two-character keystroke
-                    // after the switch was turned on. `native` keeps
-                    // the chain's own spend, where nothing paints the
-                    // menu.
-                    let rich_live = self.input_mode == InputMode::Rich
-                        && editor::owns_line(&gates_over(
-                            self.is_focused,
-                            foreground_child,
-                            observation.display_offset == 0,
-                            prompt_detection(self.prompt_zone, self.suggest.anchored()),
-                        ));
-                    let echo_spent =
-                        rich_live && typed_changed && std::mem::take(&mut self.menu_accept_echo);
                     if self.autosuggestions_menu_auto
                         && self.autosuggestions_menu_enabled
                         && self.autosuggestions_enabled
@@ -4125,7 +4185,11 @@ impl Terminal {
                         // alone, so a fully-typed command stays
                         // quiet.
                         let qualifying = collected.iter().any(|row| !row.suffix.is_empty());
-                        if !qualifying {
+                        if rich_live {
+                            if qualifying && !self.menu.is_open() {
+                                self.menu.open(collected);
+                            }
+                        } else if !qualifying {
                             if self.menu.is_open() && self.menu_auto_opened {
                                 self.menu.close();
                             }

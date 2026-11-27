@@ -434,7 +434,7 @@ impl EditorMenuPaint {
                 to_caret
                     .split_whitespace()
                     .next()
-                    .and_then(|command| engine.editor_menu_hint(command))
+                    .and_then(|command| engine.menu_hint(command))
             })
             .flatten();
         Some(Self {

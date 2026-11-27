@@ -5970,23 +5970,48 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
 
 // --- the overlay lane: Tab fills by PTY-write (suggest-overlay SO-3) ---
 
-/// An overlay-lane terminal: rich mode with the popup as given,
-/// driven to a live prompt on the grid's bottom row.
-fn overlay_terminal(menu_auto: bool) -> Terminal {
+/// A terminal on the screen-read lane in either mode, the popup as
+/// given, driven to a live prompt on the grid's bottom row.
+fn lane_terminal(mode: InputMode, menu_auto: bool) -> Terminal {
     let mut terminal = rich_terminal();
-    if !menu_auto {
-        terminal.set_config(
-            &TerminalOptions {
-                input_mode: InputMode::Rich,
-                autosuggestions_menu_auto: false,
-                ..isolated_options()
-            },
-            &Colors::default(),
-        );
-    }
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: mode,
+            autosuggestions_menu_auto: menu_auto,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(
+        &mut terminal,
+        |t| editor::owns_line(&t.editor_gates()),
+        "a live prompt",
+    );
     terminal
+}
+
+/// An overlay-lane terminal: rich mode with the popup as given.
+fn overlay_terminal(menu_auto: bool) -> Terminal {
+    lane_terminal(InputMode::Rich, menu_auto)
+}
+
+/// The recording recipe over the lane's own two history commands.
+fn record_two_sleeps(terminal: &mut Terminal) {
+    record_command(terminal, "sleep 30");
+    record_command(terminal, "sleep 15");
+}
+
+/// Run `sleep N` from the typed line and let the child take the
+/// foreground, one update past the poll's first sight of it.
+fn run_the_typed_line(terminal: &mut Terminal) {
+    terminal.input_no_scroll(&b"\r"[..]);
+    poll_update_until(
+        terminal,
+        Terminal::foreground_child_running,
+        "the child takes the foreground",
+    );
+    terminal.update();
 }
 
 /// The bottom line's text without the shaper's isolator and the
@@ -6148,5 +6173,139 @@ fn a_spent_echo_never_swallows_a_later_keystroke() {
     assert!(
         terminal.menu_is_open(),
         "the menu pops for the fresh keystroke: the echo's one-shot was spent"
+    );
+}
+
+// --- the overlay lane: every showing menu follows the line, and the
+// --- gates' close (suggest-overlay SO-4) ---
+
+/// A Tab-opened menu follows the typed line under either popup
+/// setting: its rows answer each typed change with no floor, and it
+/// closes when no row has anything left to insert.
+fn assert_a_tab_opened_menu_follows_the_line(menu_auto: bool) {
+    let mut terminal = overlay_terminal(menu_auto);
+    record_two_sleeps(&mut terminal);
+    // One character: the popup's floor keeps the menu closed, so Tab
+    // is the opener here under either setting.
+    type_at_prompt(&mut terminal, "s");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    assert_eq!(row_labels(&terminal).len(), 2, "both rows answer `s`");
+    type_at_prompt(&mut terminal, "leep 3");
+    assert_eq!(
+        row_labels(&terminal),
+        vec!["sleep 30".to_string()],
+        "the rows answer the typed line as it now stands, with no floor"
+    );
+    assert!(terminal.menu_is_open());
+    type_at_prompt(&mut terminal, "0");
+    assert!(
+        !terminal.menu_is_open(),
+        "nothing left to insert closes the Tab-opened menu"
+    );
+}
+
+#[test]
+fn a_tab_opened_menu_follows_the_line_while_typing() {
+    assert_a_tab_opened_menu_follows_the_line(true);
+}
+
+#[test]
+fn a_tab_opened_menu_follows_the_line_with_the_popup_off() {
+    assert_a_tab_opened_menu_follows_the_line(false);
+}
+
+#[test]
+fn a_showing_menu_closes_when_a_program_takes_the_foreground() {
+    // The overlays are the live prompt's: a program taking the
+    // foreground drops the gates, and a showing menu never outlives
+    // them.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sl");
+    assert!(terminal.menu_is_open(), "the popup shows the menu");
+    // `sleep 3` is a real child to be, and its line still has a row
+    // with something to insert (`sleep 30`): the menu stands.
+    type_at_prompt(&mut terminal, "eep 3");
+    assert!(terminal.menu_is_open());
+    run_the_typed_line(&mut terminal);
+    assert!(
+        !terminal.editor_owns_line(),
+        "the pin's own stage: the gates dropped"
+    );
+    assert!(
+        !terminal.menu_is_open(),
+        "a showing menu never outlives the live prompt"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.foreground_child_running(),
+        "SIGINT returns the prompt",
+    );
+}
+
+#[test]
+fn a_flip_to_native_closes_a_showing_menu() {
+    // Nothing paints the menu in `native`, and its keys are the
+    // shell's there: the flip spends a showing menu.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sl");
+    assert!(terminal.menu_is_open());
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Native,
+            autosuggestions_menu_auto: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert!(!terminal.menu_is_open(), "the flip to native closes it");
+}
+
+#[test]
+fn in_native_a_tab_opened_menu_keeps_its_frozen_rows_and_the_gates_never_close_it() {
+    // The out-of-scope promise, as a guard: `native`'s engine state
+    // follows only its old rules. A Tab-opened menu there keeps its
+    // frozen rows (no re-collect), and the gates' close is the
+    // overlay lane's alone.
+    let mut terminal = lane_terminal(InputMode::Native, false);
+    record_two_sleeps(&mut terminal);
+    type_at_prompt(&mut terminal, "s");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    let opened = row_labels(&terminal);
+    type_at_prompt(&mut terminal, "leep 3");
+    assert_eq!(
+        row_labels(&terminal),
+        opened,
+        "native's Tab-opened menu keeps its frozen rows"
+    );
+    assert!(terminal.menu_is_open());
+    run_the_typed_line(&mut terminal);
+    assert!(
+        terminal.menu_is_open(),
+        "the gates' close is the overlay lane's: native is untouched"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.foreground_child_running(),
+        "SIGINT returns the prompt",
+    );
+}
+
+#[test]
+fn typed_text_reads_the_screen_under_the_anchor() {
+    // The pane's accessors under the overlay lane's names: the typed
+    // text is the screen's line minus the adopted anchor, and the
+    // hint is the specs table's own answer for a command word.
+    let mut terminal = overlay_terminal(true);
+    assert_eq!(terminal.typed_text(), "", "a bare prompt types nothing");
+    type_at_prompt(&mut terminal, "sl");
+    assert_eq!(terminal.typed_text(), "sl");
+    assert_eq!(
+        terminal.menu_hint("no-such-command-anywhere"),
+        None,
+        "a word no spec carries has no hint"
     );
 }
