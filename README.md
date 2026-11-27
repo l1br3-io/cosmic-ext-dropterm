@@ -87,10 +87,10 @@ The details live in the `docs/` directory:
 - [Common tasks](docs/howto.md) - the task-shaped entry point: the exact key or verb for what you want to do, one hop from the detail
 - [CLI reference](docs/cli.md) - every verb and flag, with full semantics
 - [The D-Bus contract](docs/dbus.md) - the V1 surface for integrators: the address, both interfaces' members, the CLI verbs' wire encoding, and the stability promise
-- [Configuration](docs/configuration.md) - all 54 config keys, profiles, and direct editing
+- [Configuration](docs/configuration.md) - all 68 config keys, profiles, and direct editing
 - [Keybindings](docs/keybindings.md) - every default chord and how to rebind
 - [Command palette](docs/command-palette.md) - `Ctrl+Shift+P` over every app verb: fuzzy search, every action one keystroke away
-- [Rich input](docs/rich-input.md) - the Warp-behavior editor behind `input_mode`: DropTerm-owned prompt line with highlight, completion, and history, `native` (the bare shell) the default
+- [Rich input](docs/rich-input.md) - the suggestions over your shell's own line behind `input_mode`: a ghost for the rest of the command and a completion menu, with the shell's editing, history, and key bindings intact; `native` (the bare shell) the default
 - [Shell integration](docs/shell-integration.md) - DropTerm's own emitter scripts for bash, zsh, and fish, injected at spawn: prompt truth, exit codes, and cwd with no configuration, and the kill switch
 - [Settings window](docs/settings.md) - the nine pages and when each edit applies
 - [Status bar](docs/status-bar.md) - the 28 px glance band: segments, click-to-copy, selection, its menu

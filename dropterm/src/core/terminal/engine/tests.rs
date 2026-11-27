@@ -114,34 +114,64 @@ fn an_osc7_report_arrives_as_a_current_directory_event() {
 }
 
 #[test]
-fn read_sorted_entries_chains_dot_and_dotdot() {
-    // The chain's source (suggest-depth spec, LG4 / depth finding 6):
-    // std's readdir never yields `.` or `..`, so the listing
-    // prepends them itself — always, every directory, both menu and
-    // ghost inheriting. The root's synthetic `/` stays out of scope.
-    let dir = std::env::temp_dir().join(format!("dropterm-chain-test-{}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create the chain test dir");
+fn read_sorted_entries_lists_the_directorys_own_entries_only() {
+    // A listing is the directory's own entries, sorted
+    // (suggest-overlay spec, SO-1): `./` and `../` are never rows.
+    // A token typed `../` reaches its parent through the token's own
+    // prefix, never through a listed entry.
+    let dir = std::env::temp_dir().join(format!("dropterm-listing-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create the listing test dir");
     fs::write(dir.join("a-file"), b"x").expect("seed one entry");
+    fs::write(dir.join(".hidden"), b"x").expect("seed a dotfile");
     let entries = read_sorted_entries(&dir);
     assert_eq!(
         entries
-            .first()
-            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
-        Some((".", true)),
-        "`.` chains first"
-    );
-    assert_eq!(
-        entries
-            .get(1)
-            .map(|(name, is_dir)| (name.as_str(), *is_dir)),
-        Some(("..", true)),
-        "`..` chains second"
-    );
-    assert!(
-        entries.iter().any(|(name, _)| name == "a-file"),
-        "the directory's own entries follow"
+            .iter()
+            .map(|(name, is_dir)| (name.as_str(), *is_dir))
+            .collect::<Vec<_>>(),
+        vec![(".hidden", false), ("a-file", false)],
+        "the directory's own entries sorted by name, no `.` and no `..`"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_directory_lists_nothing() {
+    // The ghost's half of the path rows (suggest-overlay spec, SO-1):
+    // `~/..` ghosts nothing over an empty directory, because its
+    // listing carries nothing to match the `..`.
+    let dir = path_fixture("empty");
+    assert!(
+        read_sorted_entries(&dir).is_empty(),
+        "an empty directory's listing is empty"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_token_ending_in_dotdot_slash_still_lists_the_parent() {
+    // `../` typed by hand keeps its listing (suggest-overlay spec,
+    // SO-1): the parent is resolved from the token's prefix. Control:
+    // the cwd's own entry stays out: the listing is the parent's.
+    let base = path_fixture("dotdot");
+    fs::write(base.join("main.rs"), b"").expect("fixture file");
+    fs::create_dir_all(base.join("sub")).expect("fixture directory");
+    fs::write(base.join("sub/inner.rs"), b"").expect("fixture file");
+    let cwd = base.join("sub");
+    let mut cache = PathListingCache::default();
+    let parent = cache
+        .listing_for(true, Some("../"), None, Some(&cwd))
+        .expect("`../` resolves its parent against the cwd");
+    assert!(
+        parent.contains(&("main.rs".to_string(), false))
+            && parent.contains(&("sub".to_string(), true)),
+        "the parent's own entries list"
+    );
+    assert!(
+        !parent.contains(&("inner.rs".to_string(), false)),
+        "the cwd's own entry is not the parent's"
+    );
+    let _ = fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -1779,13 +1809,8 @@ fn the_listing_cache_reads_once_per_parent_not_per_keystroke() {
         .to_vec();
     assert_eq!(
         first,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("a.txt".to_string(), false),
-            ("sub".to_string(), true),
-        ],
-        "the chain leads, then entries sorted by name, directories flagged"
+        &[("a.txt".to_string(), false), ("sub".to_string(), true),],
+        "the directory's own entries sorted by name, directories flagged"
     );
     // A file created between two tokens in the SAME parent stays
     // invisible: the second call is not a re-read.
@@ -1823,11 +1848,8 @@ fn an_unreadable_directory_yields_an_empty_listing_never_a_stale_one() {
         .to_vec();
     assert_eq!(
         good,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("here.txt".to_string(), false),
-        ]
+        &[("here.txt".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // Unreadable now: a later visit — the key changed away and back —
     // reads silence, never the stale list.
@@ -1856,11 +1878,8 @@ fn tilde_rooted_tokens_resolve_against_the_spawn_time_home() {
         .to_vec();
     assert_eq!(
         listing,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("notes.md".to_string(), false),
-        ]
+        &[("notes.md".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // The bare HOME root is the same parent — the cached listing.
     let root = cache
@@ -1884,11 +1903,8 @@ fn relative_parents_resolve_against_the_tab_cwd() {
         .expect("a relative parent joins the cwd");
     assert_eq!(
         listing,
-        &[
-            (".".to_string(), true),
-            ("..".to_string(), true),
-            ("main.rs".to_string(), false),
-        ]
+        &[("main.rs".to_string(), false)],
+        "the directory's own entries, no chain"
     );
     // No cwd: a relative parent is unresolvable — silence.
     let mut no_cwd = PathListingCache::default();
@@ -5307,14 +5323,27 @@ fn a_fixed_family_host_answers_false_and_stays_healthy() {
     );
 }
 
-// --- the rich-input engine wiring (rich-input RI-3) ---
+// --- the live-prompt gates over the pty harness (rich-input RI-3;
+// --- the overlay lane's from suggest-overlay SO-7) ---
 
 /// A rich-mode terminal over the same hermetic /bin/sh harness: the
 /// mode truth rides the options, and the auto-pop lane stands armed
 /// for the echo-handoff pin.
 fn rich_terminal() -> Terminal {
+    rich_terminal_over(|_options| {})
+}
+
+/// A rich-mode terminal whose options `tune` may shape (spawn truth
+/// included: it is read once at construction).
+fn rich_terminal_over(tune: impl FnOnce(&mut TerminalOptions)) -> Terminal {
     use alacritty_terminal::tty::Shell as PtyShell;
     let (tx, _rx) = mpsc::unbounded_channel();
+    let mut options = TerminalOptions {
+        input_mode: InputMode::Rich,
+        autosuggestions_menu_auto: true,
+        ..isolated_options()
+    };
+    tune(&mut options);
     Terminal::new(
         Box::new(PlainHost::default()),
         TabId(0),
@@ -5325,35 +5354,18 @@ fn rich_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions {
-            input_mode: InputMode::Rich,
-            autosuggestions_menu_auto: true,
-            ..isolated_options()
-        },
+        &options,
         &Colors::default(),
     )
     .expect("spawn a rich-mode /bin/sh test terminal")
 }
 
-/// The whole grid's text — the execution pin reads both the echoed
-/// line and the shell's answer wherever they land.
-fn grid_text(terminal: &Terminal) -> String {
-    terminal.with_buffer(|buffer| {
-        buffer
-            .lines
-            .iter()
-            .map(|line| line.text().to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
-}
-
 /// Scroll the harness to a real prompt at the grid's foot — the
 /// recording pin's own recipe: the settle path anchors the prompt
 /// (arm the close, land the settling resize), then a scrolling
-/// command pushes it to the bottom row. A fresh terminal's cursor
-/// sits at the top of an empty screen, so `at_bottom` cannot read
-/// true until output has pushed the prompt down.
+/// command pushes it to the bottom row. The drive is the pins that
+/// read the bottom line (the recording, the anchor) — ownership
+/// alone no longer needs it, see the unfinished-screen pins below.
 fn drive_to_a_bottom_prompt(terminal: &mut Terminal) {
     terminal.arm_spawn_grid_next_resize();
     resize_cols(terminal, 100);
@@ -5384,26 +5396,97 @@ fn the_options_default_mode_stays_native() {
 #[test]
 fn native_mode_never_opens_the_lane() {
     // The bare-mode pin: with every live-prompt gate passing (a real
-    // /bin/sh prompt, focused, at the bottom), `native` still never
-    // claims — the lane stays dark and keys forward verbatim.
+    // /bin/sh prompt, focused, at the bottom), `native`'s overlays
+    // are still never live — the lane stays dark and keys forward
+    // verbatim.
     let mut terminal = autosuggest_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        |t| editor::owns_line(&t.editor_gates()),
+        |t| suggest::overlays_live(&t.overlay_gates()),
         "a live prompt with every gate passing",
     );
-    assert!(!terminal.editor_owns_line());
+    assert!(!terminal.overlays_live());
 }
 
 #[test]
-fn rich_mode_claims_at_a_live_prompt() {
+fn rich_mode_is_live_at_a_live_prompt() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
-        "the editor to own the line",
+        Terminal::overlays_live,
+        "the overlays to go live",
+    );
+}
+
+/// The pin's own stage, asserted so the claim below cannot pass on
+/// an accident: the screen is unfinished — the cursor sits above the
+/// bottom row, exactly where a new tab's first prompt leaves it.
+fn assert_cursor_above_the_bottom_row(terminal: &Terminal) {
+    let term = terminal.term.lock();
+    let grid = term.grid();
+    assert_ne!(
+        grid.cursor.point.line,
+        grid.bottommost_line(),
+        "the pin's own stage: an unfinished screen, the cursor off the bottom row"
+    );
+}
+
+#[test]
+fn rich_mode_is_live_at_the_boot_prompt_of_an_unfinished_screen() {
+    // The 2026-10-24 fresh-terminal ruling, the overlays' too: a
+    // new tab's first prompt sits at the top of an empty screen, and
+    // the overlays are live there all the same. The ghost lane
+    // dropped its bottom-row requirement for this exact screen, and
+    // the gates read the scrollback, never the cursor's row. The
+    // shell's own mark speaks first here: an integrated bash reports
+    // A for its boot prompt, so no grid-read is involved.
+    let mut terminal = rich_terminal();
+    terminal.note_prompt_start();
+    poll_update_until(
+        &mut terminal,
+        Terminal::overlays_live,
+        "the overlays to go live at the boot prompt",
+    );
+    assert_cursor_above_the_bottom_row(&terminal);
+}
+
+#[test]
+fn the_grid_read_makes_the_boot_prompt_of_an_unfinished_screen_live() {
+    // The same screen with no mark to speak (the kill switch, a
+    // shell without an emitter): the settle path adopts the first
+    // prompt as the grid-read's anchor, and that verdict keeps the
+    // overlays live where the cursor stands.
+    let mut terminal = rich_terminal();
+    terminal.arm_spawn_grid_next_resize();
+    resize_cols(&mut terminal, 100);
+    poll_update_until(
+        &mut terminal,
+        Terminal::overlays_live,
+        "the grid read to make the boot prompt live",
+    );
+    assert_cursor_above_the_bottom_row(&terminal);
+}
+
+#[test]
+fn a_scrolled_back_view_still_stands_the_overlays_aside() {
+    // The half of the viewport gate that stays: an unfinished screen
+    // is owned, a viewport scrolled into its history is not.
+    let mut terminal = rich_terminal();
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
+
+    terminal.scroll(TerminalScroll::Delta(1));
+    assert!(
+        !terminal.overlays_live(),
+        "a viewport scrolled back stands the overlays aside"
+    );
+
+    terminal.scroll(TerminalScroll::Bottom);
+    assert!(
+        terminal.overlays_live(),
+        "back at the bottom the overlays are live again"
     );
 }
 
@@ -5416,13 +5499,13 @@ fn an_unknown_prompt_maps_to_unsure_and_a_read_one_to_live() {
     // read yet.
     let mut terminal = rich_terminal();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        |t| t.editor_gates().prompt_detection == editor::PromptDetection::Live,
+        |t| t.overlay_gates().prompt_detection == suggest::PromptDetection::Live,
         "the prompt to be read",
     );
 }
@@ -5436,8 +5519,8 @@ fn the_prompt_zone_starts_unfed_and_the_grid_read_decides() {
     let terminal = rich_terminal();
     assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
@@ -5450,14 +5533,14 @@ fn a_prompt_start_mark_flips_the_zone_and_lives_without_a_grid_read() {
     // the zone can be speaking.
     let mut terminal = rich_terminal();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
     terminal.note_prompt_start();
     assert_eq!(terminal.prompt_zone(), PromptZone::InPrompt);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
 }
 
@@ -5471,8 +5554,8 @@ fn a_command_start_mark_stands_aside_to_the_grid_read() {
     terminal.note_command_start();
     assert_eq!(terminal.prompt_zone(), PromptZone::InCommand);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
@@ -5486,13 +5569,13 @@ fn a_command_start_after_a_grid_read_leaves_the_read_verdict_standing() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
     terminal.note_command_start();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
 }
 
@@ -5517,53 +5600,29 @@ fn a_terminal_reset_returns_the_zone_to_unfed() {
     terminal.note_terminal_reset();
     assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
 #[test]
-fn a_foreground_child_stands_the_rich_editor_aside() {
+fn a_foreground_child_stands_the_overlays_aside() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
+        Terminal::overlays_live,
         "a live prompt first",
     );
     terminal.input_no_scroll(&b"sleep 5\n"[..]);
     poll_update_until(
         &mut terminal,
-        |t| !t.editor_owns_line(),
+        |t| !t.overlays_live(),
         "the foreground child to take the screen",
     );
 }
 
-#[test]
-fn execution_writes_the_line_and_the_echo_does_not_reopen_the_lane() {
-    // Enter's execution: one PTY write of the line plus the newline
-    // byte — the shell echoes the line ("ec": a two-char prefix
-    // whose auto-pop WOULD collect a qualifying row) and answers
-    // "not found", both landing in the grid; the echo handoff (SP3's
-    // one-shot, re-armed by the write) keeps the standing auto-pop
-    // lane from re-opening over the echo.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
-
-    terminal.editor_execute("ec");
-    poll_update_until(
-        &mut terminal,
-        |t| grid_text(t).contains("not found"),
-        "the shell to echo and answer the executed line",
-    );
-    assert!(
-        !terminal.menu_is_open(),
-        "the echo must not re-open the menu lane"
-    );
-}
-
-// --- the rich-input editor lane (rich-input RI-5, the engine half) ---
+// --- the recording recipe the overlay pins ride ---
 
 /// The recording recipe's tail (the recording pin's own): type a
 /// command, let the echo land, run it, and SIGINT back to the
@@ -5590,237 +5649,70 @@ fn record_command(terminal: &mut Terminal, command: &str) {
     );
 }
 
-#[test]
-fn editor_step_drives_the_ghost_over_the_owned_line() {
-    // The lane's core fact: the ghost computes over the editor's
-    // buffer — the anchor bridge rebuilding the grid's line shape —
-    // not over any grid text. A recorded command ghosts its own
-    // prefix the moment the editor steps it, and a step past the
-    // recorded shape withdraws.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-
-    terminal.editor_step("slee", true);
-    assert_eq!(terminal.suggestion(), Some("p 30"));
-    terminal.editor_step("zzz", true);
-    assert_eq!(terminal.suggestion(), None);
+/// Type `line` at the prompt, its echo landed, and ask the opener.
+fn opener_over(terminal: &mut Terminal, line: &str) -> bool {
+    type_at_prompt(terminal, line);
+    terminal.menu_open()
 }
 
-#[test]
-fn editor_steps_auto_pop_the_menu_with_the_parity_gates() {
-    // The auto-pop over the owned line, the grid lane's own harness
-    // shape (a recorded history command answers where the bare
-    // harness's catalog and specs floor do not): the two-char floor
-    // and the qualifying row (one char never opens, the recorded
-    // word's two-char prefix pops), fresh rows re-collecting in
-    // place while typing, and the fully-typed word — nothing left to
-    // insert — closing the auto-opened menu.
-    // The recorded word is a real external command ("sleep 30", the
-    // recording recipe's own): dash answers a not-found word without
-    // forking, and the commit rides the fork's run edge.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-
-    terminal.editor_step("s", true);
-    assert!(!terminal.menu_is_open(), "the one-char floor holds");
-    terminal.editor_step("sl", true);
-    assert!(terminal.menu_is_open(), "a qualifying row pops");
-    terminal.editor_step("sle", true);
-    assert!(terminal.menu_is_open(), "fresh rows land in place");
-    terminal.editor_step("sleep 30", true);
-    assert!(
-        !terminal.menu_is_open(),
-        "a fully-typed word carries no insert"
+/// Clear the typed line back to the bare prompt (the tty's kill
+/// character), its echo landed.
+fn clear_the_line(terminal: &mut Terminal) {
+    terminal.input_no_scroll(&b"\x15"[..]);
+    poll_update_until(
+        terminal,
+        |t| prompt_line(t).trim_end() == "$",
+        "the shell clears the line",
     );
 }
 
-#[test]
-fn editor_recollects_a_tab_opened_menu_while_typing() {
-    // The manual lane's freshness (rich-input RI-5): a menu the
-    // conditioned Tab opener opened re-collects fresh rows while the
-    // line moves — frozen rows would leave Tab filling and cycling
-    // against a set that no longer matches the typed segment. The
-    // auto-pop being on is irrelevant here: the opener marked the
-    // menu manual, and the freshness is the showing menu's rule.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-
-    assert!(terminal.editor_menu_open("slee"), "the opener opens");
-    let opened = terminal.menu_rows().to_vec();
-    terminal.editor_step("sl", true);
-    assert!(
-        terminal.menu_is_open(),
-        "the fresh set still qualifies, the menu stands"
-    );
-    let recollected = terminal.menu_rows().to_vec();
-    assert_ne!(
-        opened, recollected,
-        "the rows re-collected over the moved segment"
-    );
-    assert!(
-        recollected.iter().all(|row| row.label.starts_with("sl")),
-        "every row answers the typed segment as it now stands"
-    );
-
-    // Nothing left to insert closes the menu — the manual lane
-    // included, the same rule the auto-opened menu always had.
-    terminal.editor_step("sleep 30", true);
-    assert!(
-        !terminal.menu_is_open(),
-        "an insert-less set closes the Tab-opened menu"
-    );
-}
-
-#[test]
-fn editor_recollects_a_tab_opened_menu_with_the_auto_pop_off() {
-    // `input_auto_popup` off leaves Tab the only opener — and the
-    // re-collect rides the showing menu, not the auto arm: the manual
-    // menu follows the line with the auto-pop wired dark.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-    terminal.set_config(
-        &TerminalOptions {
-            input_mode: InputMode::Rich,
-            autosuggestions_menu_auto: false,
-            ..isolated_options()
-        },
-        &Colors::default(),
-    );
-
-    terminal.editor_step("sl", true);
-    assert!(
-        !terminal.menu_is_open(),
-        "auto off never pops the menu on its own"
-    );
-    assert!(terminal.editor_menu_open("slee"), "Tab's opener opens");
-    terminal.editor_step("sleep 30", true);
-    assert!(!terminal.menu_is_open(), "nothing to insert closes it");
-    assert!(terminal.editor_menu_open("sleep 3"), "Tab re-opens");
-    let rows = terminal.menu_rows().to_vec();
-    assert!(
-        rows.iter().all(|row| row.label.starts_with("sleep 3")),
-        "the fresh rows match the typed segment"
-    );
-}
-
-#[test]
-fn editor_menu_press_accepts_and_two_stages_over_the_owned_line() {
-    // The lane's write shape: an accept's suffix RETURNS for the
-    // buffer — the PTY never sees it, the grid stays bare — and the
-    // two-stage Enter's equal line answers Execute (close, insert
-    // nothing, run).
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-
-    terminal.editor_step("sl", true);
-    assert!(terminal.menu_is_open());
-    assert_eq!(
-        terminal.editor_menu_press(suggest::MenuKey::Accept, "sl"),
-        // The trailing space is the accept funnel's own token
-        // completion — the same bytes the grid lane writes.
-        editor::MenuPress::Insert("eep 30 ".to_string())
-    );
-    assert!(!terminal.menu_is_open());
-    assert!(
-        !bottom_line_text(&terminal).contains("ec"),
-        "the accept never reached the grid"
-    );
-
-    // The two-stage Enter: the conditioned opener over editor facts
-    // opens at the full word, the selection equals the line, and
-    // Enter answers Execute.
-    assert!(terminal.editor_menu_open("sleep 30"));
-    assert_eq!(
-        terminal.editor_menu_press(suggest::MenuKey::Accept, "sleep 30"),
-        editor::MenuPress::Execute
-    );
-    assert!(!terminal.menu_is_open());
-}
-
-#[test]
-fn editor_accept_suggestion_returns_the_suffix_for_the_buffer() {
-    // The ghost's accept from the lane: Full returns the whole
-    // suffix, the take consumes the showing, and Word returns the
-    // first word alone.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    record_command(&mut terminal, "sleep 30");
-
-    terminal.editor_step("slee", true);
-    assert_eq!(
-        terminal.editor_accept_suggestion(AcceptKind::Full),
-        Some("p 30".to_string())
-    );
-    assert_eq!(
-        terminal.editor_accept_suggestion(AcceptKind::Full),
-        None,
-        "the take consumed the showing"
-    );
-
-    terminal.editor_step("slee", true);
-    assert_eq!(
-        terminal.editor_accept_suggestion(AcceptKind::Word),
-        Some("p".to_string())
-    );
-}
+// --- the conditioned opener's decline and the segment carve
+// --- (tab-surface TS-1, rich-input RI-8; on the screen-read lane from
+// --- suggest-overlay SO-8) ---
 
 #[test]
 fn mid_pipeline_lines_complete_their_own_segment() {
-    // RI-8's acceptance, over the editor lane: each mid-pipeline
+    // RI-8's acceptance, over the screen-read lane: each mid-pipeline
     // line opens the menu on the segment the cursor stands in — a
     // recorded EXTERNAL command (the harness lessons: not-found
     // words never fork, and a bare grep is a usage error that exits
     // before the poll can see it — "grep x" waits on stdin, holding
     // the foreground until SIGINT) answering every shape.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
+    let mut terminal = overlay_terminal(false);
     record_command(&mut terminal, "grep x");
 
-    for line_to_caret in ["echo $(gr", "git status | gr", "cd a; gr"] {
-        assert!(
-            terminal.editor_menu_open(line_to_caret),
-            "{line_to_caret} opens"
-        );
+    for line in ["echo $(gr", "git status | gr", "cd a; gr"] {
+        assert!(opener_over(&mut terminal, line), "{line} opens");
         let labels: Vec<&str> = terminal
             .menu_rows()
             .iter()
             .map(|row| row.label.as_str())
             .collect();
-        assert!(
-            labels.contains(&"grep x"),
-            "{line_to_caret} completes grep x"
-        );
+        assert!(labels.contains(&"grep x"), "{line} completes grep x");
         terminal.menu_close();
+        clear_the_line(&mut terminal);
     }
 }
-
-// --- the conditioned opener's decline (tab-surface TS-1) ---
 
 #[test]
 fn the_conditioned_opener_declines_a_line_nothing_answers() {
     // The opener's decline over a non-qualifying line: the control
-    // first — the recorded line qualifies — then a typed segment no
+    // first — the recorded line opens — then a typed segment no
     // provider answers (nothing else is recorded in this harness)
     // declines: false, the menu closed, the press the caller's to
     // forward verbatim.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    let mut terminal = overlay_terminal(false);
     record_command(&mut terminal, "sleep 30");
 
     assert!(
-        terminal.editor_menu_open("sleep 30"),
-        "the control: the recorded line qualifies"
+        opener_over(&mut terminal, "sleep 30"),
+        "the control: the recorded line opens"
     );
     terminal.menu_close();
+    clear_the_line(&mut terminal);
 
     assert!(
-        !terminal.editor_menu_open("zzz"),
+        !opener_over(&mut terminal, "zzz"),
         "a line no provider answers declines"
     );
     assert!(!terminal.menu_is_open(), "the decline opens nothing");
@@ -5829,21 +5721,17 @@ fn the_conditioned_opener_declines_a_line_nothing_answers() {
 #[test]
 fn the_conditioned_opener_declines_while_the_pane_is_unfocused() {
     // The opener's decline behind a closed gate: the same line that
-    // qualifies with the pane focused declines unfocused.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    // opens with the pane focused declines unfocused.
+    let mut terminal = overlay_terminal(false);
     record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sleep 30");
 
-    assert!(
-        terminal.editor_menu_open("sleep 30"),
-        "the control: the recorded line qualifies"
-    );
+    assert!(terminal.menu_open(), "the control: the recorded line opens");
     terminal.menu_close();
 
     terminal.set_focused(false);
     assert!(
-        !terminal.editor_menu_open("sleep 30"),
+        !terminal.menu_open(),
         "an unfocused pane declines the qualifying line"
     );
     assert!(!terminal.menu_is_open(), "the decline opens nothing");
@@ -5854,15 +5742,11 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
     // The opener's decline behind the menu's own key: the settings
     // flip's live route (`set_config`) turns the key off, and the
     // qualifying line declines from then on.
-    let mut terminal = rich_terminal();
-    drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    let mut terminal = overlay_terminal(false);
     record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sleep 30");
 
-    assert!(
-        terminal.editor_menu_open("sleep 30"),
-        "the control: the recorded line qualifies"
-    );
+    assert!(terminal.menu_open(), "the control: the recorded line opens");
     terminal.menu_close();
 
     terminal.set_config(
@@ -5874,8 +5758,453 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
         &Colors::default(),
     );
     assert!(
-        !terminal.editor_menu_open("sleep 30"),
+        !terminal.menu_open(),
         "the menu's key off declines the qualifying line"
     );
     assert!(!terminal.menu_is_open(), "the decline opens nothing");
+}
+
+// --- the overlay lane: Tab fills by PTY-write (suggest-overlay SO-3) ---
+
+/// A terminal on the screen-read lane in either mode, the popup as
+/// given, driven to a live prompt on the grid's bottom row.
+fn lane_terminal(mode: InputMode, menu_auto: bool) -> Terminal {
+    lane_terminal_over(mode, menu_auto, |_options| {})
+}
+
+/// [`lane_terminal`] with the options `tune` may shape.
+fn lane_terminal_over(
+    mode: InputMode,
+    menu_auto: bool,
+    tune: impl FnOnce(&mut TerminalOptions),
+) -> Terminal {
+    let mut terminal = rich_terminal_over(tune);
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: mode,
+            autosuggestions_menu_auto: menu_auto,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(
+        &mut terminal,
+        |t| suggest::overlays_live(&t.overlay_gates()),
+        "a live prompt",
+    );
+    terminal
+}
+
+/// An overlay-lane terminal: rich mode with the popup as given.
+fn overlay_terminal(menu_auto: bool) -> Terminal {
+    lane_terminal(InputMode::Rich, menu_auto)
+}
+
+/// The recording recipe over the lane's own two history commands.
+fn record_two_sleeps(terminal: &mut Terminal) {
+    record_command(terminal, "sleep 30");
+    record_command(terminal, "sleep 15");
+}
+
+/// Run `sleep N` from the typed line and let the child take the
+/// foreground, one update past the poll's first sight of it.
+fn run_the_typed_line(terminal: &mut Terminal) {
+    terminal.input_no_scroll(&b"\r"[..]);
+    poll_update_until(
+        terminal,
+        Terminal::foreground_child_running,
+        "the child takes the foreground",
+    );
+    terminal.update();
+}
+
+/// The bottom line's text without the shaper's isolator and the
+/// grid's padding.
+fn prompt_line(terminal: &Terminal) -> String {
+    bottom_line_text(terminal)
+        .trim_start_matches('\u{2066}')
+        .trim_end()
+        .to_string()
+}
+
+/// The cursor's column on the grid.
+fn cursor_column(terminal: &Terminal) -> usize {
+    terminal.term.lock().grid().cursor.point.column.0
+}
+
+/// Type `text` at the prompt and let its echo land.
+fn type_at_prompt(terminal: &mut Terminal, text: &str) {
+    terminal.input_no_scroll(text.as_bytes().to_vec());
+    poll_update_until(
+        terminal,
+        |t| prompt_line(t).ends_with(text),
+        "the typed text echoes",
+    );
+}
+
+/// The showing menu's row labels.
+fn row_labels(terminal: &Terminal) -> Vec<String> {
+    terminal
+        .menu_rows()
+        .iter()
+        .map(|row| row.label.clone())
+        .collect()
+}
+
+/// The two-row fill under either popup setting: `slee` over
+/// `sleep 30` and `sleep 15` fills `p `, the rows answer `sleep `
+/// before the echo lands, and the echo's update leaves them.
+fn assert_the_two_row_fill(menu_auto: bool) {
+    let mut terminal = overlay_terminal(menu_auto);
+    record_command(&mut terminal, "sleep 30");
+    record_command(&mut terminal, "sleep 15");
+    type_at_prompt(&mut terminal, "slee");
+    if !menu_auto {
+        assert!(terminal.menu_open(), "Tab's opener opens");
+    }
+    assert!(terminal.menu_is_open(), "the menu shows before the fill");
+    terminal.menu_tab();
+    let filled = row_labels(&terminal);
+    let mut sorted = filled.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec!["sleep 15".to_string(), "sleep 30".to_string()],
+        "the rows answer the extended segment before the echo lands"
+    );
+    assert_eq!(
+        terminal.menu_selected(),
+        0,
+        "the re-collect selects the top"
+    );
+    assert!(terminal.menu_is_open(), "two rows stand: the menu stays");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep",
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep ".len(),
+        "the fill wrote exactly the extension, its trailing space included"
+    );
+    terminal.update();
+    assert_eq!(
+        row_labels(&terminal),
+        filled,
+        "the echo's update leaves the rows alone"
+    );
+    assert!(terminal.menu_is_open());
+}
+
+#[test]
+fn a_tab_fill_writes_the_extension_and_the_rows_answer_it() {
+    assert_the_two_row_fill(true);
+}
+
+#[test]
+fn a_tab_fill_writes_the_extension_with_the_popup_off() {
+    assert_the_two_row_fill(false);
+}
+
+#[test]
+fn a_lone_row_fill_writes_the_extension_and_closes() {
+    // One row standing closes the menu (the fill completed the
+    // line's only candidate), and the echo's update never re-opens
+    // it.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "slee");
+    assert!(terminal.menu_is_open(), "the single row pops");
+    terminal.menu_tab();
+    assert!(!terminal.menu_is_open(), "one row standing closes the menu");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep 30",
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep 30".len(),
+        "the fill wrote exactly the extension"
+    );
+    terminal.update();
+    assert!(
+        !terminal.menu_is_open(),
+        "the echo's update does not re-open the closed menu"
+    );
+}
+
+#[test]
+fn a_spent_echo_never_swallows_a_later_keystroke() {
+    // The one-shot's spend rule (suggest-overlay SO-3): an accept's
+    // echo arms it, and in rich mode the first update that sees the
+    // typed change on the live pane spends it, whichever way the
+    // popup switch stands. With the popup off the echo's update used
+    // to skip the whole popup chain, so the one-shot lingered and
+    // swallowed the first two-character keystroke after the switch
+    // was turned on.
+    let mut terminal = overlay_terminal(false);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "slee");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    terminal.menu_press(suggest::MenuKey::Accept);
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep 30",
+        "the accept's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep 30 ".len(),
+        "the accept's trailing space landed: the cursor stands one past the word"
+    );
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    terminal.input_no_scroll(&b"\x15"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t).trim_end() == "$",
+        "the shell clears the line",
+    );
+    type_at_prompt(&mut terminal, "sl");
+    assert!(
+        terminal.menu_is_open(),
+        "the menu pops for the fresh keystroke: the echo's one-shot was spent"
+    );
+}
+
+// --- the overlay lane: every showing menu follows the line, and the
+// --- gates' close (suggest-overlay SO-4) ---
+
+/// A Tab-opened menu follows the typed line under either popup
+/// setting: its rows answer each typed change with no floor, and it
+/// closes when no row has anything left to insert.
+fn assert_a_tab_opened_menu_follows_the_line(menu_auto: bool) {
+    let mut terminal = overlay_terminal(menu_auto);
+    record_two_sleeps(&mut terminal);
+    // One character: the popup's floor keeps the menu closed, so Tab
+    // is the opener here under either setting.
+    type_at_prompt(&mut terminal, "s");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    assert_eq!(row_labels(&terminal).len(), 2, "both rows answer `s`");
+    type_at_prompt(&mut terminal, "leep 3");
+    assert_eq!(
+        row_labels(&terminal),
+        vec!["sleep 30".to_string()],
+        "the rows answer the typed line as it now stands, with no floor"
+    );
+    assert!(terminal.menu_is_open());
+    type_at_prompt(&mut terminal, "0");
+    assert!(
+        !terminal.menu_is_open(),
+        "nothing left to insert closes the Tab-opened menu"
+    );
+}
+
+#[test]
+fn a_tab_opened_menu_follows_the_line_while_typing() {
+    assert_a_tab_opened_menu_follows_the_line(true);
+}
+
+#[test]
+fn a_tab_opened_menu_follows_the_line_with_the_popup_off() {
+    assert_a_tab_opened_menu_follows_the_line(false);
+}
+
+#[test]
+fn a_showing_menu_closes_when_a_program_takes_the_foreground() {
+    // The overlays are the live prompt's: a program taking the
+    // foreground drops the gates, and a showing menu never outlives
+    // them.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sl");
+    assert!(terminal.menu_is_open(), "the popup shows the menu");
+    // `sleep 3` is a real child to be, and its line still has a row
+    // with something to insert (`sleep 30`): the menu stands.
+    type_at_prompt(&mut terminal, "eep 3");
+    assert!(terminal.menu_is_open());
+    run_the_typed_line(&mut terminal);
+    assert!(
+        !terminal.overlays_live(),
+        "the pin's own stage: the gates dropped"
+    );
+    assert!(
+        !terminal.menu_is_open(),
+        "a showing menu never outlives the live prompt"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.foreground_child_running(),
+        "SIGINT returns the prompt",
+    );
+}
+
+#[test]
+fn a_flip_to_native_closes_a_showing_menu() {
+    // Nothing paints the menu in `native`, and its keys are the
+    // shell's there: the flip spends a showing menu.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "sl");
+    assert!(terminal.menu_is_open());
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Native,
+            autosuggestions_menu_auto: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert!(!terminal.menu_is_open(), "the flip to native closes it");
+}
+
+#[test]
+fn in_native_a_tab_opened_menu_keeps_its_frozen_rows_and_the_gates_never_close_it() {
+    // The out-of-scope promise, as a guard: `native`'s engine state
+    // follows only its old rules. A Tab-opened menu there keeps its
+    // frozen rows (no re-collect), and the gates' close is the
+    // overlay lane's alone.
+    let mut terminal = lane_terminal(InputMode::Native, false);
+    record_two_sleeps(&mut terminal);
+    type_at_prompt(&mut terminal, "s");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    let opened = row_labels(&terminal);
+    type_at_prompt(&mut terminal, "leep 3");
+    assert_eq!(
+        row_labels(&terminal),
+        opened,
+        "native's Tab-opened menu keeps its frozen rows"
+    );
+    assert!(terminal.menu_is_open());
+    run_the_typed_line(&mut terminal);
+    assert!(
+        terminal.menu_is_open(),
+        "the gates' close is the overlay lane's: native is untouched"
+    );
+    terminal.input_no_scroll(&b"\x03"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| !t.foreground_child_running(),
+        "SIGINT returns the prompt",
+    );
+}
+
+#[test]
+fn typed_text_reads_the_screen_under_the_anchor() {
+    // The pane's accessors under the overlay lane's names: the typed
+    // text is the screen's line minus the adopted anchor, and the
+    // hint is the specs table's own answer for a command word.
+    let mut terminal = overlay_terminal(true);
+    assert_eq!(terminal.typed_text(), "", "a bare prompt types nothing");
+    type_at_prompt(&mut terminal, "sl");
+    assert_eq!(terminal.typed_text(), "sl");
+    assert_eq!(
+        terminal.menu_hint("no-such-command-anywhere"),
+        None,
+        "a word no spec carries has no hint"
+    );
+}
+
+// --- the fill anchors each tier at its own label (suggest-overlay SO-4b) ---
+
+#[test]
+fn a_tab_fill_completes_a_path_token_from_the_listing() {
+    // A path row's label is the bare listing entry, so the fill reads
+    // it past the token's final component: `cd <dir>/Doc` over
+    // `Documents/` fills `uments/`, one row standing closes the menu,
+    // and the echo lands the completed path.
+    let dir = path_fixture("fill");
+    std::fs::create_dir_all(dir.join("Documents")).expect("fixture directory");
+    let prefix = dir.to_string_lossy().into_owned();
+    // The path tier rides the spawn gate: a tab spawned as a shell.
+    let mut terminal = lane_terminal_over(InputMode::Rich, true, |options| {
+        options.spawned_program = "/bin/sh".to_string();
+    });
+    let typed = format!("cd {prefix}/Doc");
+    type_at_prompt(&mut terminal, &typed);
+    assert!(
+        terminal.menu_is_open(),
+        "the path tier's single row pops the menu"
+    );
+    assert_eq!(
+        row_labels(&terminal),
+        vec!["Documents/".to_string()],
+        "the pin's own stage: the path row is the menu's"
+    );
+    terminal.menu_tab();
+    assert!(!terminal.menu_is_open(), "one row standing closes the menu");
+    let filled = format!("$ cd {prefix}/Documents/");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == filled,
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        filled.chars().count(),
+        "the fill wrote exactly the extension"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- the row budget follows the pane (suggest-overlay SO-10) ---
+
+#[test]
+fn the_served_budget_follows_the_grid_and_the_density() {
+    // The budget is the pane's: the screen's rows by the cell height
+    // make the pane, the density makes the row, at most eight rows
+    // and never below one. A resize moves it with the grid, and a
+    // compact row fits twice as many under the ceiling.
+    let mut terminal = rich_terminal();
+    let (width, cell_h) = {
+        let size = terminal.size();
+        (size.width, size.cell_height)
+    };
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test row counts and their px products are far below both u32::MAX and f32's mantissa"
+    )]
+    let serve = |terminal: &mut Terminal, rows: u32| -> usize {
+        terminal.resize(width, (cell_h * rows as f32).ceil() as u32);
+        assert_eq!(
+            terminal.term.lock().grid().screen_lines(),
+            rows as usize,
+            "the pin's own stage: a {rows}-row grid"
+        );
+        terminal.menu_visible_rows()
+    };
+    assert_eq!(serve(&mut terminal, 40), 8, "forty rows: the ceiling alone");
+    assert_eq!(
+        serve(&mut terminal, 12),
+        2,
+        "twelve rows: about half the pane, comfortable"
+    );
+    assert_eq!(serve(&mut terminal, 4), 1, "four rows: never below one");
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: true,
+            input_compact_rows: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert_eq!(
+        serve(&mut terminal, 12),
+        4,
+        "twelve rows compact: twice the rows fit the same half"
+    );
+    assert_eq!(serve(&mut terminal, 40), 8, "the ceiling holds");
 }

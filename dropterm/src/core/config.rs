@@ -185,11 +185,12 @@ impl std::fmt::Display for NewTabCwd {
     }
 }
 
-/// Who owns the prompt line (rich-input spec): `Native` — the
-/// default — is the bare shell, every keystroke forwarded to the PTY
-/// verbatim and the whole suggest lane dark; `Rich` is the editor:
-/// at a live prompt `DropTerm` buffers, edits, highlights, completes,
-/// and executes the line. Per-profile through
+/// Who shows the suggestions (rich-input spec; the overlay lane from
+/// suggest-overlay): `Native` — the default — is the bare shell,
+/// every keystroke forwarded to the PTY verbatim and the whole
+/// suggest lane dark; `Rich` keeps the shell's own line and paints
+/// the ghost and the completion menu over it at a live prompt.
+/// Per-profile through
 /// [`Profile::input_mode`](crate::core::profile::Profile::input_mode),
 /// `None` following the global pick (the `color_scheme` pattern).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,18 +199,6 @@ pub enum InputMode {
     Native,
     Rich,
 }
-
-/// Where the rich-mode input strip docks (rich-input spec, OQ-7):
-/// `Bottom` — the default — sits at the grid's foot where the prompt
-/// is; `Top` pins the strip at the head of the grid region while the
-/// grid keeps scrolling normally beneath it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InputPosition {
-    #[default]
-    Bottom,
-    Top,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 // Whole-struct serde is the store's settings section (`config.ron`):
 // a key the file lacks loads as its default, so the key list stays
@@ -516,24 +505,19 @@ pub struct DropTermConfig {
     /// latch keeps arming either way, so a later flip-on shows
     /// whatever the surface still holds.
     pub status_bar_activity_mark: bool,
-    /// Who owns the prompt line (rich-input spec): `Native` — the
+    /// Who shows the suggestions (rich-input spec): `Native` — the
     /// default, the no-regression ruling (no v1 yet) — forwards
     /// every keystroke to the PTY verbatim with the whole suggest
-    /// lane dark; `Rich` gives `DropTerm` the line at a live prompt
-    /// (buffer, edit, highlight, complete, execute; unsure prompts
-    /// hide the editor and pass keys through). Per-profile through
+    /// lane dark; `Rich` keeps the shell's line and paints the ghost
+    /// and the completion menu over it at a live prompt (an unsure
+    /// prompt stands the overlays aside, and every key is the
+    /// shell's). Per-profile through
     /// [`Profile::input_mode`](crate::core::profile::Profile::input_mode),
     /// `None` following this global. Flips apply live on the config
     /// echo.
     pub input_mode: InputMode,
-    /// Where the rich-mode input strip docks (rich-input spec, OQ-7):
-    /// `Bottom` — the default — at the grid's foot where the prompt
-    /// is; `Top` at the head of the grid region, every Enter dropping
-    /// the executed command into the flow while the grid scrolls
-    /// normally. Flips apply live on the config echo.
-    pub input_position: InputPosition,
-    /// Whether ghost text computes inside the editor (rich-input
-    /// spec): the dim rest-of-command after the cursor, Right
+    /// Whether ghost text computes (rich-input spec): the dim
+    /// rest-of-command after the cursor on the shell's line, Right
     /// accepting it whole and Alt+Right one word — the old
     /// `autosuggestions_enabled` role under its decoupled name.
     /// Defaults to `true` (the fish/Warp default-on precedent);
@@ -555,11 +539,6 @@ pub struct DropTermConfig {
     /// `completions_open_while_typing: false`); `false` leaves the
     /// chord the only opener. Flips apply live.
     pub input_auto_popup: bool,
-    /// Whether the owned line tokenizes and colors live (rich-input
-    /// spec): command known-vs-unknown, flags, strings, variables,
-    /// the unknown-command mark a dashed underline. Defaults to
-    /// `true`; `false` renders the line plain. Flips apply live.
-    pub input_highlight: bool,
     /// Whether menu rows carry the corpus descriptions (rich-input
     /// spec). Defaults to `true`; `false` hides the description
     /// column. Flips apply live.
@@ -743,11 +722,9 @@ impl Default for DropTermConfig {
             status_bar_border: true,
             status_bar_activity_mark: true,
             input_mode: InputMode::default(),
-            input_position: InputPosition::default(),
             input_ghost: true,
             input_menu: true,
             input_auto_popup: true,
-            input_highlight: true,
             input_descriptions: true,
             input_badges: true,
             input_icons: true,

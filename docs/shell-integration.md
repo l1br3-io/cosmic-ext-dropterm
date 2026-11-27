@@ -1,6 +1,6 @@
 # Shell integration
 
-The shell tells DropTerm what is happening — and DropTerm listens. With integration, every spawned `bash`, `zsh`, and `fish` reports three facts the terminal otherwise has to guess at: when a prompt is showing (and when a command is running), what a finished command's exit code was, and where the shell's working directory is. The result: the [rich input](rich-input.md) editor claims every prompt — including the exotic, themed, and multiline ones the grid-read cannot decide — exit codes populate the status band's exit segment on every shell with no configuration, and the path seat follows `cd` through the shell's own report.
+The shell tells DropTerm what is happening — and DropTerm listens. With integration, every spawned `bash`, `zsh`, and `fish` reports three facts the terminal otherwise has to guess at: when a prompt is showing (and when a command is running), what a finished command's exit code was, and where the shell's working directory is. The result: the [rich input](rich-input.md) overlays show at every prompt — including the exotic, themed, and multiline ones the grid-read cannot decide — exit codes populate the status band's exit segment on every shell with no configuration, and the path seat follows `cd` through the shell's own report.
 
 Nothing is installed into your rc files. The scripts are DropTerm's own, embedded in the binary and materialized under `~/.cache/dropterm/shell-integration/` (rewritten only when their bytes change); the spawn hands them to the shell through argv and environment alone.
 
@@ -29,7 +29,7 @@ A profile tab (a `ssh web` preset, a `htop` one-shot-then-shell) integrates its 
 
 - **Other shells and programs** — `sh` (the default fallback), `nu`, `pwsh`, `dash`, any `--cmd` program: spawned byte-identical to today. A `--cmd` line carries its own arguments and never inherits; DropTerm does not decorate your explicit program.
 - **Your own file choices** — a configured `args` carrying `--rcfile`, fish's init flag, or a profile env's `ZDOTDIR` suppresses injection for that spawn (one warn in the log): never a fight over whose file the shell reads.
-- **The fallback** — no integration means today's behavior exactly: the grid-read decides the prompt (unsure hides the editor), exit codes and cwd arrive only if your own shell config emits them. The fallback stands beside integration, never under it.
+- **The fallback** — no integration means today's behavior exactly: the grid-read decides the prompt (an unsure prompt hides the overlays), exit codes and cwd arrive only if your own shell config emits them. The fallback stands beside integration, never under it.
 - **ssh remotes** — the integration is local to the spawned shell; a remote shell over ssh runs whatever the remote has, degrades to the fallback cleanly, and the local prompt re-arms on exit.
 - **Foreign integrations** — a shell-integration script you already run (ble.sh, a terminal's own, a hand-rolled one) is consumed as-is: the parsed marks read optional truth, and nothing keys on who sent them.
 

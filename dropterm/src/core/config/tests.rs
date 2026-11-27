@@ -872,19 +872,16 @@ fn a_disabled_status_bar_round_trips_through_the_config_store() {
 }
 
 #[test]
-fn rich_input_defaults_to_native_bottom_all_on_comfortable() {
-    // The rich-input rulings (intake 2026-11-25): a fresh config keeps
-    // the bare shell (`native` — no v1, no regression), the strip
-    // docks at the bottom, every editor surface ships on, and the
-    // menu rows render comfortable — `compact_rows` is the density
-    // switch, off by default.
+fn input_defaults_to_native_all_on_comfortable() {
+    // The rich-input rulings (intake 2026-11-25): a fresh config
+    // keeps the bare shell (`native` — no v1, no regression), every
+    // overlay surface ships on, and the menu rows render comfortable
+    // — `compact_rows` is the density switch, off by default.
     let config = DropTermConfig::default();
     assert_eq!(config.input_mode, InputMode::Native);
-    assert_eq!(config.input_position, InputPosition::Bottom);
     assert!(config.input_ghost);
     assert!(config.input_menu);
     assert!(config.input_auto_popup);
-    assert!(config.input_highlight);
     assert!(config.input_descriptions);
     assert!(config.input_badges);
     assert!(config.input_icons);
@@ -925,19 +922,67 @@ fn a_stale_autosuggestions_line_keeps_loading_and_is_ignored() {
 }
 
 #[test]
+fn the_retired_input_keys_never_serialize() {
+    // The strip's dock and the highlight left with the editor
+    // (suggest-overlay SO-9): neither key is in the settings
+    // section's shape, the cull's own precedent above.
+    let text = ron::to_string(&DropTermConfig::default()).expect("serialize");
+    assert!(
+        !text.contains("input_position"),
+        "the strip's dock serializes nowhere: {text}"
+    );
+    assert!(
+        !text.contains("input_highlight"),
+        "the highlight serializes nowhere: {text}"
+    );
+    assert!(
+        text.contains("input_mode"),
+        "the control: the mode's own key stands"
+    );
+}
+
+#[test]
+fn a_stale_input_dock_or_highlight_line_keeps_loading_and_other_keys_apply() {
+    // The removal's migration story (the dock-presence precedent): a
+    // config written by a version that had the two keys still carries
+    // them. The section has no `deny_unknown_fields`, so serde ignores
+    // the unknown keys, the file loads clean (no quarantine — only
+    // unparseable sections move aside), and every surviving key
+    // applies.
+    let dir = TempDir::new("stale-input-keys");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        "(height_percent: 70, input_position: Top, input_highlight: false, input_mode: Rich, opacity: 55)",
+    );
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded.height_percent, 70);
+    assert_eq!(loaded.opacity, 55);
+    assert_eq!(loaded.input_mode, InputMode::Rich);
+    assert!(
+        loaded.input_ghost,
+        "the surviving keys answer their own values"
+    );
+    assert!(
+        dir.join(store::SETTINGS_FILE).exists(),
+        "the stale-key file loads, it is not quarantined"
+    );
+    assert!(!dir.join("config.ron.bak").exists());
+}
+
+#[test]
 fn an_all_off_input_config_round_trips_through_the_store() {
-    // The decoupled keys persist: the mode, the position, every
-    // surface's kill switch, and the density flip survive a
+    // The decoupled keys persist: the mode, every surface's kill
+    // switch, and the density flip survive a
     // write→load cycle (the control for the default-on pin: a
     // present off value is honored, not defaulted over).
     let dir = TempDir::new("input-all-off");
     let stored = DropTermConfig {
         input_mode: InputMode::Rich,
-        input_position: InputPosition::Top,
         input_ghost: false,
         input_menu: false,
         input_auto_popup: false,
-        input_highlight: false,
         input_descriptions: false,
         input_badges: false,
         input_icons: false,
@@ -1551,6 +1596,92 @@ fn a_stale_dock_presence_key_still_loads_and_other_keys_apply() {
         "the stale-key file loads, it is not quarantined"
     );
     assert!(!dir.join("config.ron.bak").exists());
+}
+
+/// README and every top-level page under `docs/`, read at run time
+/// so a page is covered the day it lands. `releases.md` is left out:
+/// release notes are history, not a description of the build.
+fn user_doc_pages() -> Vec<(String, String)> {
+    let docs = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs"));
+    let mut pages = vec![(
+        "README.md".to_string(),
+        include_str!("../../../../README.md").to_string(),
+    )];
+    for entry in std::fs::read_dir(docs).expect("the docs directory") {
+        let path = entry.expect("a docs entry").path();
+        let is_page = path.extension().is_some_and(|ext| ext == "md")
+            && path.file_name().is_some_and(|name| name != "releases.md");
+        if is_page {
+            let name = path.file_name().expect("a page has a name");
+            pages.push((
+                format!("docs/{}", name.to_string_lossy()),
+                std::fs::read_to_string(&path).expect("a docs page reads"),
+            ));
+        }
+    }
+    pages.sort();
+    pages
+}
+
+#[test]
+fn no_user_doc_names_the_retired_input() {
+    // DropTerm's own input editor left (suggest-overlay): its two
+    // keys, its strip, and the editor itself. No page that describes
+    // the build may still name them, in any of the vocabularies the
+    // docs used for it.
+    const RETIRED: [&str; 6] = [
+        "input_position",
+        "input_highlight",
+        "input strip",
+        "dropterm's editor",
+        "rich editor",
+        "owned line",
+    ];
+    let mut offenders = Vec::new();
+    for (page, text) in user_doc_pages() {
+        let lower = text.to_lowercase();
+        for retired in RETIRED {
+            if lower.contains(retired) {
+                offenders.push(format!("{page}: {retired:?}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a user doc still names the retired input: {offenders:#?}"
+    );
+}
+
+/// The key count one documentation index advertises on its
+/// Configuration line: "all N config keys".
+fn advertised_key_count(text: &str, page: &str) -> usize {
+    let line = text
+        .lines()
+        .find(|line| line.contains("config keys"))
+        .unwrap_or_else(|| panic!("{page} advertises the config key count"));
+    line.split("all ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{page}: no number before \"config keys\" in {line:?}"))
+}
+
+#[test]
+fn the_documented_key_counts_match_the_serialized_keys() {
+    // README and the docs index each advertise how many keys the
+    // settings section carries. Both read the count serde enumerates
+    // (suggest-overlay SO-12): the two had drifted apart by hand.
+    let settings_keys = serialized_default_sections()[0].len();
+    assert_eq!(
+        advertised_key_count(include_str!("../../../../README.md"), "README.md"),
+        settings_keys,
+        "README.md's Configuration entry"
+    );
+    assert_eq!(
+        advertised_key_count(include_str!("../../../../docs/index.md"), "docs/index.md"),
+        settings_keys,
+        "docs/index.md's Configuration entry"
+    );
 }
 
 /// Every `.rs` file under this crate's `src/` as (`src/…` path,

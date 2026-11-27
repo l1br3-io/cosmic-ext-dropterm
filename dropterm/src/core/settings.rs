@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::config::store::{self, SETTINGS_FILE};
 use crate::core::config::{
-    DropTermConfig, Edge, HAlign, InputMode, InputPosition, KeybindsSection, KeyboardMode, Layer,
+    DropTermConfig, Edge, HAlign, InputMode, KeybindsSection, KeyboardMode, Layer,
     MAX_HEIGHT_PERCENT, MAX_WIDTH_PERCENT, MIN_HEIGHT_PERCENT, MIN_WIDTH_PERCENT, NewTabCwd,
     ProfilesSection, TabPosition, TabTitleMode, ThemePreference,
 };
@@ -139,11 +139,9 @@ impl Section {
             ],
             Section::AutoComplete => &[
                 ConfigKey::InputMode,
-                ConfigKey::InputPosition,
                 ConfigKey::InputGhost,
                 ConfigKey::InputMenu,
                 ConfigKey::InputAutoPopup,
-                ConfigKey::InputHighlight,
                 ConfigKey::InputDescriptions,
                 ConfigKey::InputBadges,
                 ConfigKey::InputIcons,
@@ -198,15 +196,11 @@ pub enum ConfigKey {
     /// seconds (command-notify spec, OQ-1) — the Terminal card's
     /// numeric row, the scrollback parse shape.
     CommandFinishNotificationAfterSecs,
-    /// The prompt-line mode (rich-input spec) — the Auto complete
+    /// The suggestion mode (rich-input spec) — the Auto complete
     /// card's dropdown: `Native` (the default) is the bare shell,
-    /// `Rich` `DropTerm`'s editor. Per-profile through
+    /// `Rich` the suggestions over the shell's line. Per-profile through
     /// `Profile::input_mode`; flips apply live on the echo.
     InputMode,
-    /// The input strip's dock (rich-input spec) — the Auto complete
-    /// card's dropdown: `Bottom` (the default) at the grid's foot,
-    /// `Top` at the head of the grid region. Flips apply live.
-    InputPosition,
     /// The ghost's own toggle (rich-input spec) — the old
     /// `autosuggestions_enabled` role under its decoupled name:
     /// `false` darkens the ghost alone, flipping live.
@@ -221,10 +215,6 @@ pub enum ConfigKey {
     /// you type behind the parity gates; `false` leaves the chord the
     /// only opener.
     InputAutoPopup,
-    /// The owned line's live syntax highlight (rich-input spec):
-    /// token colors plus the dashed unknown-command underline;
-    /// `false` renders the line plain.
-    InputHighlight,
     /// The menu rows' corpus descriptions (rich-input spec).
     InputDescriptions,
     /// The menu rows' type badges — cmd/flag/path/hist/env/sub
@@ -499,11 +489,9 @@ impl ConfigKey {
                 "command_finish_notification_after_secs"
             }
             ConfigKey::InputMode => "input_mode",
-            ConfigKey::InputPosition => "input_position",
             ConfigKey::InputGhost => "input_ghost",
             ConfigKey::InputMenu => "input_menu",
             ConfigKey::InputAutoPopup => "input_auto_popup",
-            ConfigKey::InputHighlight => "input_highlight",
             ConfigKey::InputDescriptions => "input_descriptions",
             ConfigKey::InputBadges => "input_badges",
             ConfigKey::InputIcons => "input_icons",
@@ -580,11 +568,9 @@ pub enum PlannedWrite {
     CommandFinishNotificationEnabled(bool),
     CommandFinishNotificationAfterSecs(u16),
     InputMode(InputMode),
-    InputPosition(InputPosition),
     InputGhost(bool),
     InputMenu(bool),
     InputAutoPopup(bool),
-    InputHighlight(bool),
     InputDescriptions(bool),
     InputBadges(bool),
     InputIcons(bool),
@@ -695,11 +681,9 @@ impl PlannedWrite {
                 ConfigKey::CommandFinishNotificationAfterSecs
             }
             PlannedWrite::InputMode(_) => ConfigKey::InputMode,
-            PlannedWrite::InputPosition(_) => ConfigKey::InputPosition,
             PlannedWrite::InputGhost(_) => ConfigKey::InputGhost,
             PlannedWrite::InputMenu(_) => ConfigKey::InputMenu,
             PlannedWrite::InputAutoPopup(_) => ConfigKey::InputAutoPopup,
-            PlannedWrite::InputHighlight(_) => ConfigKey::InputHighlight,
             PlannedWrite::InputDescriptions(_) => ConfigKey::InputDescriptions,
             PlannedWrite::InputBadges(_) => ConfigKey::InputBadges,
             PlannedWrite::InputIcons(_) => ConfigKey::InputIcons,
@@ -816,11 +800,9 @@ impl PlannedWrite {
                 section.command_finish_notification_after_secs = *value;
             }
             PlannedWrite::InputMode(value) => section.input_mode = *value,
-            PlannedWrite::InputPosition(value) => section.input_position = *value,
             PlannedWrite::InputGhost(value) => section.input_ghost = *value,
             PlannedWrite::InputMenu(value) => section.input_menu = *value,
             PlannedWrite::InputAutoPopup(value) => section.input_auto_popup = *value,
-            PlannedWrite::InputHighlight(value) => section.input_highlight = *value,
             PlannedWrite::InputDescriptions(value) => section.input_descriptions = *value,
             PlannedWrite::InputBadges(value) => section.input_badges = *value,
             PlannedWrite::InputIcons(value) => section.input_icons = *value,
@@ -1142,16 +1124,14 @@ pub const fn apply_timing(key: ConfigKey) -> ApplyTiming {
         | ConfigKey::AutosuggestionsCommandsEnabled
         | ConfigKey::AutosuggestionsCompletionsExtended
         // The rich-input keys ride the same live pass (rich-input
-        // spec): the mode and position flips apply on the config
-        // echo's apply pass, and every surface toggle lands at the
+        // spec): the mode flip applies on the config echo's apply
+        // pass, and every surface toggle lands at the
         // next render or typed prefix the same way the overlay keys
         // always have.
         | ConfigKey::InputMode
-        | ConfigKey::InputPosition
         | ConfigKey::InputGhost
         | ConfigKey::InputMenu
         | ConfigKey::InputAutoPopup
-        | ConfigKey::InputHighlight
         | ConfigKey::InputDescriptions
         | ConfigKey::InputBadges
         | ConfigKey::InputIcons
@@ -1245,11 +1225,7 @@ pub const THEME_PREFERENCE_OPTIONS: &[(ThemePreference, &str)] = &[
 ];
 pub const INPUT_MODE_OPTIONS: &[(InputMode, &str)] = &[
     (InputMode::Native, "Native (the shell's line)"),
-    (InputMode::Rich, "Rich (DropTerm's editor)"),
-];
-pub const INPUT_POSITION_OPTIONS: &[(InputPosition, &str)] = &[
-    (InputPosition::Bottom, "Bottom"),
-    (InputPosition::Top, "Top"),
+    (InputMode::Rich, "Rich (suggestions on the shell's line)"),
 ];
 
 /// A scheme dropdown's selection: the config name's position in the
@@ -1301,9 +1277,6 @@ pub fn dropdown_selected(
         ConfigKey::InputMode => INPUT_MODE_OPTIONS
             .iter()
             .position(|(value, _)| *value == config.input_mode),
-        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
-            .iter()
-            .position(|(value, _)| *value == config.input_position),
         _ => None,
     }
 }
@@ -1350,9 +1323,6 @@ pub fn dropdown_write(
         ConfigKey::InputMode => INPUT_MODE_OPTIONS
             .get(index)
             .map(|(value, _)| PlannedWrite::InputMode(*value)),
-        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
-            .get(index)
-            .map(|(value, _)| PlannedWrite::InputPosition(*value)),
         _ => None,
     }
 }
@@ -2653,7 +2623,6 @@ pub const fn toggle_write(key: ConfigKey, checked: bool) -> Option<PlannedWrite>
         ConfigKey::InputGhost => Some(PlannedWrite::InputGhost(checked)),
         ConfigKey::InputMenu => Some(PlannedWrite::InputMenu(checked)),
         ConfigKey::InputAutoPopup => Some(PlannedWrite::InputAutoPopup(checked)),
-        ConfigKey::InputHighlight => Some(PlannedWrite::InputHighlight(checked)),
         ConfigKey::InputDescriptions => Some(PlannedWrite::InputDescriptions(checked)),
         ConfigKey::InputBadges => Some(PlannedWrite::InputBadges(checked)),
         ConfigKey::InputIcons => Some(PlannedWrite::InputIcons(checked)),
@@ -2729,11 +2698,9 @@ impl ConfigKey {
             ConfigKey::CommandFinishNotificationEnabled => "Command finish notifications",
             ConfigKey::CommandFinishNotificationAfterSecs => "Command finish threshold (seconds)",
             ConfigKey::InputMode => "Input mode",
-            ConfigKey::InputPosition => "Input strip position",
             ConfigKey::InputGhost => "Ghost text",
             ConfigKey::InputMenu => "Completion menu",
             ConfigKey::InputAutoPopup => "Auto-popup while typing",
-            ConfigKey::InputHighlight => "Syntax highlight",
             ConfigKey::InputDescriptions => "Row descriptions",
             ConfigKey::InputBadges => "Type badges",
             ConfigKey::InputIcons => "Row icons",

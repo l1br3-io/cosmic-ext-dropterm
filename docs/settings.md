@@ -103,7 +103,7 @@ Each control states next to it when its edit applies. With the terminal hidden w
 | `input_ghost` | live - a showing ghost disappears on the echo; re-enabling suggests again at the next typed prefix (the menu untouched) |
 | `input_menu` | live - a showing menu closes the moment the switch lands; re-enabling re-arms Tab and the auto-pop at the next typed prefix |
 | `input_auto_popup` | live - the next typed prefix pops (or declines) the menu on its own; off leaves Tab the only opener |
-| `input_mode`, `input_position`, `input_highlight`, `input_descriptions`, `input_badges`, `input_icons`, `input_argument_hint`, `input_compact_rows` | live - the echo re-renders the strip and its surfaces in place (a mode flip stands the editor down to the bare shell or claims the line again) |
+| `input_mode`, `input_descriptions`, `input_badges`, `input_icons`, `input_argument_hint`, `input_compact_rows` | live - the next frame repaints the menu and its chrome in place (a mode flip stands the overlays down to the bare shell, or brings them back over the prompt row) |
 | `autosuggestions_paths_enabled`, `autosuggestions_commands_enabled`, `autosuggestions_history_context` | live - the next typed prefix answers under the new providers |
 | `autosuggestions_delay_ms` | live - the delay resolves at every update: a lowered value can reveal a waiting suggestion, a raised one re-arms the wait |
 | `autosuggestions_completions_extended` | live - the table reloads on the echo: off answers the embedded floor alone (the installed file's commands stop completing), on adds the tier beside it again (a re-toggle reuses the already-parsed file; a system data file does not change under a running app) |

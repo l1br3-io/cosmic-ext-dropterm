@@ -1739,7 +1739,7 @@ fn menu_accepts_append_the_trailing_space() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "cargo t"),
+        menu.press(MenuKey::Accept, "cargo t", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "est ".to_string()
         }
@@ -1758,7 +1758,7 @@ fn the_trailing_space_withholds_after_separators_and_assignments() {
         source: SuggestionSource::Path,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "s"),
+        menu.press(MenuKey::Accept, "s", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "rc/".to_string()
         }
@@ -1771,7 +1771,7 @@ fn the_trailing_space_withholds_after_separators_and_assignments() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "F"),
+        menu.press(MenuKey::Accept, "F", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "OO=".to_string()
         },
@@ -1792,7 +1792,7 @@ fn the_trailing_space_withholds_on_an_empty_insert() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "cargo t"),
+        menu.press(MenuKey::Accept, "cargo t", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: String::new()
         }
@@ -2968,20 +2968,222 @@ fn env_rows_stay_silent_over_ssh() {
     );
 }
 
-// --- the dot chain (suggest-depth, SP-D6) ---
+// --- the live-prompt gates (rich-input RI-3; the overlay lane's
+// --- from suggest-overlay SO-7): unsure hides ---
 
-/// A listing as the engine now builds one: `.` and `..` always
-/// chained ahead of the directory's own entries (std never yields
-/// them).
-fn chained_listing(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
-    let mut chained = vec![(".".to_string(), true), ("..".to_string(), true)];
-    chained.extend(listing(entries));
-    chained
+fn live_gates() -> OverlayGates {
+    OverlayGates {
+        focused: true,
+        no_foreground_child: true,
+        at_bottom: true,
+        prompt_detection: PromptDetection::Live,
+    }
 }
 
 #[test]
-fn the_menu_path_tier_inherits_the_dot_chain() {
-    let entries = chained_listing(&[("src", true)]);
+fn every_gate_passing_makes_the_overlays_live() {
+    assert!(overlays_live(&live_gates()));
+}
+
+#[test]
+fn a_foreground_child_stands_the_overlays_aside() {
+    let gates = OverlayGates {
+        no_foreground_child: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&gates));
+}
+
+#[test]
+fn an_unfocused_or_scrolled_view_stands_the_overlays_aside() {
+    let unfocused = OverlayGates {
+        focused: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&unfocused));
+
+    let scrolled = OverlayGates {
+        at_bottom: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&scrolled));
+}
+
+#[test]
+fn an_unsure_prompt_hides_the_overlays() {
+    // The default-hide ruling: a missed overlay costs richness, a
+    // wrongly-shown overlay can insert into a program's input —
+    // every other gate may hold, unsure alone stands the overlays
+    // aside.
+    let gates = OverlayGates {
+        prompt_detection: PromptDetection::Unsure,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&gates));
+}
+
+// --- Tab's fill while the menu shows (suggest-parity; on the overlay
+// --- lane from suggest-overlay SO-3, each tier at its own anchor SO-4b) ---
+
+/// A menu row as the fill reads it: the label and its tier.
+fn fill_row(label: &str, source: SuggestionSource) -> MenuCandidate {
+    MenuCandidate {
+        label: label.to_string(),
+        suffix: String::new(),
+        description: None,
+        source,
+    }
+}
+
+#[test]
+fn the_tab_fill_extends_the_lcp_else_cycles() {
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::Catalog;
+
+    // The LCP of the case-sensitive prefix rows extends "gi" (the
+    // rows that share it — gimp diverges and would cap the LCP at
+    // the query itself, the Cycle case below).
+    let rows = vec![fill_row("git", Catalog), fill_row("git-status", Catalog)];
+    assert_eq!(
+        tab_fill(&rows, "gi"),
+        TabFill::Insert {
+            beyond: "t".to_string(),
+            close: false
+        }
+    );
+    // One row left standing closes the menu.
+    assert_eq!(
+        tab_fill(&rows, "git-st"),
+        TabFill::Insert {
+            beyond: "atus".to_string(),
+            close: true
+        }
+    );
+    // No common extension: cycle.
+    assert_eq!(
+        tab_fill(&[fill_row("git", Catalog), fill_row("gimp", Catalog)], "gi"),
+        TabFill::Cycle
+    );
+    // Case-sensitive: a capital row never fills a lowercase query.
+    assert_eq!(
+        tab_fill(&[fill_row("Git", Catalog), fill_row("Gimp", Catalog)], "gi"),
+        TabFill::Cycle
+    );
+    // No prefix rows at all: cycle.
+    assert_eq!(
+        tab_fill(&[fill_row("cargo", Catalog)], "gi"),
+        TabFill::Cycle
+    );
+    // A line-equal row's empty continuation poisons the common
+    // prefix: Tab over an already-filled line cycles, never grows.
+    assert_eq!(tab_fill(&rows, "git"), TabFill::Cycle);
+}
+
+#[test]
+fn the_fill_anchors_a_path_row_at_the_tokens_final_component() {
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::Path;
+
+    // A path row's label is the bare listing entry, so the token is
+    // never its prefix: the row reads past the token's final
+    // component.
+    assert_eq!(
+        tab_fill(&[fill_row("Documents/", Path)], "cd ~/Doc"),
+        TabFill::Insert {
+            beyond: "uments/".to_string(),
+            close: true
+        }
+    );
+    // Two rows fill their shared component, and the menu stands.
+    assert_eq!(
+        tab_fill(
+            &[
+                fill_row("Documents/", Path),
+                fill_row("Documentaries/", Path)
+            ],
+            "cd ~/Docum"
+        ),
+        TabFill::Insert {
+            beyond: "ent".to_string(),
+            close: false
+        }
+    );
+    // The bare `~` root: the empty component, the whole entry the
+    // continuation.
+    assert_eq!(
+        tab_fill(&[fill_row(".config/", Path)], "ls ~"),
+        TabFill::Insert {
+            beyond: ".config/".to_string(),
+            close: true
+        }
+    );
+    // Control: two entries sharing nothing past the component fill
+    // nothing.
+    assert_eq!(
+        tab_fill(
+            &[fill_row("Documents/", Path), fill_row("Downloads/", Path)],
+            "cd ~/Do"
+        ),
+        TabFill::Cycle
+    );
+}
+
+#[test]
+fn the_fill_anchors_a_history_row_at_the_whole_typed_segment() {
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::History;
+
+    let rows = vec![
+        fill_row("cd src", History),
+        fill_row("cd src-cache", History),
+    ];
+    assert_eq!(
+        tab_fill(&rows, "cd s"),
+        TabFill::Insert {
+            beyond: "rc".to_string(),
+            close: false
+        }
+    );
+    assert_eq!(
+        tab_fill(&rows, "cd src-ca"),
+        TabFill::Insert {
+            beyond: "che".to_string(),
+            close: true
+        },
+        "the row the line outgrew contributes nothing"
+    );
+}
+
+#[test]
+fn the_fill_never_reinserts_the_typed_words_of_a_history_row() {
+    // The grow-the-line shape (the owner's 2026-11-24 report): a
+    // history row read past the token re-inserted the words already
+    // typed (`cd` Tab → `cd cd`). The whole segment is its anchor.
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::History;
+
+    assert_eq!(
+        tab_fill(&[fill_row("cd", History)], "cd"),
+        TabFill::Cycle,
+        "a line-equal row has nothing to append"
+    );
+    assert_eq!(
+        tab_fill(&[fill_row("cd src", History)], "cd"),
+        TabFill::Insert {
+            beyond: " src".to_string(),
+            close: true
+        }
+    );
+}
+
+// --- the path rows: `./` and `../` leave every listing (suggest-overlay, SO-1) ---
+
+#[test]
+fn the_menu_path_tier_never_offers_the_dot_chain() {
+    // `.` and `..` are dot-prefixed names like any other: behind a
+    // non-dot component they hide, and no listing offers `./` or
+    // `../`.
+    let entries = listing(&[(".", true), ("..", true), ("src", true)]);
     let suggest = adopted();
     let o = Observation {
         path_listing: Some(&entries),
@@ -2996,32 +3198,39 @@ fn the_menu_path_tier_inherits_the_dot_chain() {
         .collect::<Vec<_>>();
     assert_eq!(
         rows,
-        vec![
-            ("./".to_string(), "./".to_string()),
-            ("../".to_string(), "../".to_string()),
-            ("src/".to_string(), "src/".to_string()),
-        ],
-        "the chain leads every listing — `.` and `..` bypass the dotfile rule (Warp chains always); an empty component's suffix is the whole entry"
+        vec![("src/".to_string(), "src/".to_string())],
+        "no `./` and no `../` row; an empty component's suffix is the whole entry"
     );
 }
 
 #[test]
-fn the_ghost_path_tier_inherits_the_dot_chain() {
-    let entries = chained_listing(&[]);
+fn the_ghost_path_tier_is_silent_on_dotdot_over_an_empty_listing() {
+    // The engine's listing for an empty directory is empty
+    // (`an_empty_directory_lists_nothing`), so `~/..` has nothing to
+    // match. Control: one entry extending the `..` still answers,
+    // so the silence is the listing's, not a dead provider.
     let mut suggest = adopted();
+    let empty: Vec<(String, bool)> = Vec::new();
     let o = Observation {
-        path_listing: Some(&entries),
+        path_listing: Some(&empty),
         before_cursor: "$ ~/..",
         cursor_column: 6,
         ..obs()
     };
-    let showing = step(&o, &mut suggest).expect("the ghost answers the chained `..`");
-    assert_eq!(showing.suffix, "/", "`~/..` ghosts its directory slash");
+    assert_eq!(
+        step(&o, &mut suggest),
+        None,
+        "`~/..` ghosts nothing over an empty listing"
+    );
+    let entries = listing(&[("..cache", true)]);
+    let showing = step_path("~/..", Some(&entries), &mut suggest)
+        .expect("a real entry extending the `..` still ghosts");
+    assert_eq!(showing.suffix, "cache/");
 }
 
 #[test]
 fn the_dotfile_rule_stands_for_ordinary_dotfiles() {
-    let entries = chained_listing(&[(".hidden", false), ("readme", false)]);
+    let entries = listing(&[(".hidden", false), ("readme", false)]);
     let suggest = adopted();
     let o = Observation {
         path_listing: Some(&entries),
@@ -3037,7 +3246,24 @@ fn the_dotfile_rule_stands_for_ordinary_dotfiles() {
     assert_eq!(
         rows,
         vec!["readme".to_string()],
-        "an ordinary dotfile still hides behind a non-dot component — the chain is the only bypass"
+        "an ordinary dotfile hides behind a non-dot component"
+    );
+    // Control: the dot-prefixed component is what shows it.
+    let dot = Observation {
+        path_listing: Some(&entries),
+        before_cursor: "$ ~/.",
+        cursor_column: 4,
+        ..obs()
+    };
+    let rows = candidates("~/.", &suggest, &dot)
+        .into_iter()
+        .filter(|row| row.source == SuggestionSource::Path)
+        .map(|row| row.label)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![".hidden".to_string()],
+        "the typed dot shows the dotfile"
     );
 }
 
@@ -3450,14 +3676,14 @@ fn move_wraps_at_both_ends_and_the_scroll_window_follows() {
         .collect();
     let mut menu = MenuState::new();
     menu.open(rows);
-    menu.press(MenuKey::Up, "");
+    menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
     assert_eq!(menu.selected(), 9, "up from the first wraps to the last");
     assert_eq!(menu.scroll(), 2, "the window follows: rows 2..10 visible");
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert_eq!(menu.selected(), 0, "down from the last wraps to the first");
     assert_eq!(menu.scroll(), 0);
     for _ in 0..12 {
-        menu.press(MenuKey::Down, "");
+        menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     }
     assert_eq!(menu.selected(), 2, "a longer walk cycles: 12 mod 10");
     assert_eq!(
@@ -3466,10 +3692,109 @@ fn move_wraps_at_both_ends_and_the_scroll_window_follows() {
         "a mid-list selection keeps the window at the top"
     );
     for _ in 0..12 {
-        menu.press(MenuKey::Up, "");
+        menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
     }
     assert_eq!(menu.selected(), 0);
     assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn the_row_height_is_a_fraction_of_the_cell_that_doubles_with_it() {
+    use super::{menu_hint_height, menu_row_height};
+
+    for cell_h in [12., 20., 26.5] {
+        let comfortable = menu_row_height(cell_h, false);
+        let compact = menu_row_height(cell_h, true);
+        assert!(
+            compact < comfortable,
+            "compact rows are the tighter density at cell {cell_h}"
+        );
+        assert!(
+            comfortable >= 2. * cell_h,
+            "a comfortable row holds its two text lines"
+        );
+        assert!(
+            compact >= cell_h && comfortable < 3. * cell_h,
+            "one line and its padding, never a third"
+        );
+        // The scaling pin: every vertical size doubles when the cell
+        // does.
+        assert_eq!(menu_row_height(2. * cell_h, false), 2. * comfortable);
+        assert_eq!(menu_row_height(2. * cell_h, true), 2. * compact);
+        assert_eq!(menu_hint_height(2. * cell_h), 2. * menu_hint_height(cell_h));
+    }
+}
+
+#[test]
+fn the_row_budget_caps_at_eight_half_the_pane_and_never_below_one() {
+    use super::{MENU_VISIBLE_ROWS, menu_visible_rows};
+
+    // A tall pane: the ceiling alone.
+    assert_eq!(menu_visible_rows(2000., 45., 0.), MENU_VISIBLE_ROWS);
+    assert_eq!(
+        menu_visible_rows(720., 45., 0.),
+        8,
+        "exactly eight fit a 720 px half"
+    );
+    // About half the pane: the rest of the rows scroll.
+    assert_eq!(
+        menu_visible_rows(600., 45., 0.),
+        6,
+        "300 px over 45 px rows"
+    );
+    assert_eq!(menu_visible_rows(100., 45., 0.), 1);
+    // The hint line is paid for first.
+    assert_eq!(menu_visible_rows(600., 45., 25.), 6);
+    assert_eq!(menu_visible_rows(300., 45., 25.), 2);
+    assert_eq!(
+        menu_visible_rows(50., 45., 25.),
+        1,
+        "nothing fits: one row still shows"
+    );
+    // A pane without the room for a row, or a hint taller than the
+    // half: never below one.
+    assert_eq!(menu_visible_rows(40., 45., 0.), 1);
+    assert_eq!(menu_visible_rows(40., 45., 60.), 1);
+    // Control: the budget follows the cell, through the row height.
+    let compact = |pane_h: f32| menu_visible_rows(pane_h, menu_row_height(20., true), 0.);
+    assert_eq!(compact(600.), 12.min(MENU_VISIBLE_ROWS));
+    assert_eq!(compact(200.), 4);
+}
+
+#[test]
+fn the_scroll_window_follows_the_budget_it_is_given() {
+    // The row budget is the pane's (suggest-overlay SO-10), handed
+    // to the press: with three rows to show, the window keeps the
+    // selection inside those three.
+    let rows: Vec<MenuCandidate> = (0..10)
+        .map(|i| MenuCandidate {
+            label: format!("row-{i}"),
+            suffix: format!("-{i}"),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect();
+    let mut menu = MenuState::new();
+    menu.open(rows);
+    menu.press(MenuKey::Up, "", 3);
+    assert_eq!(menu.selected(), 9, "up from the first wraps to the last");
+    assert_eq!(
+        menu.scroll(),
+        7,
+        "the window follows a budget of three: rows 7..10 visible"
+    );
+    menu.press(MenuKey::Down, "", 3);
+    assert_eq!(menu.selected(), 0);
+    assert_eq!(menu.scroll(), 0);
+    for _ in 0..4 {
+        menu.press(MenuKey::Down, "", 3);
+    }
+    assert_eq!(menu.selected(), 4);
+    assert_eq!(
+        menu.scroll(),
+        2,
+        "the fifth row: the window starts at row two"
+    );
 }
 
 #[test]
@@ -3478,8 +3803,8 @@ fn an_empty_menu_declines_navigation() {
     // open implies non-empty rows, so only a closed one carries an
     // empty set — answers Noop to every navigation and stays closed.
     let mut menu = MenuState::new();
-    menu.press(MenuKey::Up, "");
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert!(!menu.is_open());
     assert_eq!(menu.selected(), 0);
     assert_eq!(menu.scroll(), 0);
@@ -3492,9 +3817,9 @@ fn accept_returns_only_the_selected_suffix_then_closes() {
     // PTY. After the accept the menu is closed and spent.
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("git status", "atus"), ("stash", "ash")]));
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert_eq!(
-        menu.press(MenuKey::Accept, "git st"),
+        menu.press(MenuKey::Accept, "git st", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "ash ".to_string()
         }
@@ -3502,7 +3827,7 @@ fn accept_returns_only_the_selected_suffix_then_closes() {
     assert!(!menu.is_open());
     assert!(menu.rows().is_empty());
     assert_eq!(
-        menu.press(MenuKey::Accept, "git st"),
+        menu.press(MenuKey::Accept, "git st", MENU_VISIBLE_ROWS),
         MenuOutcome::Noop,
         "a closed menu accepts nothing"
     );
@@ -3515,7 +3840,10 @@ fn any_other_key_closes_the_menu() {
     // through the normal handler (the widget's routing, Task 3).
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("stash", "ash")]));
-    assert_eq!(menu.press(MenuKey::Other, ""), MenuOutcome::Noop);
+    assert_eq!(
+        menu.press(MenuKey::Other, "", MENU_VISIBLE_ROWS),
+        MenuOutcome::Noop
+    );
     assert!(!menu.is_open());
 }
 
@@ -3530,14 +3858,14 @@ fn enter_on_an_equal_line_executes_instead_of_accepting() {
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("git status", ""), ("other", "")]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "git status"),
+        menu.press(MenuKey::Accept, "git status", MENU_VISIBLE_ROWS),
         MenuOutcome::Execute
     );
     assert!(!menu.is_open());
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("dir/", "/")]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "dir"),
+        menu.press(MenuKey::Accept, "dir", MENU_VISIBLE_ROWS),
         MenuOutcome::Execute,
         "the slash tolerance"
     );
@@ -3561,7 +3889,7 @@ fn selected_equals_is_the_slash_tolerant_line_check() {
         !menu.selected_equals("git status --short"),
         "only the selected row's label counts"
     );
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert!(menu.selected_equals("git status --short"));
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("dir/", "/")]));

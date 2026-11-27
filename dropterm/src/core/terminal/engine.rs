@@ -54,7 +54,6 @@ use tokio::sync::mpsc;
 
 pub use alacritty_terminal::grid::Scroll as TerminalScroll;
 
-use super::editor;
 use super::host::TextHost;
 use crate::core::config::InputMode;
 use crate::core::tabs::TabId;
@@ -204,27 +203,18 @@ pub struct TerminalOptions {
     /// truth, never rewritten by `set_config` (the `spawn_path`
     /// contract).
     pub spawn_env_names: Arc<[String]>,
-    /// Who owns the prompt line (rich-input spec): resolved from the
-    /// app config's `input_mode` where options are built — `Native`
-    /// (the default) keeps every keystroke a PTY byte; `Rich` opens
-    /// the editor lane at a live prompt. Flips apply at the next
-    /// `set_config` pass, so the mode switch lands live.
+    /// Who shows the suggestions (rich-input spec; the overlay lane
+    /// from suggest-overlay): resolved from the app config's
+    /// `input_mode` where options are built — `Native` (the default)
+    /// keeps every keystroke a PTY byte and paints no suggestion;
+    /// `Rich` paints the ghost and the menu over the shell's line at
+    /// a live prompt. Flips apply at the next `set_config` pass, so
+    /// the mode switch lands live.
     pub input_mode: InputMode,
-    /// Whether the owned line highlights live (rich-input RI-6):
-    /// resolved from the app config's `input_highlight` — the pane's
-    /// strip paints the token classes while on, one plain tint while
-    /// off. Carried for the pane's paint (the engine's lane never
-    /// reads it), flipping live on the config echo.
-    pub input_highlight: bool,
-    /// Where the rich-mode strip docks (rich-input RI-9, OQ-7):
-    /// `Bottom` (the default) under the grid; `Top` above it — the
-    /// flow a normal terminal either way. Carried for the pane like
-    /// the chrome toggles.
-    pub input_position: crate::core::config::InputPosition,
     /// The menu chrome's toggles (rich-input RI-7): descriptions,
     /// badges, icons, the argument hint line (each default on), and
     /// the compact density (default off) — resolved from the RI-1
-    /// keys, carried for the pane's paint like `input_highlight`.
+    /// keys, carried for the pane's paint.
     pub input_descriptions: bool,
     pub input_badges: bool,
     pub input_icons: bool,
@@ -259,8 +249,6 @@ impl Default for TerminalOptions {
             autosuggestions_history_context: true,
             history_state_path: None,
             input_mode: InputMode::default(),
-            input_position: crate::core::config::InputPosition::default(),
-            input_highlight: true,
             input_descriptions: true,
             input_badges: true,
             input_icons: true,
@@ -605,7 +593,7 @@ pub enum PromptZone {
     #[default]
     Unfed,
     /// `133;A` seen with no `C` since — the shell is printing its
-    /// prompt; the editor may own the line.
+    /// prompt; the overlays may be live.
     InPrompt,
     /// `133;C` seen — the entered command is running; the
     /// integration arm stands aside to the grid-read.
@@ -700,6 +688,14 @@ pub struct Terminal {
     /// truth the routing reads: the resolved options flag, re-read
     /// at every `set_config`, so the mode switch flips live.
     input_mode: InputMode,
+    /// The menu's density (suggest-overlay SO-10): the resolved
+    /// `input_compact_rows` flag, re-read at every `set_config`. The
+    /// row budget reads it: a compact row is half a comfortable one.
+    input_compact_rows: bool,
+    /// Whether the argument hint line rides the menu (suggest-overlay
+    /// SO-10): the resolved `input_argument_hint` flag, re-read at
+    /// every `set_config`. The row budget pays for the line first.
+    input_argument_hint: bool,
     /// Whether the open menu's session is auto-managed
     /// (suggest-menu spec): an auto-opened menu closes itself when
     /// narrowing leaves one or nothing; a chord-opened one obeys
@@ -709,9 +705,10 @@ pub struct Terminal {
     /// One-shot accept-echo suppression (suggest-parity spec): a
     /// menu accept's write echoes back as a typed change, and the
     /// update that lands it must not re-collect, or the menu pops
-    /// over the line the accept just completed. The accept path
-    /// arms it; the first update that would re-collect consumes it,
-    /// so only a genuine new keystroke does.
+    /// over the line the accept just completed. The accept and fill
+    /// paths arm it; in rich mode the first update that sees a typed
+    /// change on a live pane consumes it, in `native` the popup's own
+    /// chain does — so only a genuine new keystroke re-collects.
     menu_accept_echo: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
@@ -960,6 +957,41 @@ impl PathListingCache {
     }
 }
 
+/// The prompt truth the gates read (rich-input spec): the shell's
+/// own mark first, and otherwise the grid read's verdict — an
+/// adopted suggest anchor is a prompt the grid can see.
+fn prompt_detection(zone: PromptZone, anchored: bool) -> suggest::PromptDetection {
+    match zone {
+        PromptZone::InPrompt => suggest::PromptDetection::Live,
+        PromptZone::InCommand | PromptZone::Unfed => {
+            if anchored {
+                suggest::PromptDetection::Live
+            } else {
+                suggest::PromptDetection::Unsure
+            }
+        }
+    }
+}
+
+/// The live-prompt gates over facts the caller already read
+/// (rich-input spec, RI-3). [`Terminal::overlay_gates`] gathers them
+/// itself; `update()` needs the live answer while it holds the host
+/// buffer's mutable borrow, where the builder's own reads are out of
+/// reach.
+fn gates_over(
+    focused: bool,
+    foreground_child: bool,
+    at_bottom: bool,
+    prompt_detection: suggest::PromptDetection,
+) -> suggest::OverlayGates {
+    suggest::OverlayGates {
+        focused,
+        no_foreground_child: !foreground_child,
+        at_bottom,
+        prompt_detection,
+    }
+}
+
 /// The token's parent directory, resolved absolute (path-suggest
 /// spec): everything through the last `/` — or the whole `~` when
 /// the token is the HOME root alone — with `~` expanded through the
@@ -994,7 +1026,9 @@ fn resolve_token_parent(token: &str, home: Option<&str>, cwd: Option<&Path>) -> 
 /// never be safely suggested) yields the empty listing. The
 /// is-a-directory bit is readdir's own `d_type` truth: a symlink to
 /// a directory completes without the `/`, the honest no-follow
-/// answer.
+/// answer. The listing is the directory's own entries only: `./` and
+/// `../` are never rows (suggest-overlay spec, SO-1); a token typed
+/// `../` reaches its parent through `resolve_token_parent`.
 fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
     let Some(read_dir) = fs::read_dir(dir).ok() else {
         return Vec::new();
@@ -1008,11 +1042,6 @@ fn read_sorted_entries(dir: &Path) -> Vec<(String, bool)> {
         })
         .collect::<Option<Vec<(String, bool)>>>()
         .unwrap_or_default();
-    // The chain (suggest-depth spec, LG4 / depth finding 6): std's
-    // readdir never yields them, so `.` and `..` prepend themselves
-    // — always, every listing, both tiers inheriting.
-    entries.push((".".to_string(), true));
-    entries.push(("..".to_string(), true));
     entries.sort_unstable();
     entries
 }
@@ -1688,6 +1717,8 @@ impl Terminal {
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             input_mode: options.input_mode,
+            input_compact_rows: options.input_compact_rows,
+            input_argument_hint: options.input_argument_hint,
             menu_auto_opened: false,
             menu_accept_echo: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
@@ -1969,63 +2000,39 @@ impl Terminal {
         self.notifier.notify(input);
     }
 
-    /// The editor's live-prompt gates (rich-input spec, RI-3): the
-    /// same facts the ghost lane reads — focus, a fresh foreground
-    /// check, the viewport's bottom — plus the prompt truth: the
-    /// shell's own mark first (shell-integration spec — zone
-    /// `InPrompt` is `Live` with no grid-read at all, the OQ-4
-    /// narrowing), and otherwise the grid-read's verdict unchanged —
-    /// an adopted suggest anchor is a prompt the grid can see
-    /// (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
-    pub fn editor_gates(&self) -> editor::Gates {
-        let at_bottom = {
-            let term = self.term.lock();
-            let grid = term.grid();
-            grid.display_offset() == 0 && grid.cursor.point.line == grid.bottommost_line()
-        };
-        let prompt_detection = match self.prompt_zone {
-            PromptZone::InPrompt => editor::PromptDetection::Live,
-            PromptZone::InCommand | PromptZone::Unfed => {
-                if self.suggest.anchored() {
-                    editor::PromptDetection::Live
-                } else {
-                    editor::PromptDetection::Unsure
-                }
-            }
-        };
-        editor::Gates {
-            focused: self.is_focused,
-            no_foreground_child: !self.foreground_child_running(),
+    /// The live-prompt gates (rich-input spec, RI-3; the overlay
+    /// lane's from suggest-overlay SO-7): the same facts the ghost
+    /// lane reads — focus, a fresh foreground check, the viewport at
+    /// the bottom of the scrollback — plus the prompt truth: the
+    /// shell's own mark first (shell-integration spec — zone `InPrompt`
+    /// is `Live` with no grid-read at all, the OQ-4 narrowing), and
+    /// otherwise the grid-read's verdict unchanged — an adopted
+    /// suggest anchor is a prompt the grid can see (`Live`); none yet
+    /// is `Unsure`, and unsure hides (OQ-4).
+    pub fn overlay_gates(&self) -> suggest::OverlayGates {
+        // The viewport gate is the scrollback's, not the cursor row's
+        // (the 2026-10-24 fresh-terminal ruling, the ghost lane's
+        // own): a new tab's first prompt — and every prompt after a
+        // `clear` — sits at the top of an unfinished screen with the
+        // viewport at the bottom of its (short) history. Reading the
+        // bottom row there stands the overlays aside at exactly the
+        // prompt a fresh tab opens on.
+        let at_bottom = self.term.lock().grid().display_offset() == 0;
+        gates_over(
+            self.is_focused,
+            self.foreground_child_running(),
             at_bottom,
-            prompt_detection,
-        }
+            prompt_detection(self.prompt_zone, self.suggest.anchored()),
+        )
     }
 
-    /// The routing decision (rich-input spec, RI-3): whether the
-    /// editor owns the line for a keystroke arriving right now — the
-    /// mode and the gates in one answer. `native` never opens the
-    /// lane (the bare-mode pin), whatever the gates say.
-    pub fn editor_owns_line(&self) -> bool {
-        self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
-    }
-
-    /// Whether the prompt line is the rich editor's (rich-input
-    /// RI-4): the mode flag as the paint-side gates read it — the
-    /// grid's own ghost and menu overlays stand down in rich mode
-    /// (the strip carries them).
-    pub fn rich_input(&self) -> bool {
-        self.input_mode == InputMode::Rich
-    }
-
-    /// Enter's execution (rich-input spec): PTY-write the line plus
-    /// the single newline byte — the shell keeps its line
-    /// discipline, echo, and history (the record's deliberate
-    /// divergence from Warp's block render). The echo handoff rides
-    /// SP3's one-shot: the update that lands the shell's echo of
-    /// this line must not re-collect the auto-pop lane over it.
-    pub fn editor_execute(&mut self, line: &str) {
-        self.menu_accept_echo = true;
-        self.input_no_scroll(format!("{line}\n").into_bytes());
+    /// The overlay lane's one predicate (suggest-overlay spec): rich
+    /// mode and the four live-prompt gates, the paint, the key
+    /// routing, and the update's close all asking it, so a menu state
+    /// left open behind a running program is never consulted.
+    /// `native` is never live, whatever the gates say.
+    pub fn overlays_live(&self) -> bool {
+        self.input_mode == InputMode::Rich && suggest::overlays_live(&self.overlay_gates())
     }
 
     pub fn working_directory(&self) -> Option<PathBuf> {
@@ -2795,6 +2802,15 @@ impl Terminal {
         self.menu.open(rows)
     }
 
+    /// Test seam only: open the menu over given rows, whatever the
+    /// screen says. The paint's pins stage a showing menu without a
+    /// typed line; the runtime's openers are [`Self::menu_open`] and
+    /// the auto-popup.
+    pub fn stage_menu(&mut self, rows: Vec<suggest::MenuCandidate>) {
+        self.menu_auto_opened = false;
+        self.menu.open(rows);
+    }
+
     /// Whether the completion menu shows.
     pub fn menu_is_open(&self) -> bool {
         self.menu.is_open()
@@ -2826,8 +2842,8 @@ impl Terminal {
     }
 
     /// One menu-scoped press (suggest-menu spec): the pure
-    /// transition, with an accept's or a fill's suffix written
-    /// straight through the one funnel — typed characters via
+    /// transition, with an accept's suffix written straight through
+    /// the one funnel — typed characters via
     /// `input_no_scroll`, never a paste. The typed segment the Tab
     /// fill and the Enter equality read is scraped at key-press
     /// frequency (never per frame), the same carve
@@ -2842,7 +2858,8 @@ impl Terminal {
                 .unwrap_or_default()
                 .to_owned()
         };
-        match self.menu.press(key, &typed) {
+        let visible_rows = self.menu_visible_rows();
+        match self.menu.press(key, &typed, visible_rows) {
             suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
                 // The write's echo will read as a typed change — arm
                 // the one-shot suppression (suggest-parity spec).
@@ -2851,6 +2868,60 @@ impl Terminal {
             }
             _ => {}
         }
+    }
+
+    /// The argument hint line the menu carries (suggest-overlay
+    /// SO-10): `None` while the toggle is off, nothing is typed, or
+    /// no spec carries the typed command word. The capture paints
+    /// it, the row budget pays for it.
+    pub fn menu_hint_line(&self) -> Option<(String, Option<String>)> {
+        self.input_argument_hint
+            .then(|| {
+                self.typed_text()
+                    .split_whitespace()
+                    .next()
+                    .and_then(|command| self.menu_hint(command))
+            })
+            .flatten()
+    }
+
+    /// The menu's row budget for the pane as it stands
+    /// (suggest-overlay SO-10): the screen's rows by the cell height
+    /// are the pane, the density makes the row, the hint line is
+    /// paid for first ([`suggest::menu_visible_rows`]). The scroll
+    /// window and the pane's own window both read it, so a resize
+    /// moves the menu's budget with the grid.
+    pub fn menu_visible_rows(&self) -> usize {
+        let cell_h = self.size().cell_height;
+        let screen_rows = self.term.lock().grid().screen_lines();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "screen rows are far below f32's mantissa: exact"
+        )]
+        let pane_h = cell_h * screen_rows as f32;
+        let hint_h = if self.menu_hint_line().is_some() {
+            suggest::menu_hint_height(cell_h)
+        } else {
+            0.
+        };
+        suggest::menu_visible_rows(
+            pane_h,
+            suggest::menu_row_height(cell_h, self.input_compact_rows),
+            hint_h,
+        )
+    }
+
+    /// The typed text before the cursor on the screen's line, the
+    /// adopted anchor stripped (suggest-overlay spec): the text the
+    /// pane's overlays read, the same carve [`Self::menu_press`]
+    /// presses with. Empty at a bare prompt and on a line that left
+    /// the anchor.
+    pub fn typed_text(&self) -> String {
+        let (before_cursor, ..) = self.scrape_cursor_line();
+        self.suggest
+            .typed_segment(&before_cursor)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// Whether the typed line already equals the menu's selected
@@ -2867,237 +2938,71 @@ impl Terminal {
         self.menu.selected_equals(typed)
     }
 
-    // --- the rich-input editor lane (rich-input spec, RI-5): the
-    // parity machinery re-targeted from the grid's cursor line to
-    // the editor's buffer — the same suggest state, the same menu,
-    // fed editor facts; every write returns to the pane instead of
-    // the PTY, because the editor owns the line.
-
-    /// One editor keystroke's suggest step (rich-input RI-5): the
-    /// observation built from the owned line (the pane calls this
-    /// after every buffer mutation), stepping the same state machine
-    /// the grid lane steps — the ghost and the anchor bookkeeping
-    /// ride it unchanged. `after_blank` is the caret-at-line-end
-    /// fact the auto-popup's line-end gate reads. Any showing menu —
-    /// the auto-pop's own or a Tab-opened one — re-collects fresh
-    /// rows on the typed change (no floor: the Tab opener opened
-    /// without one), closing when no row qualifies; the auto-pop
-    /// itself keeps its gates (focused, the line end, the two-char
-    /// floor, a qualifying row) and never opens over a showing menu.
-    /// No echo one-shot on this lane — an accept's insert flows
-    /// through the buffer (the re-collect is wanted), and
-    /// execution's echo arrives on the grid lane already suppressed.
-    /// The editor lane's line bridge (rich-input RI-5): the grid
-    /// lane's before-cursor text is the anchor plus the typed
-    /// segment — the editor's buffer is the segment alone — so the
-    /// lane's entry points rebuild the grid's shape before the
-    /// suggest state carves.
-    fn editor_grid_line(&self, buffer: &str) -> String {
-        let mut line = self.suggest.anchor().unwrap_or_default().to_string();
-        line.push_str(buffer);
-        line
-    }
-
-    pub fn editor_step(&mut self, before_cursor: &str, after_blank: bool) {
-        let line = self.editor_grid_line(before_cursor);
-        let before_cursor = line.as_str();
-        let typed_changed = before_cursor != self.suggest_last_before_cursor;
-        if typed_changed {
-            self.suggest_typed_at = Instant::now();
-            self.suggest_last_before_cursor = before_cursor.to_string();
+    /// The overlay lane's Tab while the menu shows (suggest-overlay
+    /// spec, SO-3): the fill, written to the PTY. The typed word is
+    /// scraped off the screen, the decision is [`suggest::tab_fill`]'s
+    /// over the menu's own rows (each tier anchored at its own label,
+    /// [`suggest::fill_continuation`]), and a fill's extension goes through
+    /// [`Self::input_no_scroll`]: typed characters, never a paste.
+    /// One row standing closes the menu; otherwise the rows
+    /// re-collect in place over the extended line, the one the shell
+    /// is about to echo (OQ-2), so the menu never waits on the echo's
+    /// timing. With no common extension the selection steps. Every
+    /// fill arms the echo one-shot: the write's echo reads as a
+    /// typed change, and it must neither re-collect a second time nor
+    /// re-open a menu the fill closed. A closed menu is a spent one:
+    /// nothing happens.
+    pub fn menu_tab(&mut self) {
+        if !self.menu.is_open() {
+            return;
         }
-        let paths_eligible = self.paths_eligible();
-        let working_directory = self.working_directory();
-        let generator_sets = self.generator.sets_for(working_directory.as_deref());
-        let typed = self.suggest.typed_segment(before_cursor);
-        let path_listing = self.path_cache.listing_for(
-            self.autosuggestions_enabled && self.autosuggestions_paths_enabled && paths_eligible,
-            suggest::path_token(typed),
-            self.spawn_home.as_deref(),
-            working_directory.as_deref(),
-        );
-        let columns = self.term.lock().grid().columns();
-        let observation = suggest::Observation {
-            enabled: self.autosuggestions_enabled,
-            paths_eligible,
-            paths_enabled: self.autosuggestions_paths_enabled,
-            path_listing,
-            commands_enabled: self.autosuggestions_commands_enabled,
-            specs_enabled: self.autosuggestions_specs_enabled,
-            aliases: &self.autosuggestions_aliases,
-            specs_table: &self.autosuggestions_specs_table,
-            command_catalog: &self.command_catalog,
-            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
-                branches: &sets.branches,
-                tags: &sets.tags,
-                files: &sets.files,
-            }),
-            focused: self.is_focused,
-            foreground_child: false,
-            display_offset: 0,
-            cursor_on_bottom_row: true,
-            columns,
-            cursor_column: before_cursor.chars().count(),
-            before_cursor,
-            after_cursor_blank: after_blank,
-            fresh_prompt: false,
-            delay_ms: self.autosuggestions_delay_ms,
-            typed_idle_ms: 0,
-            working_cwd: working_directory.as_deref().and_then(Path::to_str),
-            history_context: self.autosuggestions_history_context,
-            menu_fuzzy: self.autosuggestions_menu_fuzzy,
-            env_names: &self.spawn_env_names,
-        };
-        suggest::step(&observation, &mut self.suggest);
-        // The store's write side, the grid lane's own rule: a commit
-        // under the toggle merges into the app-global store file.
-        if let Some((command, cwd)) = self.suggest.take_store_commit()
-            && let Err(err) =
-                save_history_store_commit(&self.history_state_path, &command, cwd.as_deref())
-        {
-            log::warn!("failed to persist history store: {err}");
-        }
-        // The auto-pop and the open menu's re-collect (suggest-parity
-        // spec): the editor's step is the typed change itself. The
-        // re-collect serves every showing menu — the Tab-opened one
-        // included, `menu_auto_opened` recording only which opener
-        // opened, never gating the freshness — because frozen rows
-        // under a moving line leave Tab filling and cycling against
-        // a set that no longer matches the typed segment.
-        if typed_changed {
-            let typed = self.suggest.typed_segment(before_cursor);
-            if self.menu.is_open() {
-                // A fresh qualifying set lands in place; nothing left
-                // to insert — or nothing typed at all — closes the
-                // menu, the manual lane included.
-                if let Some(typed) = typed {
-                    let collected = suggest::candidates(typed, &self.suggest, &observation);
-                    if collected.iter().any(|row| !row.suffix.is_empty()) {
-                        self.menu.open(collected);
-                        return;
-                    }
-                }
-                self.menu.close();
-                self.menu_auto_opened = false;
-            } else if self.autosuggestions_menu_auto
-                && self.autosuggestions_menu_enabled
-                && self.autosuggestions_enabled
-                && observation.focused
-                && after_blank
-                && let Some(typed) = typed
-                && typed.chars().count() >= 2
-            {
-                let collected = suggest::candidates(typed, &self.suggest, &observation);
-                if collected.iter().any(|row| !row.suffix.is_empty()) {
-                    self.menu_auto_opened = true;
-                    self.menu.open(collected);
-                }
-            }
-        }
-    }
-
-    /// One menu press from the editor lane (rich-input RI-5): the
-    /// pure transition applied, the resulting insert returned for the
-    /// pane to place in the buffer — the grid lane writes bytes
-    /// (`menu_press`); the editor owns the line.
-    pub fn editor_menu_press(
-        &mut self,
-        key: suggest::MenuKey,
-        before_cursor: &str,
-    ) -> editor::MenuPress {
-        let line = self.editor_grid_line(before_cursor);
-        let typed = self
+        let (before_cursor, ..) = self.scrape_cursor_line();
+        let segment = self
             .suggest
-            .typed_segment(&line)
+            .typed_segment(&before_cursor)
             .unwrap_or_default()
-            .to_owned();
-        match self.menu.press(key, &typed) {
-            suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
-                editor::MenuPress::Insert(suffix)
+            .to_string();
+        match suggest::tab_fill(self.menu.rows(), &segment) {
+            suggest::TabFill::Insert { beyond, close } => {
+                self.menu_accept_echo = true;
+                self.input_no_scroll(beyond.clone().into_bytes());
+                if close {
+                    self.menu.close();
+                    return;
+                }
+                let extended_line = format!("{before_cursor}{beyond}");
+                let extended = format!("{segment}{beyond}");
+                let rows = self.menu_candidates_over(&extended, &extended_line, true);
+                if rows.iter().any(|row| !row.suffix.is_empty()) {
+                    self.menu.open(rows);
+                } else {
+                    self.menu.close();
+                }
             }
-            suggest::MenuOutcome::Execute => editor::MenuPress::Execute,
-            _ => editor::MenuPress::Noop,
+            suggest::TabFill::Cycle => {
+                let visible_rows = self.menu_visible_rows();
+                self.menu
+                    .press(suggest::MenuKey::Down, &segment, visible_rows);
+            }
         }
-    }
-
-    /// The ghost's accept from the editor lane (rich-input RI-5):
-    /// the gained suffix (whole, or the first word) returned for the
-    /// buffer — the grid lane writes bytes (`accept_suggestion`);
-    /// the editor owns the line.
-    pub fn editor_accept_suggestion(&mut self, kind: AcceptKind) -> Option<String> {
-        let suffix = self.suggest.take_suffix()?;
-        let gained = match kind {
-            AcceptKind::Full => suffix,
-            AcceptKind::Word => suggest::split_word(&suffix).0.to_string(),
-        };
-        (!gained.is_empty()).then_some(gained)
-    }
-
-    /// The history-navigation slice (rich-input RI-5): the ring's
-    /// commands newest-first, read fresh at each navigation entry.
-    pub fn editor_history(&self) -> Vec<String> {
-        self.suggest.history_newest_first()
-    }
-
-    /// The two-stage Enter's pre-check from the editor lane
-    /// (rich-input RI-5): whether the owned buffer's typed segment
-    /// already equals the menu's selected row.
-    pub fn editor_menu_selected_equals(&self, buffer: &str) -> bool {
-        let line = self.editor_grid_line(buffer);
-        let Some(typed) = self.suggest.typed_segment(&line) else {
-            return false;
-        };
-        self.menu.selected_equals(typed)
-    }
-
-    /// Whether a command name is known (rich-input RI-6, the
-    /// highlighter's rule, the record's finding 6): the specs table
-    /// or the spawn-time PATH catalog carries it. A false answer is
-    /// the unknown-command mark — the dashed red underline.
-    pub fn command_known(&self, name: &str) -> bool {
-        self.autosuggestions_specs_table
-            .iter()
-            .any(|spec| spec.carries_name(name))
-            || self.command_catalog.iter().any(|known| known == name)
     }
 
     /// The argument hint line's content (rich-input RI-7): the
     /// command's canonical name and its corpus description, `None`
     /// when no spec carries the name.
-    pub fn editor_menu_hint(&self, command: &str) -> Option<(String, Option<String>)> {
+    pub fn menu_hint(&self, command: &str) -> Option<(String, Option<String>)> {
         suggest::spec_hint(&self.autosuggestions_specs_table, command)
     }
 
-    /// The completion menu's open attempt from the editor lane
-    /// (rich-input RI-5, the conditioned opener's backing): the soft
-    /// trigger's collection over the owned line — the same
-    /// eligibility minus the grid scrape, the editor's own gates
-    /// already holding.
-    pub fn editor_menu_open(&mut self, before_cursor: &str) -> bool {
-        self.menu_auto_opened = false;
-        self.generator
-            .revalidate(self.working_directory().as_deref());
-        if !self.autosuggestions_menu_enabled
-            || !self.autosuggestions_enabled
-            || !self.is_focused
-            || self.foreground_child_running()
-        {
-            return false;
-        }
-        let line = self.editor_grid_line(before_cursor);
-        let Some(typed) = self.suggest.typed_segment(&line) else {
-            return false;
-        };
-        let mut rows = self.menu_candidates_over(typed, &line, true);
-        if self.autosuggestions_specs_loading {
-            rows.insert(0, suggest::loading_candidate());
-        }
-        self.menu.open(rows)
-    }
-
-    /// The candidate collection over editor facts (rich-input
-    /// RI-5): [`Self::menu_candidates`]'s build with the owned line
-    /// in place of the grid scrape — one shape, two lanes.
+    /// The candidate collection over given line facts
+    /// (suggest-overlay spec): the one collector the opener and the
+    /// re-collect both read. `typed` is the typed segment the rows
+    /// answer, `before_cursor` the line it was carved from (the
+    /// opener's is scraped off the screen, a fill's is the line the
+    /// shell is about to echo). While the completion files still
+    /// load on a background thread the menu leads with an honest
+    /// "wait" row (async-completions); history, path, catalog and
+    /// generator rows answer normally.
     fn menu_candidates_over(
         &mut self,
         typed: &str,
@@ -3145,7 +3050,11 @@ impl Terminal {
             menu_fuzzy: self.autosuggestions_menu_fuzzy,
             env_names: &self.spawn_env_names,
         };
-        suggest::candidates(typed, &self.suggest, &observation)
+        let mut rows = suggest::candidates(typed, &self.suggest, &observation);
+        if self.autosuggestions_specs_loading {
+            rows.insert(0, suggest::loading_candidate());
+        }
+        rows
     }
 
     /// The cursor line's reduced facts (suggest-menu spec): the
@@ -3197,13 +3106,12 @@ impl Terminal {
         )
     }
 
-    /// The menu's candidate collection (suggest-menu spec): a fresh
-    /// observation under the ghost's eligibility chain minus its
-    /// single-choice display gates — the same reduced facts
-    /// `update()` builds each damage cycle, mirrored here as a
-    /// second cursor-line scrape at key-press frequency (never per
-    /// frame) so the ghost's own path stays untouched. Ineligible is
-    /// the empty set: the soft trigger's decline.
+    /// The menu's candidate collection (suggest-menu spec): the
+    /// opener's rows, the cursor line scraped off the screen and read
+    /// through [`Self::menu_candidates_over`] — a second scrape at
+    /// key-press frequency (never per frame), so the ghost's own path
+    /// stays untouched. Ineligible is the empty set: the opener's
+    /// decline.
     fn menu_candidates(&mut self) -> Vec<suggest::MenuCandidate> {
         if !self.autosuggestions_menu_enabled || !self.autosuggestions_enabled || !self.is_focused {
             return Vec::new();
@@ -3211,8 +3119,7 @@ impl Terminal {
         if self.foreground_child_running() {
             return Vec::new();
         }
-        let (before_cursor, after_cursor_blank, display_offset, columns, cursor_column) =
-            self.scrape_cursor_line();
+        let (before_cursor, after_cursor_blank, display_offset, ..) = self.scrape_cursor_line();
         if display_offset != 0 {
             return Vec::new();
         }
@@ -3224,59 +3131,7 @@ impl Terminal {
         if typed.is_empty() {
             return Vec::new();
         }
-        let paths_eligible = self.paths_eligible();
-        let working_directory = self.working_directory();
-        // The generator provider's cached sets (suggest-generators
-        // spec), served spawn-free beside the cwd truth: the fetch
-        // happens only on the ruled triggers, never on this path.
-        let generator_sets = self.generator.sets_for(working_directory.as_deref());
-        let path_listing = self.path_cache.listing_for(
-            self.autosuggestions_paths_enabled && paths_eligible,
-            suggest::path_token(Some(typed)),
-            self.spawn_home.as_deref(),
-            working_directory.as_deref(),
-        );
-        let observation = suggest::Observation {
-            enabled: self.autosuggestions_enabled,
-            paths_eligible,
-            paths_enabled: self.autosuggestions_paths_enabled,
-            path_listing,
-            commands_enabled: self.autosuggestions_commands_enabled,
-            specs_enabled: self.autosuggestions_specs_enabled,
-            aliases: &self.autosuggestions_aliases,
-            specs_table: &self.autosuggestions_specs_table,
-            command_catalog: &self.command_catalog,
-            generator_candidates: generator_sets.as_ref().map(|sets| suggest::GeneratorSets {
-                branches: &sets.branches,
-                tags: &sets.tags,
-                files: &sets.files,
-            }),
-            focused: self.is_focused,
-            foreground_child: false,
-            display_offset: 0,
-            cursor_on_bottom_row: false,
-            columns,
-            cursor_column,
-            before_cursor: &before_cursor,
-            after_cursor_blank,
-            fresh_prompt: false,
-            delay_ms: self.autosuggestions_delay_ms,
-            typed_idle_ms: 0,
-            working_cwd: working_directory.as_deref().and_then(Path::to_str),
-            history_context: self.autosuggestions_history_context,
-            menu_fuzzy: self.autosuggestions_menu_fuzzy,
-            env_names: &self.spawn_env_names,
-        };
-        let mut rows = suggest::candidates(typed, &self.suggest, &observation);
-        // The loading row (async-completions): while the completion
-        // files still load on a background thread, the menu leads
-        // with an honest "wait" row instead of a specs tier that
-        // has not arrived. History, path, catalog, and generator
-        // rows still answer normally.
-        if self.autosuggestions_specs_loading {
-            rows.insert(0, suggest::loading_candidate());
-        }
-        rows
+        self.menu_candidates_over(typed, &before_cursor, after_cursor_blank)
     }
 
     /// The active reveal deadline (suggest-delay spec): the instant
@@ -3612,8 +3467,13 @@ impl Terminal {
         if self.input_mode != options.input_mode {
             // The mode truth (rich-input spec, RI-3): the switch
             // flips live on this pass — the routing reads it at the
-            // next keystroke, and nothing else moves.
+            // next keystroke. A flip to native spends a showing menu
+            // (suggest-overlay SO-4): nothing paints it there, and
+            // its keys are the shell's.
             self.input_mode = options.input_mode;
+            if self.input_mode == InputMode::Native {
+                self.menu.close();
+            }
             update = true;
         }
 
@@ -3654,6 +3514,16 @@ impl Terminal {
 
         if self.autosuggestions_menu_auto != options.autosuggestions_menu_auto {
             self.autosuggestions_menu_auto = options.autosuggestions_menu_auto;
+            update = true;
+        }
+
+        if self.input_compact_rows != options.input_compact_rows {
+            self.input_compact_rows = options.input_compact_rows;
+            update = true;
+        }
+
+        if self.input_argument_hint != options.input_argument_hint {
+            self.input_argument_hint = options.input_argument_hint;
             update = true;
         }
 
@@ -3984,18 +3854,76 @@ impl Terminal {
                     if observation.display_offset != 0 && self.menu.is_open() {
                         self.menu.close();
                     }
-                    // The auto-popup gate (suggest-parity spec, the
-                    // record's as-you-type path): with the key on, an
-                    // update whose typed segment just changed — at the
-                    // line end, past the two-character floor — collects
-                    // the providers' full sets. A single qualifying row
-                    // pops the menu without the chord now, and an
-                    // auto-opened one re-collects fresh rows in place
-                    // (only an empty set closes it). A chord- or
-                    // Tab-opened session is the user's: only its own
-                    // rules touch it. Default off never runs a byte of
-                    // this — the chord is today's only opener (SP4
-                    // flips the default).
+                    // The overlay lane's live fact for this update
+                    // (suggest-overlay spec): rich mode and the four
+                    // live-prompt gates, read off facts the update
+                    // already holds.
+                    let rich_live = self.input_mode == InputMode::Rich
+                        && suggest::overlays_live(&gates_over(
+                            self.is_focused,
+                            foreground_child,
+                            observation.display_offset == 0,
+                            prompt_detection(self.prompt_zone, self.suggest.anchored()),
+                        ));
+                    // The accept-echo suppression (suggest-parity
+                    // spec): a menu accept's write echoes back as a
+                    // typed change, and the update that lands it must
+                    // not re-collect, or the menu pops over the line
+                    // the accept just completed. One-shot; a fill's
+                    // write arms it too (suggest-overlay SO-3). In
+                    // rich mode the first update that sees a typed
+                    // change on a live pane spends it, whichever way
+                    // the popup switch stands: spent only inside the
+                    // popup's chain, it lingered with the popup off
+                    // and swallowed the first two-character keystroke
+                    // after the switch was turned on. `native` keeps
+                    // the chain's own spend, where nothing paints the
+                    // menu.
+                    let echo_spent =
+                        rich_live && typed_changed && std::mem::take(&mut self.menu_accept_echo);
+                    // The overlays are the live prompt's
+                    // (suggest-overlay SO-4): when the gates drop in
+                    // rich mode (a program taking the foreground, a
+                    // paste that runs a line), a showing menu closes.
+                    // The scroll, resize and focus moments each close
+                    // one already; the foreground is the one that had
+                    // no moment.
+                    if self.input_mode == InputMode::Rich && !rich_live && self.menu.is_open() {
+                        self.menu.close();
+                    }
+                    // Every showing menu follows the line
+                    // (suggest-overlay SO-4): on a typed change in a
+                    // live rich pane the rows re-collect with no
+                    // floor, however the menu opened (a Tab-opened one
+                    // included), and close when no row has anything
+                    // left to insert. Frozen rows under a moving line
+                    // leave Tab filling and cycling against a set that
+                    // no longer matches the typed segment. No line-end
+                    // gate rides it: a cursor moved off the line's end
+                    // closes the menu by its own key first.
+                    if rich_live && typed_changed && !echo_spent && self.menu.is_open() {
+                        let typed = self
+                            .suggest
+                            .typed_segment(observation.before_cursor)
+                            .unwrap_or_default();
+                        let collected = suggest::candidates(typed, &self.suggest, &observation);
+                        if collected.iter().any(|row| !row.suffix.is_empty()) {
+                            self.menu.open(collected);
+                        } else {
+                            self.menu.close();
+                        }
+                    }
+                    // The auto-popup's open rule (suggest-parity spec,
+                    // the record's as-you-type path): with the key on,
+                    // an update whose typed segment just changed (at
+                    // the line end, past the two-character floor)
+                    // collects the providers' full sets, and a single
+                    // qualifying row pops the menu. In rich mode the
+                    // rule opens closed menus alone; a showing one is
+                    // the re-collect's above. `native` keeps its whole
+                    // old chain: an auto-opened menu re-collects fresh
+                    // rows in place and closes on nothing left, and a
+                    // Tab-opened one obeys only its own rules.
                     //
                     // The typed-changed gate is the menu's own keys'
                     // survival: every menu-scoped press repaints
@@ -4007,14 +3935,6 @@ impl Terminal {
                     // never stuck, and the standing menu kept
                     // consuming Enter as the next accept). Nothing
                     // changed, nothing to re-evaluate.
-                    //
-                    // The accept-echo suppression (suggest-parity
-                    // spec): a menu accept's write echoes back as a
-                    // typed change — the update that lands it must not
-                    // re-collect, or the menu pops over the line the
-                    // accept just completed. One-shot, consumed by the
-                    // first update that would re-collect, so only a
-                    // genuine new keystroke does.
                     if self.autosuggestions_menu_auto
                         && self.autosuggestions_menu_enabled
                         && self.autosuggestions_enabled
@@ -4025,7 +3945,8 @@ impl Terminal {
                         && typed_changed
                         && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
                         && typed.chars().count() >= 2
-                        && !std::mem::take(&mut self.menu_accept_echo)
+                        && !echo_spent
+                        && (rich_live || !std::mem::take(&mut self.menu_accept_echo))
                     {
                         let collected = suggest::candidates(typed, &self.suggest, &observation);
                         // The qualifying floor (suggest-depth spec):
@@ -4035,7 +3956,11 @@ impl Terminal {
                         // alone, so a fully-typed command stays
                         // quiet.
                         let qualifying = collected.iter().any(|row| !row.suffix.is_empty());
-                        if !qualifying {
+                        if rich_live {
+                            if qualifying && !self.menu.is_open() {
+                                self.menu.open(collected);
+                            }
+                        } else if !qualifying {
                             if self.menu.is_open() && self.menu_auto_opened {
                                 self.menu.close();
                             }

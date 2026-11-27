@@ -403,13 +403,6 @@ impl Suggest {
     /// the committed command and its cwd, when the toggle armed one —
     /// consumed exactly once by the engine's store write after each
     /// step.
-    /// The ring's commands, newest-first (rich-input RI-5): the
-    /// editor's history-navigation slice, read fresh at each
-    /// navigation entry.
-    pub(crate) fn history_newest_first(&self) -> Vec<String> {
-        self.ring.iter().rev().cloned().collect()
-    }
-
     pub(crate) fn take_store_commit(&mut self) -> Option<(String, Option<String>)> {
         self.store_commit.take()
     }
@@ -2057,10 +2050,8 @@ fn path_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> {
     for (name, is_dir) in listing {
         // The dotfile convention gates matching itself, every rung
         // alike (the ghost's own rule): a dotfile shows only for a
-        // dot-prefixed component — except the chain, which Warp
-        // always carries (depth finding 6): `.` and `..` bypass the
-        // rule.
-        if !component.starts_with('.') && name.starts_with('.') && name != "." && name != ".." {
+        // dot-prefixed component.
+        if !component.starts_with('.') && name.starts_with('.') {
             continue;
         }
         let label = if *is_dir {
@@ -2216,10 +2207,6 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
     ladder_order(staged)
 }
 
-/// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
-/// eight rows with a scroll offset — Warp/VS Code show ~10; eight
-/// fits the drop-down's short surface. Shared by the model's scroll
-/// arithmetic and the renderer's window.
 /// The top-level spec a command name resolves to (rich-input
 /// RI-7): its hint pair, `None` when no spec carries the name.
 pub(crate) fn spec_hint(table: &[SpecCommand], command: &str) -> Option<(String, Option<String>)> {
@@ -2229,7 +2216,49 @@ pub(crate) fn spec_hint(table: &[SpecCommand], command: &str) -> Option<(String,
         .map(SpecCommand::hint_pair)
 }
 
+/// The menu's row budget's ceiling (suggest-menu spec, OQ-2, locked):
+/// eight rows — Warp/VS Code show ~10; eight fits the drop-down's
+/// short surface. Read by the budget function alone
+/// ([`menu_visible_rows`]) and the pins; the window itself follows
+/// the pane (suggest-overlay SO-10).
 pub const MENU_VISIBLE_ROWS: usize = 8;
+
+/// One menu row's height under the density switch (suggest-overlay
+/// SO-10): comfortable carries the description on its own line under
+/// the label (two text lines and a quarter cell of padding), compact
+/// one line and the same padding. Every vertical size is a fraction
+/// of the cell height, so the whole menu doubles when the cell does.
+#[must_use]
+pub fn menu_row_height(cell_h: f32, compact: bool) -> f32 {
+    cell_h * if compact { 1.25 } else { 2.25 }
+}
+
+/// The argument hint line's height over the panel (suggest-overlay
+/// SO-10): one text line and the padding, a compact row's own.
+#[must_use]
+pub fn menu_hint_height(cell_h: f32) -> f32 {
+    menu_row_height(cell_h, true)
+}
+
+/// How many rows the menu may show (suggest-overlay SO-10): at most
+/// [`MENU_VISIBLE_ROWS`], never past about half the pane once the
+/// hint line is paid for, and never below one — a pane too short for
+/// a whole row still lists one.
+#[must_use]
+pub fn menu_visible_rows(pane_h: f32, row_h: f32, hint_h: f32) -> usize {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the budget's ceiling is eight: exact in f32"
+    )]
+    let ceiling = MENU_VISIBLE_ROWS as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "floored and clamped into the budget's 1..=8 range before the cast"
+    )]
+    let fitting = ((pane_h / 2. - hint_h) / row_h).floor().clamp(1., ceiling) as usize;
+    fitting
+}
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —
@@ -2268,6 +2297,115 @@ pub(crate) enum MenuOutcome {
     /// the Enter bytes must reach the shell through the normal
     /// handler.
     Execute,
+}
+
+/// What the gates concluded about the prompt (rich-input OQ-4):
+/// `Live` is a prompt the gates can see; `Unsure` is anything they
+/// cannot decide — and unsure hides (a wrongly-shown overlay can
+/// insert into a program's input on an accept key; a hidden one only
+/// costs richness).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDetection {
+    Live,
+    Unsure,
+}
+
+/// The live-prompt gates (today's ghost gates, restated as contract
+/// by rich-input RI-3; the overlay lane's from suggest-overlay SO-7):
+/// all four must hold for the overlays to be live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayGates {
+    /// The surface holds keyboard focus.
+    pub focused: bool,
+    /// No foreground child owns the screen (the `tcgetpgrp` check).
+    pub no_foreground_child: bool,
+    /// The viewport sits at the bottom of the scrollback.
+    pub at_bottom: bool,
+    /// What the grid read concluded about the prompt.
+    pub prompt_detection: PromptDetection,
+}
+
+/// The overlays' decision under these gates: live only when every
+/// gate holds (unsure hides).
+#[must_use]
+pub fn overlays_live(gates: &OverlayGates) -> bool {
+    gates.focused
+        && gates.no_foreground_child
+        && gates.at_bottom
+        && gates.prompt_detection == PromptDetection::Live
+}
+
+/// One row's fill continuation against the current line
+/// (suggest-parity spec, the owner's 2026-11-24 reports): the bytes
+/// the row can still append at the cursor, derived per press, because
+/// the menu's rows may predate the line's edits. The anchor is the
+/// tier's own: a history label carries the whole typed segment; a
+/// path label is the bare listing entry, anchored at the token's
+/// final component (empty for the bare `~` root, and only while the
+/// token is path-shaped); the remaining tiers' labels begin with the
+/// trailing word (the catalog's command word, the walker's partial,
+/// the generator's token, the env name). `None` is a row that does
+/// not extend the line: it contributes nothing. A history row never
+/// rides the token: the token is the line's prefix only while the
+/// segment is one word long, and slicing past it on a multi-word line
+/// re-inserts bytes already typed.
+#[must_use]
+pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -> Option<&'a str> {
+    let anchor = match row.source {
+        SuggestionSource::History => typed,
+        SuggestionSource::Path if is_path_shaped(token) => match token.rfind('/') {
+            Some(idx) => &token[idx + 1..],
+            None => "",
+        },
+        _ => token,
+    };
+    row.label.strip_prefix(anchor)
+}
+
+/// Tab's decision while the menu shows (suggest-parity spec): the
+/// longest common prefix of the rows' continuations against the
+/// typed segment ([`fill_continuation`]), case-sensitively. A
+/// non-empty prefix is the fill, one row standing closing the menu;
+/// anything else is a plain cycle. Pure over the rows the engine
+/// exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabFill {
+    /// The text beyond what the typed line already holds, and
+    /// whether the menu closes after it (one row left standing).
+    Insert {
+        /// What the line gains.
+        beyond: String,
+        /// Whether one row alone stands under the filled word.
+        close: bool,
+    },
+    /// No common extension: cycle the selection.
+    Cycle,
+}
+
+/// Tab's fill-else-cycle over the showing rows ([`TabFill`]). A row
+/// with no continuation drops out; a line-equal row's empty
+/// continuation stays in and poisons the common prefix, so Tab over
+/// an already-filled line cycles rather than grows.
+#[must_use]
+pub fn tab_fill(rows: &[MenuCandidate], typed: &str) -> TabFill {
+    let token = trailing_token(typed);
+    let continuations: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| fill_continuation(row, typed, token))
+        .collect();
+    let Some((first, rest)) = continuations.split_first() else {
+        return TabFill::Cycle;
+    };
+    let lcp = rest.iter().fold(*first, |common, continuation| {
+        shared_prefix(common, continuation)
+    });
+    if lcp.is_empty() {
+        return TabFill::Cycle;
+    }
+    TabFill::Insert {
+        beyond: lcp.to_string(),
+        close: continuations.len() == 1,
+    }
 }
 
 /// The completion menu's state (suggest-menu spec): the open fact,
@@ -2364,19 +2502,20 @@ impl MenuState {
     /// One menu-scoped press's transition: navigate, accept, or
     /// close on any other key. `typed` is the line's typed segment —
     /// the anchor-stripped before-cursor text — which the Enter
-    /// equality reads. A closed menu answers [`MenuOutcome::Noop`] to
-    /// everything and stays closed.
-    pub(crate) fn press(&mut self, key: MenuKey, typed: &str) -> MenuOutcome {
+    /// equality reads. `visible_rows` is the pane's row budget, the
+    /// window the scroll follows. A closed menu answers
+    /// [`MenuOutcome::Noop`] to everything and stays closed.
+    pub(crate) fn press(&mut self, key: MenuKey, typed: &str, visible_rows: usize) -> MenuOutcome {
         if !self.open {
             return MenuOutcome::Noop;
         }
         match key {
             MenuKey::Up => {
-                self.move_up();
+                self.move_up(visible_rows);
                 MenuOutcome::Noop
             }
             MenuKey::Down => {
-                self.move_down();
+                self.move_down(visible_rows);
                 MenuOutcome::Noop
             }
             MenuKey::Accept => {
@@ -2422,9 +2561,9 @@ impl MenuState {
 
     /// Moves the selection up one row, wrapping from the first to
     /// the last (Warp's `cycle = true`, suggest-parity spec), the
-    /// scroll window following so the selection stays visible. An
-    /// empty menu declines.
-    fn move_up(&mut self) {
+    /// scroll window following so the selection stays visible inside
+    /// the `visible_rows` the pane affords. An empty menu declines.
+    fn move_up(&mut self, visible_rows: usize) {
         if self.rows.is_empty() {
             return;
         }
@@ -2433,29 +2572,32 @@ impl MenuState {
         } else {
             self.selected - 1
         };
-        self.follow_scroll();
+        self.follow_scroll(visible_rows);
     }
 
     /// Moves the selection down one row, wrapping from the last to
     /// the first (Warp's `cycle = true`, suggest-parity spec), the
-    /// scroll window following so the selection stays visible. An
-    /// empty menu declines.
-    fn move_down(&mut self) {
+    /// scroll window following so the selection stays visible inside
+    /// the `visible_rows` the pane affords. An empty menu declines.
+    fn move_down(&mut self, visible_rows: usize) {
         if self.rows.is_empty() {
             return;
         }
         self.selected = (self.selected + 1) % self.rows.len();
-        self.follow_scroll();
+        self.follow_scroll(visible_rows);
     }
 
     /// Keeps the selected row inside the visible window after a
     /// move: scrolled past the top edge pulls the window up, past
-    /// the bottom edge pushes it down.
-    fn follow_scroll(&mut self) {
+    /// the bottom edge pushes it down. The window is the pane's row
+    /// budget (suggest-overlay SO-10); a zero budget is read as one,
+    /// the floor the budget function itself keeps.
+    fn follow_scroll(&mut self, visible_rows: usize) {
+        let visible_rows = visible_rows.max(1);
         if self.selected < self.scroll {
             self.scroll = self.selected;
-        } else if self.selected >= self.scroll + MENU_VISIBLE_ROWS {
-            self.scroll = self.selected + 1 - MENU_VISIBLE_ROWS;
+        } else if self.selected >= self.scroll + visible_rows {
+            self.scroll = self.selected + 1 - visible_rows;
         }
     }
 }

@@ -29,11 +29,11 @@ use dropterm::core::font_list;
 use dropterm::core::profile::Profile;
 use dropterm::core::settings::{
     self, BlurDecision, ConfigKey, EDGE_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, H_ALIGN_OPTIONS,
-    INPUT_MODE_OPTIONS, INPUT_POSITION_OPTIONS, KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NAV_GROUPS,
-    NEW_TAB_CWD_OPTIONS, ProfileField, SettingsBuffer, SettingsPage, TAB_POSITION_OPTIONS,
-    TAB_TITLE_MODE_OPTIONS, THEME_PREFERENCE_OPTIONS, TextField, blur_decision, drawer_description,
-    dropdown_selected, etc_shells_content, page_section, page_title, profile_scheme_selected,
-    shell_dropdown_selected, shell_label, shell_picker_options, toggle_write,
+    INPUT_MODE_OPTIONS, KEYBOARD_MODE_OPTIONS, LAYER_OPTIONS, NAV_GROUPS, NEW_TAB_CWD_OPTIONS,
+    ProfileField, SettingsBuffer, SettingsPage, TAB_POSITION_OPTIONS, TAB_TITLE_MODE_OPTIONS,
+    THEME_PREFERENCE_OPTIONS, TextField, blur_decision, drawer_description, dropdown_selected,
+    etc_shells_content, page_section, page_title, profile_scheme_selected, shell_dropdown_selected,
+    shell_label, shell_picker_options, toggle_write,
 };
 use gpui::prelude::*;
 use gpui::{
@@ -95,7 +95,6 @@ const DROPDOWN_KEYS: &[ConfigKey] = &[
     ConfigKey::KeyboardMode,
     ConfigKey::ThemePreference,
     ConfigKey::InputMode,
-    ConfigKey::InputPosition,
 ];
 
 /// The control a section-hosted key renders. Every key a `Section`
@@ -117,8 +116,7 @@ pub(crate) fn control_kind(key: ConfigKey) -> ControlKind {
         | ConfigKey::Layer
         | ConfigKey::KeyboardMode
         | ConfigKey::ThemePreference
-        | ConfigKey::InputMode
-        | ConfigKey::InputPosition => ControlKind::Dropdown,
+        | ConfigKey::InputMode => ControlKind::Dropdown,
         ConfigKey::Args
         | ConfigKey::DefaultCwd
         | ConfigKey::ScrollbackLines
@@ -160,10 +158,6 @@ fn dropdown_options(key: ConfigKey) -> Vec<SharedString> {
             .map(|(_, label)| *label)
             .collect(),
         ConfigKey::InputMode => INPUT_MODE_OPTIONS.iter().map(|(_, label)| *label).collect(),
-        ConfigKey::InputPosition => INPUT_POSITION_OPTIONS
-            .iter()
-            .map(|(_, label)| *label)
-            .collect(),
         _ => Vec::new(),
     };
     labels.iter().map(|label| (*label).into()).collect()
@@ -1338,7 +1332,6 @@ fn toggle_state(key: ConfigKey, config: &DropTermConfig) -> bool {
         ConfigKey::InputGhost => config.input_ghost,
         ConfigKey::InputMenu => config.input_menu,
         ConfigKey::InputAutoPopup => config.input_auto_popup,
-        ConfigKey::InputHighlight => config.input_highlight,
         ConfigKey::InputDescriptions => config.input_descriptions,
         ConfigKey::InputBadges => config.input_badges,
         ConfigKey::InputIcons => config.input_icons,
@@ -2625,8 +2618,32 @@ mod tests {
         }
     }
 
+    /// The retired rich-input keys (suggest-overlay SO-9): no
+    /// section lists them, so no page renders a control for them. By
+    /// name, because the variants themselves are gone.
+    #[test]
+    fn no_page_lists_the_retired_input_keys() {
+        let listed: Vec<&str> = Section::ALL
+            .iter()
+            .flat_map(|section| section.keys().iter())
+            .map(|key| key.key_name())
+            .collect();
+        assert!(
+            listed.contains(&"input_mode"),
+            "the control: the mode's own row stands"
+        );
+        assert!(
+            !listed.contains(&"input_position"),
+            "the strip's dock has no control: {listed:?}"
+        );
+        assert!(
+            !listed.contains(&"input_highlight"),
+            "the highlight has no control: {listed:?}"
+        );
+    }
+
     /// The dispatch's classes spot-pinned: the pickers and the shell
-    /// control, the four sliders, the ten dropdowns, the seven texts,
+    /// control, the four sliders, the nine dropdowns, the seven texts,
     /// and one toggle representative — the full partition is the
     /// section-map tests' own exactly-once pin, and the dropdown
     /// set's own partition is `every_dropdown_key_has_a_built_state`.
