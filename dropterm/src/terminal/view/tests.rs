@@ -517,6 +517,29 @@ fn paint_until(
     }
 }
 
+/// The witness file's content once it has stopped growing (a third
+/// of a second quiet, five seconds at most): for a reader that
+/// writes as the bytes arrive, not a line at a time.
+fn poll_witness_quiet(sink: &std::path::Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut settled = String::new();
+    let mut quiet_for = 0;
+    while std::time::Instant::now() < deadline {
+        let read = std::fs::read_to_string(sink).unwrap_or_default();
+        if read == settled && !read.is_empty() {
+            quiet_for += 1;
+            if quiet_for >= 30 {
+                return read;
+            }
+        } else {
+            quiet_for = 0;
+            settled = read;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    settled
+}
+
 /// The witness file's first non-empty read (five seconds at most).
 fn poll_witness(sink: &std::path::Path) -> String {
     for _ in 0..500 {
@@ -630,6 +653,96 @@ fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpu
         "gi\x1b[C\n",
         "in native a Right press is the shell's own key while the engine shows {showing:?}: \
          the line gains the key's bytes and nothing of the suffix"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
+}
+
+// --- suggest-overlay, success criterion 1: at a live prompt in rich
+// --- mode, with no menu showing, every shell key is the shell's bytes ---
+
+/// The bytes the translation writes for the keys criterion 1 names,
+/// in the order the pin dispatches them.
+const THE_SHELL_KEYS_BYTES: &str = concat!(
+    "a", "\x1b[A", "\x1b[B", "\x01", "\x17", "\x15", "\x1a", "\x04", "\x12",
+);
+
+#[gpui::test]
+fn every_shell_key_reaches_the_shell_in_rich_mode(cx: &mut gpui::TestAppContext) {
+    // The point of the module: in rich mode, with the overlays live
+    // and no menu showing, printables, Up, Down, Ctrl+A, Ctrl+W,
+    // Ctrl+U, Ctrl+Z, Ctrl+D, Ctrl+R, Enter and a multi-line paste
+    // all reach the PTY as their bytes. The witness's tty goes raw
+    // with echo off once the prompt has printed: the prompt still
+    // anchors the overlays (the stage asserts they are live), and
+    // what `cat` records is exactly what the pane wrote, with no
+    // line discipline in between.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let config = rich_config();
+    let sink = std::env::temp_dir().join(format!(
+        "dropterm-rich-shell-keys-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&sink);
+    let request = PaneRequest {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "printf 'P$ '; stty raw -echo 2>/dev/null; exec cat > '{}'",
+                sink.display()
+            ),
+        ],
+        cwd: None,
+        env: std::collections::HashMap::default(),
+        spawned_as: "sh".to_string(),
+        profile_id: None,
+        appearance: PaneAppearance {
+            colors: boot_colors(&config, &[]),
+            font_size: config.font_size,
+            scrollback: config.scrollback_lines,
+        },
+    };
+    let (terminal, _pane, mut visual) = pane_under_kit_root(cx, &config, request);
+    let cx = &mut visual;
+    paint_until(
+        cx,
+        &terminal,
+        |engine| {
+            engine.with_buffer(|buffer| buffer.lines.iter().any(|line| line.text().contains("P$")))
+        },
+        "the prompt never painted",
+    );
+    paint_frame(cx);
+    assert!(
+        terminal.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: the overlays are live at the prompt"
+    );
+    assert!(
+        !terminal.lock().expect("engine lock").menu_is_open(),
+        "the pin's own stage: no menu shows"
+    );
+
+    for key in [
+        "a", "up", "down", "ctrl-a", "ctrl-w", "ctrl-u", "ctrl-z", "ctrl-d", "ctrl-r",
+    ] {
+        cx.simulate_keystrokes(key);
+    }
+    terminal
+        .lock()
+        .expect("engine lock")
+        .paste("echo one\necho two");
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        poll_witness_quiet(&sink),
+        // The paste carries no trailing newline of its own: its one
+        // line break is the carriage return between the lines, and
+        // the one after them is Enter's.
+        format!("{THE_SHELL_KEYS_BYTES}echo one\recho two\r"),
+        "every key reached the shell as its own bytes, the paste as its lines, Enter last"
     );
     std::mem::forget(terminal);
     let _ = std::fs::remove_file(&sink);
