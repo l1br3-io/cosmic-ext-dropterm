@@ -31,7 +31,6 @@ use gpui::{
     App, Context, Entity, FontWeight, Pixels, TextAlign, UnderlineStyle, canvas, div, fill, point,
     prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
 use tokio::sync::mpsc;
 
 use dropterm::core::tabs::TabId;
@@ -44,12 +43,10 @@ use dropterm::core::terminal::mouse_reporter::{
 use alacritty_terminal::index::Column;
 
 use super::clipboard;
-use super::editor;
 use super::grid::{self, StyledRun};
 use super::input::{self, Chord, KeyInput, KeyModes, TermAction};
 use super::selection::{self, ClickKind};
 use super::suggest;
-use dropterm::core::terminal::editor::{Key, Signal, Verdict};
 
 gpui::actions!(dropterm_gpui, [TerminalTab, TerminalBackTab]);
 
@@ -92,9 +89,6 @@ fn tab_keystroke(shift: bool) -> gpui::Keystroke {
 pub(crate) struct WalkLog {
     grid: Option<(usize, usize)>,
     caret: Option<(usize, usize)>,
-    /// The input holding the caret at the last logged frame (the
-    /// seat evidence row's dedup).
-    caret_seat: Option<editor::CaretSeat>,
     rows: Vec<String>,
     /// The image ids whose placement has been logged (the images
     /// rows' evidence: one line per placed image, not per frame).
@@ -195,12 +189,6 @@ struct GridGeometry {
 pub(crate) struct TerminalPane {
     pub(crate) terminal: Arc<Mutex<Terminal>>,
     skin: PaneSkin,
-    /// The rich-input editor's pane-side state (rich-input RI-4):
-    /// the owned line's pure model, shared into the strip's paint
-    /// closure. The history slice feeds from the engine's store with
-    /// the parity replay (RI-5); until then Up/Down walk an empty
-    /// lane and hold.
-    editor: Arc<Mutex<editor::Editor>>,
     /// The shell's latest title report (stored now, consumed when
     /// the tab chrome slices land).
     title: Option<String>,
@@ -212,8 +200,8 @@ pub(crate) struct TerminalPane {
     /// The pane's window-space origin the last frame painted — the
     /// pointer handlers' window→pane conversion input. GPUI's mouse
     /// events carry window coordinates (the status band's own
-    /// conversion is the precedent), and the pane sits below the strip
-    /// and the bands; zero until the first frame paints.
+    /// conversion is the precedent), and the pane sits below the
+    /// bands; zero until the first frame paints.
     viewport_origin: Arc<Mutex<gpui::Point<Pixels>>>,
     /// The effective chords (defaults + the config overlay).
     binds: std::collections::HashMap<Chord, TermAction>,
@@ -365,7 +353,6 @@ impl TerminalPane {
         }
         Self {
             terminal,
-            editor: Arc::new(Mutex::new(editor::Editor::new(Vec::new()))),
             skin: PaneSkin {
                 colors,
                 opacity_alpha: opacity_alpha(opacity),
@@ -974,278 +961,120 @@ impl TerminalPane {
         }
     }
 
-    /// The overlay lanes and the editor claim, before the byte
-    /// translation (rich-input RI-4's gate beside the standing
-    /// menu routing): the completion menu's own key lane while it
-    /// shows and the Ctrl+Space NUL special case — both standing
-    /// down in rich mode, where the grid menu is dark and the
-    /// editor's surfaces arrive with the parity replay (RI-5) —
-    /// then the rich-input claim itself. True when the press is
-    /// consumed.
+    /// The overlay lane's routing, before the byte translation
+    /// (suggest-overlay spec): in rich mode with the overlays live, a
+    /// showing menu's keys and the ghost's accepts are claimed here;
+    /// every other press returns false and becomes the shell's bytes.
+    /// `native` and a stood-aside rich pane return false at once: no
+    /// overlay claims a key there, whatever the engine's suggest
+    /// state holds. True when the press is consumed.
     fn route_overlay_and_claim(
         &mut self,
         keystroke: &gpui::Keystroke,
         cx: &mut Context<Self>,
     ) -> bool {
-        // The rich-input claim (RI-4): the v1 chord table takes the
-        // press ahead of the byte translation when the editor owns
-        // the line — an unmapped chord falls through and forwards
-        // verbatim, and native mode never claims (the claim is gated
-        // inside the engine's own routing answer).
-        self.route_editor_claim(keystroke, cx)
-    }
-
-    /// The rich-input claim (rich-input spec, RI-4): with the mode
-    /// rich and the editor owning the line, the v1 chord table takes
-    /// the press ahead of the byte translation — an unmapped chord
-    /// falls through (false) and forwards verbatim, and native mode
-    /// never claims at all (the claim is gated inside the engine's
-    /// own routing answer).
-    fn route_editor_claim(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !self
-            .terminal
-            .lock()
-            .expect("engine lock")
-            .editor_owns_line()
-        {
+        let (overlays_live, menu_open, equal_line) = {
+            let engine = self.terminal.lock().expect("engine lock");
+            // The two-stage Enter's pre-check (suggest-parity spec),
+            // scraped only for a bare Enter: the typed line already
+            // equals the selection, and the routing then
+            // closes-and-processes so the Enter bytes run the line.
+            let unmodified = !(keystroke.modifiers.control
+                || keystroke.modifiers.alt
+                || keystroke.modifiers.shift
+                || keystroke.modifiers.platform);
+            (
+                engine.overlays_live(),
+                engine.menu_is_open(),
+                keystroke.key == "enter" && unmodified && engine.menu_selected_equals(),
+            )
+        };
+        if !overlays_live {
             return false;
         }
-        // The menu layer (rich-input RI-5): while the menu shows
-        // inside the editor, the parity table owns the press.
-        if self.terminal.lock().expect("engine lock").menu_is_open()
-            && self.route_editor_menu_press(keystroke, cx)
-        {
-            return true;
+        if menu_open {
+            return self.route_overlay_menu_press(keystroke, equal_line, cx);
         }
-        // Tab while closed (the lift's conditioned opener): a line
-        // with a qualifying row opens the menu; the decline falls
-        // through and Tab forwards to the shell verbatim — SP-D10's
-        // Tab stays the native lane's rule, the lift is the
-        // editor's own. Bare Tab alone claims (tab-surface OQ-1):
-        // Shift+Tab forwards as the shell's back-tab while the menu
-        // is closed.
-        if editor::opener_claims_tab(keystroke) {
-            let (to_caret, _) = self.editor_to_caret();
-            if self
-                .terminal
-                .lock()
-                .expect("engine lock")
-                .editor_menu_open(&to_caret)
-            {
+        // Tab while closed (the conditioned opener): a line with a
+        // qualifying row opens the menu; the decline falls through,
+        // and Tab forwards to the shell verbatim. Bare Tab alone
+        // claims (tab-surface OQ-1): Shift+Tab is the shell's
+        // back-tab while the menu is closed.
+        if suggest::opener_claims_tab(keystroke) {
+            let opened = self.terminal.lock().expect("engine lock").menu_open();
+            if opened {
+                cx.notify();
+            }
+            return opened;
+        }
+        // The ghost's accepts (the settled set): bare Right takes the
+        // whole showing, Alt+Right one word — only while a suggestion
+        // shows. The engine's own line-end gate keeps a mid-line
+        // cursor from showing one.
+        if let Some(kind) = suggest::accept_kind(&keystroke.key, keystroke.modifiers) {
+            let mut engine = self.terminal.lock().expect("engine lock");
+            if engine.suggestion().is_some() {
+                println!("dropterm: pane accept {kind:?} — the showing suffix lands");
+                engine.accept_suggestion(kind);
+                engine.needs_update = true;
+                drop(engine);
                 cx.notify();
                 return true;
             }
-            return false;
         }
-        // The ghost's accepts (the settled set): bare Right takes
-        // the whole showing, Alt+Right one word — only while showing
-        // and only with the caret at the line's end (the ghost
-        // paints after the buffer; a mid-line Right moves).
-        if let Some(kind) = suggest::accept_kind(&keystroke.key, keystroke.modifiers) {
-            let showing = self
-                .terminal
-                .lock()
-                .expect("engine lock")
-                .suggestion()
-                .is_some();
-            let at_end = self.editor.lock().expect("editor lock").caret_at_end();
-            if showing && at_end {
-                let gained = {
-                    let mut engine = self.terminal.lock().expect("engine lock");
-                    engine.editor_accept_suggestion(kind)
-                };
-                if let Some(suffix) = gained {
-                    self.editor.lock().expect("editor lock").paste(&suffix);
-                    self.step_editor_lane();
-                    cx.notify();
-                    return true;
-                }
-            }
-        }
-        // The buffer keys: the v1 chord table, the history slice fed
-        // fresh at each navigation entry (the first Up of a line).
-        if let Some(key) = editor::editor_key(keystroke) {
-            if key == Key::Up && self.editor.lock().expect("editor lock").at_live_line() {
-                let history = self.terminal.lock().expect("engine lock").editor_history();
-                self.editor
-                    .lock()
-                    .expect("editor lock")
-                    .set_history(history);
-            }
-            self.apply_editor_key(key, cx);
-            true
-        } else {
-            false
-        }
+        false
     }
 
-    /// One press against the editor's showing menu (rich-input
-    /// RI-5): the parity table's decision applied over the lane —
-    /// navigation, the two-stage Enter, Tab's fill-or-cycle, the
+    /// One press against the showing menu (suggest-overlay spec):
+    /// the restored table's decision applied over the lane — the
+    /// navigation, the two-stage Enter, Tab's fill-or-cycle, and the
     /// close paths — with `KeepOpen` and `CloseThenProcess` falling
-    /// through to the buffer keys after their own side effects.
+    /// through to the byte translation after their own side effects.
     /// True when the press is consumed here.
-    fn route_editor_menu_press(
+    fn route_overlay_menu_press(
         &mut self,
         keystroke: &gpui::Keystroke,
+        equal_line: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        // The grid menu's key lane retired with its paint
-        // (rich-input RI-10): native mode's Ctrl+Space is the bare
-        // NUL byte through the translation, the editor's own menu
-        // rides the claim below.
-        use dropterm::core::terminal::suggest::MenuKey;
-        let (to_caret, _) = self.editor_to_caret();
-        let equal_line = {
-            let engine = self.terminal.lock().expect("engine lock");
-            engine.editor_menu_selected_equals(&to_caret)
-        };
-        match editor::editor_menu_routing(keystroke, equal_line) {
-            editor::EditorMenuRouting::Navigate(menu_key) => {
-                self.terminal
-                    .lock()
-                    .expect("engine lock")
-                    .editor_menu_press(menu_key, &to_caret);
+        // The produced character is the printable test's honest
+        // input — the keystroke's first char, whatever produced it.
+        let key_char = keystroke
+            .key_char
+            .as_deref()
+            .and_then(|chars| chars.chars().next());
+        let mut engine = self.terminal.lock().expect("engine lock");
+        match suggest::menu_routing(
+            &keystroke.key,
+            keystroke.modifiers,
+            true,
+            key_char,
+            equal_line,
+        ) {
+            Some(suggest::MenuRouting::Consume(key)) => {
+                engine.menu_press(key);
                 cx.notify();
                 true
             }
-            editor::EditorMenuRouting::Accept => {
-                let outcome = {
-                    let mut engine = self.terminal.lock().expect("engine lock");
-                    engine.editor_menu_press(MenuKey::Accept, &to_caret)
-                };
-                self.apply_editor_menu_outcome(outcome, cx);
-                true
-            }
-            editor::EditorMenuRouting::CloseThenRun => {
-                self.terminal.lock().expect("engine lock").menu_close();
-                self.apply_editor_key(Key::Enter, cx);
-                true
-            }
-            editor::EditorMenuRouting::Close => {
-                self.terminal.lock().expect("engine lock").menu_close();
+            Some(suggest::MenuRouting::FillOrCycle) => {
+                engine.menu_tab();
                 cx.notify();
                 true
             }
-            editor::EditorMenuRouting::FillOrCycle => {
-                // The fill compares the rows' own continuations
-                // against the typed segment: the text to the caret.
-                let fill = {
-                    let engine = self.terminal.lock().expect("engine lock");
-                    editor::tab_fill(engine.menu_rows(), &to_caret)
-                };
-                match fill {
-                    editor::TabFill::Insert { beyond, close } => {
-                        self.editor.lock().expect("editor lock").paste(&beyond);
-                        if close {
-                            self.terminal.lock().expect("engine lock").menu_close();
-                        }
-                        self.step_editor_lane();
-                        cx.notify();
-                    }
-                    editor::TabFill::Cycle => {
-                        self.terminal
-                            .lock()
-                            .expect("engine lock")
-                            .editor_menu_press(MenuKey::Down, &to_caret);
-                        cx.notify();
-                    }
-                }
-                true
-            }
-            // The printable edit: the buffer keys insert, the lane's
-            // step re-collects, the menu stays open.
-            editor::EditorMenuRouting::KeepOpen => false,
-            // The press's own meaning runs after the close — the
-            // buffer keys, the ghost accepts, or the fall-through.
-            editor::EditorMenuRouting::CloseThenProcess => {
-                self.terminal.lock().expect("engine lock").menu_close();
+            // The press closes the menu, then its own meaning runs
+            // below (a claimed key's bytes, an action chord, the
+            // equal line's Enter): the repaint now.
+            Some(suggest::MenuRouting::CloseThenProcess) => {
+                engine.menu_close();
+                cx.notify();
                 false
             }
+            // The press is the shell's and the menu stays: the bytes
+            // flow through the translation below, and the echo's
+            // update re-collects the rows. No repaint here — the
+            // flowing press brings its own.
+            Some(suggest::MenuRouting::KeepOpen) | None => false,
         }
-    }
-
-    /// Apply a lane menu outcome to the buffer (rich-input RI-5):
-    /// the insert lands at the caret (an undoable edit, the accept
-    /// funnel's own shape) and the lane steps; Execute runs the line
-    /// through the editor's own Enter.
-    fn apply_editor_menu_outcome(&mut self, outcome: editor::MenuPress, cx: &mut Context<Self>) {
-        match outcome {
-            editor::MenuPress::Insert(suffix) => {
-                self.editor.lock().expect("editor lock").paste(&suffix);
-                self.step_editor_lane();
-                cx.notify();
-            }
-            editor::MenuPress::Execute => self.apply_editor_key(Key::Enter, cx),
-            editor::MenuPress::Noop => cx.notify(),
-        }
-    }
-
-    /// The owned buffer's step inputs: the text to the caret and the
-    /// caret-at-end fact.
-    fn editor_to_caret(&self) -> (String, bool) {
-        let state = self.editor.lock().expect("editor lock");
-        let (to_caret, after_blank) = state.step_inputs();
-        (to_caret.to_string(), after_blank)
-    }
-
-    /// Step the suggest lane over the owned buffer (rich-input
-    /// RI-5): the ghost, the anchor bookkeeping, and the auto-pop
-    /// re-collect answer the editor's line after every mutation.
-    fn step_editor_lane(&mut self) {
-        let (to_caret, after_blank) = self.editor_to_caret();
-        self.terminal
-            .lock()
-            .expect("engine lock")
-            .editor_step(&to_caret, after_blank);
-    }
-
-    /// One claimed keystroke through the pure editor model
-    /// (rich-input RI-4): the verdict routes — Handled repaints the
-    /// strip and steps the lane, Execute PTY-writes through the
-    /// engine's own execution (the echo handoff riding it), and the
-    /// signals forward their byte or clear the screen (Warp's own
-    /// Ctrl+L reading, the record's finding 3: the history goes,
-    /// the owned line stands).
-    fn apply_editor_key(&mut self, key: Key, cx: &mut Context<Self>) {
-        let verdict = self.editor.lock().expect("editor lock").key(key);
-        // Every buffer mutation steps the lane (RI-5): the ghost and
-        // the auto-pop answer the editor's line, never the grid's.
-        let mutated = matches!(verdict, Verdict::Handled | Verdict::Passthrough);
-        {
-            let mut engine = self.terminal.lock().expect("engine lock");
-            match verdict {
-                // Handled repaints the strip alone; Passthrough is
-                // unreachable in v1 (every mapped key handles) — the
-                // arm keeps the match honest for the model's future
-                // keys.
-                Verdict::Handled | Verdict::Passthrough => {}
-                Verdict::Execute { line } => {
-                    println!(
-                        "dropterm: rich-input execute — {} bytes PTY-written",
-                        line.len() + 1
-                    );
-                    engine.editor_execute(&line);
-                    engine.needs_update = true;
-                }
-                Verdict::Signal(Signal::Interrupt) => {
-                    engine.input_scroll(b"\x03".to_vec());
-                    engine.needs_update = true;
-                }
-                Verdict::Signal(Signal::EndOfFile) => {
-                    engine.input_scroll(b"\x04".to_vec());
-                    engine.needs_update = true;
-                }
-                Verdict::Signal(Signal::ClearScreen) => {
-                    engine.term.lock().grid_mut().clear_history();
-                    engine.needs_update = true;
-                }
-            }
-        }
-        if mutated {
-            self.step_editor_lane();
-        }
-        cx.notify();
     }
 
     /// The text half of a paste action: the capped read — regular
@@ -1257,33 +1086,14 @@ impl TerminalPane {
         if !primary {
             match clipboard::read_text_capped(cx) {
                 clipboard::TextRead::Text(text) => {
-                    // The rich-input lane (rich-input RI-4): while the
-                    // editor owns the line, paste feeds the buffer
-                    // verbatim — the PTY never sees it until Enter
-                    // runs the whole line.
-                    let editor_owns = {
-                        let mut engine = self.terminal.lock().expect("engine lock");
-                        if engine.editor_owns_line() {
-                            true
-                        } else {
-                            engine.paste(&text);
-                            engine.needs_update = true;
-                            false
-                        }
-                    };
-                    if editor_owns {
-                        self.editor.lock().expect("editor lock").paste(&text);
-                        self.step_editor_lane();
-                    }
                     println!(
-                        "dropterm: pane action Paste — {} bytes {}",
-                        text.len(),
-                        if editor_owns {
-                            "into the owned line"
-                        } else {
-                            "through the engine's paste"
-                        }
+                        "dropterm: pane action Paste — {} bytes through the engine's paste",
+                        text.len()
                     );
+                    let mut engine = self.terminal.lock().expect("engine lock");
+                    engine.paste(&text);
+                    engine.needs_update = true;
+                    drop(engine);
                     if let Some(signals) = &self.shell_signals {
                         let _ = signals.send(PaneSignal::TextPasted);
                     }
@@ -1505,11 +1315,10 @@ impl TerminalPane {
         if matched.is_some() {
             cx.stop_propagation();
         }
-        // The overlay lanes' routing and the rich-input claim, in
-        // order: a showing menu (native mode) outranks everything;
-        // the Ctrl+Space special case rides behind it; then the
-        // editor's v1 chord table takes its press when the line is
-        // owned — each a fall-through, never a swallow.
+        // The overlay lane's routing, ahead of the byte translation:
+        // in rich mode a showing menu's keys and the ghost's accepts
+        // are DropTerm's; everything else falls through to the
+        // shell's bytes.
         if self.route_overlay_and_claim(keystroke, cx) {
             return;
         }
@@ -1582,8 +1391,8 @@ impl TerminalPane {
     /// A pointer event's window-space position onto the pane's own
     /// coordinates (the conversion the cell arithmetic must run on):
     /// GPUI's mouse events carry window coordinates, and the pane
-    /// sits below the strip and the bands — the painted origin is the
-    /// frame's truth, captured fresh every frame by the paint.
+    /// sits below the bands: the painted origin is the frame's truth,
+    /// captured fresh every frame by the paint.
     fn pane_local(&self, position: gpui::Point<Pixels>) -> gpui::Point<Pixels> {
         let origin = *self.viewport_origin.lock().expect("pane origin");
         let (x, y) = selection::pane_local(
@@ -2117,114 +1926,25 @@ impl gpui::Render for TerminalPane {
                     pane.update(cx, |pane, cx| pane.on_key(&tab_keystroke(true), window, cx));
                 }
             });
-        // The editor menu's paint bundle (rich-input RI-7): the
-        // chrome capture under one engine read — None when the menu
-        // stands closed, the paint's whole gate.
-        let strip_top_dock = editor::strip_docked_top(self.options.input_position);
-        // The editor's fact for this frame, under one engine read
-        // beside the menu's bundle: whether it owns the line — asked
-        // once for both canvases, so no frame paints both carets or
-        // neither. The terminal's own cursor mode stays the grid's
-        // post-update read, where it always was.
-        let (editor_menu, editor_owns_line) = {
-            let engine = self.terminal.lock().expect("engine lock");
-            let editor_owns_line = engine.editor_owns_line();
-            let state = self.editor.lock().expect("editor lock");
-            let menu = editor::EditorMenuPaint::capture(
-                &engine,
-                &state,
-                editor::MenuChrome {
-                    descriptions: self.options.input_descriptions,
-                    badges: self.options.input_badges,
-                    icons: self.options.input_icons,
-                    argument_hint: self.options.input_argument_hint,
-                    compact_rows: self.options.input_compact_rows,
-                },
-            );
-            (menu, editor_owns_line)
-        };
-        // The rich-input strip (rich-input spec, RI-4): in rich mode
-        // the owned line paints in its own docked row under the grid
-        // and the grid's prompt-row overlays stand down — the column
-        // replaces the canvas's size-full so the rows share the
-        // frame. The mode flip rides `apply_options`' live pass, so
-        // the strip appears and disappears with the config echo.
-        // The row belongs to the mode, not to the owned line: it
-        // stays in the layout while the editor stands aside and
-        // paints nothing, because a row that collapsed at every
-        // prompt-to-program edge would resize the PTY each time, and
-        // a resize repaints the shell's prompt.
+        // The grid is the pane's one child in both modes
+        // (suggest-overlay spec): the shell's line is the input, and
+        // the overlays paint over its prompt row.
         let grid = canvas(
             move |bounds, _, _| bounds,
             move |bounds, _, window, cx| {
-                let seat_moved = paint_pane(
+                paint_pane(
                     &terminal,
                     &skin,
                     &walk_log,
                     &image_cache,
                     &viewport_origin,
-                    editor_menu.as_ref(),
-                    editor_owns_line,
-                    strip_top_dock,
                     bounds,
                     window,
                     cx,
                 );
-                // The ownership was read for this frame before the
-                // frame's own update ran, and an update can move it
-                // (the grid read adopting a shell's first prompt). A
-                // plain notify is swallowed mid-draw; this asks for
-                // the frame that paints the settled seat, and nothing
-                // further once it has.
-                if seat_moved {
-                    window.request_animation_frame();
-                }
             },
         );
-        if self.options.input_mode == dropterm::core::config::InputMode::Rich {
-            // The dock (rich-input RI-9): `top` pins the strip at the
-            // head of the grid region — the column's order flips, the
-            // flow a normal terminal either way.
-            let strip_first = editor::strip_docked_top(self.options.input_position);
-            let strip_editor = Arc::clone(&self.editor);
-            let strip_terminal = Arc::clone(&self.terminal);
-            let strip_skin = self.skin.clone();
-            // Points onto pixels (96/72): the strip shapes in the
-            // terminal's own font, sized from the pane's option.
-            let font_px = px(f32::from(self.options.font_size) * 4. / 3.);
-            let highlight = self.options.input_highlight;
-            let strip = canvas(
-                move |bounds, _, _| bounds,
-                move |bounds, _, window, cx| {
-                    paint_strip(
-                        &strip_editor,
-                        &strip_terminal,
-                        &strip_skin,
-                        editor_owns_line,
-                        bounds,
-                        font_px,
-                        highlight,
-                        window,
-                        cx,
-                    );
-                },
-            )
-            .w_full()
-            .h(px(30.));
-            // One column, the strip at the end the dock names. The
-            // strip is a fixed row and the grid takes the rest on a
-            // zero basis: nothing competes with the strip for the
-            // height, so the row is exactly its own at both docks.
-            let column = div().flex().flex_col().size_full();
-            let grid = grid.flex_1().min_h_0();
-            frame.child(if strip_first {
-                column.child(strip).child(grid)
-            } else {
-                column.child(grid).child(strip)
-            })
-        } else {
-            frame.child(grid.size_full())
-        }
+        frame.child(grid.size_full())
     }
 }
 
@@ -2234,8 +1954,6 @@ impl gpui::Render for TerminalPane {
 /// reads the whole frame together — the grid walk, the selection
 /// overlay, and the evidence rows share the one lock and the one
 /// geometry; splitting them re-derives the lock order per piece.
-/// Returns whether the frame's own update moved the caret seat it
-/// was painted on — the caller's cue for one more frame.
 #[expect(
     clippy::too_many_lines,
     reason = "the frame reads one lock and one geometry end to end; the walk, the overlay, and the evidence rows are one pass"
@@ -2250,13 +1968,10 @@ fn paint_pane(
     walk_log: &Arc<Mutex<WalkLog>>,
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
     viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
-    editor_menu: Option<&editor::EditorMenuPaint>,
-    editor_owns_line: bool,
-    strip_top_dock: bool,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
-) -> bool {
+) {
     // The pane's window-space origin, this frame's truth: the pointer
     // handlers convert window coordinates through it (GPUI's mouse
     // events carry window coordinates; the painted bounds are the
@@ -2271,8 +1986,7 @@ fn paint_pane(
     // resize here waits forever. The close at the grid already held
     // freezes the record and arms the fresh-prompt latch; the update
     // it owes runs in this frame's own drain, so the shell's first
-    // prompt adopts and the ghost and the Ctrl+Space menu answer on
-    // a fresh tab. A zero-width frame makes no request and settles
+    // prompt adopts and the overlays answer on a fresh tab. A zero-width frame makes no request and settles
     // nothing; a settled record never re-snapshots.
     if granted && terminal.settle_spawn_grid_now() {
         terminal.needs_update = true;
@@ -2283,12 +1997,6 @@ fn paint_pane(
         terminal.needs_update = false;
         let _ = terminal.update();
     }
-
-    // The ownership this frame was handed was read before the update
-    // above ran; this is the engine's answer after it. The two agree
-    // on every frame but the one whose update moved them. Read before
-    // the term guard below: the gates take that lock themselves.
-    let owns_line_now = terminal.editor_owns_line();
 
     let term = terminal.term.lock();
     let grid = term.grid();
@@ -2318,10 +2026,9 @@ fn paint_pane(
         }
     }
 
-    // The caret: shown while the frame's caret seat is the grid's —
-    // the terminal's cursor mode, read after this frame's update as
-    // ever, and the editor's ownership, folded by `caret_seat` — and
-    // always a block (the libcosmic build's rule). Grid semantics
+    // The caret: the terminal's own cursor mode, read after this
+    // frame's update as ever, and always a block (the libcosmic
+    // build's rule). It is the one caret on screen. Grid semantics
     // (pinned by the probe test in this module): `Line(0)` is the
     // screen's top, lines grow downward, and the cursor's line is a
     // screen row — so scrolled state `d` puts it at display row
@@ -2329,10 +2036,8 @@ fn paint_pane(
     // the rows.
     let cursor = grid.cursor.point;
     let shows_cursor = term.mode().contains(TermMode::SHOW_CURSOR);
-    let seat = editor::caret_seat(editor_owns_line, shows_cursor);
-    let seat_moved = editor::caret_seat(owns_line_now, shows_cursor) != seat;
-    let caret_row = (seat == Some(editor::CaretSeat::Grid))
-        .then(|| usize::try_from(cursor.line.0).unwrap_or(0) + display_offset);
+    let caret_row =
+        shows_cursor.then(|| usize::try_from(cursor.line.0).unwrap_or(0) + display_offset);
 
     // The visible rows, grouped from `display_iter` — the same walk
     // the engine's own projection rides, top row first (hand-rolled
@@ -2545,26 +2250,6 @@ fn paint_pane(
         }
     }
 
-    // The walk's seat evidence row: which input holds the caret,
-    // once per change — the stand-aside walk reads it beside the
-    // pixels.
-    {
-        let mut log = walk_log.lock().expect("walk log");
-        if log.caret_seat != seat {
-            let row = match seat {
-                Some(editor::CaretSeat::Strip) => {
-                    "caret in the input strip — the editor owns the line, the grid's block caret stands down"
-                }
-                Some(editor::CaretSeat::Grid) => {
-                    "caret in the grid — the shell's line is the input"
-                }
-                None => "no caret — the terminal hides its cursor",
-            };
-            println!("dropterm: {row}");
-            log.caret_seat = seat;
-        }
-    }
-
     // The walk's caret evidence row: the caret cell, once per move.
     if let Some(row) = caret_row {
         let cell_at = (cursor.column.0, row);
@@ -2577,458 +2262,14 @@ fn paint_pane(
             log.caret = Some(cell_at);
         }
     }
-
-    // The editor's own menu panel (rich-input RI-7): the chrome
-    // above the strip — the grid's overlay paint retired (RI-10),
-    // this is the menu's one surface.
-    if let Some(menu) = editor_menu {
-        paint_editor_menu(
-            menu,
-            strip_top_dock,
-            skin,
-            bounds,
-            geometry.font_size,
-            window,
-            cx,
-        );
-    }
-    seat_moved
-}
-
-/// A cosmic-text color as GPUI color (the ghost tint and the menu's
-/// text seats — the engine hands scheme colors over in cosmic-text's
-/// shape).
-fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
-    gpui::rgb(u32::from(color.r()) << 16 | u32::from(color.g()) << 8 | u32::from(color.b())).into()
-}
-
-/// The editor menu's panel paint (rich-input RI-7): the mock's
-/// chrome above the strip — icon, the marked label (the typed
-/// prefix semibold), the badge chip in its class color, the
-/// description dim (its own line comfortable, inline compact), the
-/// selection's tint, the visible window from the scroll offset, the
-/// argument hint line above the panel, and the popover surface the
-/// grid menu itself rides — every element behind its toggle at
-/// capture time (the bundle carries None).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one panel painted in one pass — rows, chrome, and hint share the one geometry"
-)]
-fn paint_editor_menu(
-    menu: &editor::EditorMenuPaint,
-    top_dock: bool,
-    skin: &PaneSkin,
-    bounds: gpui::Bounds<Pixels>,
-    font_px: Pixels,
-    window: &mut gpui::Window,
-    cx: &mut gpui::App,
-) {
-    let theme = cx.theme();
-    let panel_bg = theme.popover;
-    let panel_border = theme.border;
-    let fg = theme.popover_foreground;
-    let dim = gpui::hsla(fg.h, fg.s, fg.l, 0.55);
-    let palette = TokenPalette::for_scheme(fg.l > 0.5);
-
-    let row_h = px(editor::menu_row_height_px(menu.chrome.compact_rows));
-    let range = suggest::menu_visible_window(menu.scroll, menu.rows.len());
-    if range.is_empty() {
-        return;
-    }
-    let visible = &menu.rows[range.clone()];
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the visible row count is the menu's budget (<=8), exact in f32"
-    )]
-    let rows_height = row_h * visible.len() as f32;
-    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| px(26.));
-    let width = (px(460.)).min(bounds.size.width - px(16.));
-    let panel = gpui::Bounds {
-        origin: point(
-            bounds.origin.x + px(8.),
-            editor::menu_anchor_y(top_dock, bounds, rows_height + hint_h),
-        ),
-        size: gpui::Size::new(width, rows_height + hint_h),
-    };
-    let mut panel_quad = fill(panel, panel_bg);
-    panel_quad.corner_radii = gpui::Corners::all(px(6.));
-    panel_quad.border_widths = gpui::Edges::all(px(1.));
-    panel_quad.border_color = panel_border;
-    window.paint_quad(panel_quad);
-
-    // The argument hint line (the mock's own seat: the panel's top
-    // strip, the command semibold, its description dim).
-    let mut y = panel.origin.y;
-    if let Some((name, description)) = &menu.hint {
-        let mut hint_font = skin.font.clone();
-        hint_font.weight = FontWeight::SEMIBOLD;
-        let shaped = shape_overlay_line(name, &hint_font, fg, font_px, window);
-        let _ = shaped.paint(
-            point(panel.origin.x + px(10.), y + px(4.)),
-            font_px,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
-        let x_after = panel.origin.x + px(10.) + shaped.width + px(8.);
-        if let Some(description) = description {
-            let shaped = shape_overlay_line(description, &skin.font, dim, font_px, window);
-            let _ = shaped.paint(
-                point(x_after, y + px(4.)),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-        }
-        y += hint_h;
-    }
-
-    // The rows: icon, the marked label, the badge, the description —
-    // the selected one tinted.
-    let badge_color = |badge: &str| -> gpui::Hsla {
-        match badge {
-            "cmd" => palette.cmd,
-            "flag" => palette.flag,
-            "path" => palette.string,
-            "env" => palette.err,
-            "hist" => dim,
-            _ => fg,
-        }
-    };
-    for (index, row) in visible.iter().enumerate() {
-        let absolute = range.start + index;
-        let row_bounds = gpui::Bounds {
-            origin: point(panel.origin.x, y),
-            size: gpui::Size::new(panel.size.width, row_h),
-        };
-        if absolute == menu.selected {
-            window.paint_quad(fill(
-                gpui::Bounds {
-                    origin: point(row_bounds.origin.x + px(2.), row_bounds.origin.y + px(1.)),
-                    size: gpui::Size::new(row_bounds.size.width - px(4.), row_h - px(2.)),
-                },
-                gpui::hsla(fg.h, fg.s, fg.l, 0.12),
-            ));
-        }
-        let mut x = row_bounds.origin.x + px(10.);
-        if let Some(icon) = row.icon {
-            let shaped = shape_overlay_line(&icon.to_string(), &skin.font, dim, font_px, window);
-            let _ = shaped.paint(
-                point(x, y + (row_h - font_px) / 2.),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            x += shaped.width + px(8.);
-        }
-        // The marked label: the typed prefix semibold, the rest
-        // normal — two shapes split at the char mark.
-        let marked_byte = row
-            .label
-            .char_indices()
-            .nth(row.marked)
-            .map_or(row.label.len(), |(byte, _)| byte);
-        let (before, after) = row.label.split_at(marked_byte);
-        let mut mark_font = skin.font.clone();
-        mark_font.weight = FontWeight::SEMIBOLD;
-        let shaped = shape_overlay_line(before, &mark_font, fg, font_px, window);
-        let _ = shaped.paint(
-            point(x, y + (row_h - font_px) / 2.),
-            font_px,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
-        x += shaped.width;
-        if !after.is_empty() {
-            let shaped = shape_overlay_line(after, &skin.font, fg, font_px, window);
-            let _ = shaped.paint(
-                point(x, y + (row_h - font_px) / 2.),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            x += shaped.width;
-        }
-        if let Some(badge) = row.badge {
-            x += px(8.);
-            let shaped = shape_overlay_line(badge, &skin.font, badge_color(badge), font_px, window);
-            let _ = shaped.paint(
-                point(x, y + (row_h - font_px) / 2.),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            x += shaped.width;
-        }
-        if let Some(description) = &row.description {
-            let desc_x = if menu.chrome.compact_rows {
-                x + px(8.)
-            } else {
-                row_bounds.origin.x + px(28.)
-            };
-            let desc_y = if menu.chrome.compact_rows {
-                y + (row_h - font_px) / 2.
-            } else {
-                y + row_h - font_px - px(4.)
-            };
-            let shaped = shape_overlay_line(description, &skin.font, dim, font_px, window);
-            let _ = shaped.paint(
-                point(desc_x, desc_y),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-        }
-        y += row_h;
-    }
-}
-
-/// The mock's token palette (rich-input RI-6): the light/dark pairs
-/// keyed on the scheme's foreground luminance — command, flag,
-/// string, and the unknown-command error red (the variable rides
-/// the string green; the mock carries no variable color of its own).
-struct TokenPalette {
-    cmd: gpui::Hsla,
-    flag: gpui::Hsla,
-    string: gpui::Hsla,
-    err: gpui::Hsla,
-}
-
-impl TokenPalette {
-    fn for_scheme(light: bool) -> Self {
-        Self {
-            cmd: hex_hsla(if light { 0x174_7c2 } else { 0x82b_7ff }),
-            flag: hex_hsla(if light { 0x966_60a } else { 0xffd_37e }),
-            string: hex_hsla(if light { 0x177_245 } else { 0x93e_6a5 }),
-            err: hex_hsla(if light { 0xc03_434 } else { 0xff8_080 }),
-        }
-    }
-
-    fn color(&self, class: editor::TokenClass, plain: gpui::Hsla) -> gpui::Hsla {
-        match class {
-            editor::TokenClass::Command { known: true } => self.cmd,
-            editor::TokenClass::Command { known: false } => self.err,
-            editor::TokenClass::Flag => self.flag,
-            editor::TokenClass::String | editor::TokenClass::Variable => self.string,
-            editor::TokenClass::Word => plain,
-        }
-    }
-}
-
-fn hex_hsla(hex: u32) -> gpui::Hsla {
-    gpui::rgb(hex).into()
-}
-
-/// The strip's own shaper (rich-input RI-6): [`shape_overlay_line`]'s
-/// shape with an optional underline — the unknown command's error
-/// mark (gpui's underline is solid or wavy; the record's dashed is
-/// approximated solid, a walk finding to refine).
-fn shape_underlined_line(
-    text: &str,
-    font: &gpui::Font,
-    color: gpui::Hsla,
-    font_size: Pixels,
-    underline: Option<UnderlineStyle>,
-    window: &mut gpui::Window,
-) -> gpui::ShapedLine {
-    window.text_system().shape_line(
-        text.into(),
-        font_size,
-        &[gpui::TextRun {
-            len: text.len(),
-            font: font.clone(),
-            color,
-            background_color: None,
-            underline,
-            strikethrough: None,
-        }],
-        None,
-    )
 }
 
 /// The pane's own background under a paint: the scheme background
-/// at the configured opacity — the grid's rows and the strip's row
-/// share it, so the strip reads as the terminal's row and not a bar
-/// of its own (the mock's input zone carries no background).
+/// at the configured opacity, under the grid's every row.
 fn pane_background(skin: &PaneSkin, bounds: gpui::Bounds<Pixels>, window: &mut gpui::Window) {
     let mut bg = grid::window_background(&skin.colors);
     bg.a *= skin.opacity_alpha;
     window.paint_quad(fill(bounds, bg));
-}
-
-/// The rich-input strip's paint (rich-input RI-4 + RI-6): the owned
-/// line shaped in the terminal's own font, segment by colored
-/// segment — the highlight tokenizer's classes when the toggle is
-/// on, one plain tint when it is off — with the caret quad flush at
-/// its byte offset and the ghost's dim suffix after the whole line.
-/// The chrome (RI-7) restyles the row against the mock around this
-/// token floor. Only a frame whose editor owns the line paints one;
-/// every other frame the row carries the background alone — the
-/// editor stands aside, and the grid's caret is the one on screen.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the strip's paint frame mirrors paint_pane's own handle list; a param struct would bundle six unrelated facts"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the strip paints one pass — the segment walk, the caret split, and the ghost share the one lock-derived snapshot"
-)]
-fn paint_strip(
-    editor_state: &Arc<Mutex<editor::Editor>>,
-    terminal: &Arc<Mutex<Terminal>>,
-    skin: &PaneSkin,
-    editor_owns_line: bool,
-    bounds: gpui::Bounds<Pixels>,
-    font_px: Pixels,
-    highlight: bool,
-    window: &mut gpui::Window,
-    cx: &mut gpui::App,
-) {
-    pane_background(skin, bounds, window);
-    if !editor_owns_line {
-        return;
-    }
-    let (segments, ghost, caret_byte, fg, dim, palette) = {
-        let engine = terminal.lock().expect("engine lock");
-        let ghost = engine.suggestion().map(str::to_string);
-        let fg = color_hsla(engine.foreground_color());
-        let dim = color_hsla(engine.ghost_color());
-        let palette = TokenPalette::for_scheme(fg.l > 0.5);
-        let (segments, caret_byte) = {
-            let state = editor_state.lock().expect("editor lock");
-            let caret_byte = state.step_inputs().0.len();
-            let segments =
-                editor::segments_for(state.line(), highlight, |name| engine.command_known(name));
-            (segments, caret_byte)
-        };
-        (segments, ghost, caret_byte, fg, dim, palette)
-    };
-    let pad = px(8.);
-    let origin = point(
-        bounds.origin.x + pad,
-        bounds.origin.y + (bounds.size.height - font_px) / 2.,
-    );
-    let caret_quad = |x: Pixels, window: &mut gpui::Window| {
-        window.paint_quad(fill(
-            gpui::Bounds {
-                origin: point(x, origin.y),
-                size: gpui::Size::new(px(2.), font_px),
-            },
-            fg,
-        ));
-    };
-    // Walk the segments, splitting the one carrying the caret so the
-    // quad lands flush between its halves.
-    let mut x = origin.x;
-    let mut painted_bytes = 0usize;
-    let mut caret_placed = false;
-    for (class, text) in &segments {
-        let start = painted_bytes;
-        painted_bytes += text.len();
-        let color = palette.color(*class, fg);
-        let underline =
-            matches!(class, editor::TokenClass::Command { known: false }).then(|| UnderlineStyle {
-                color: Some(palette.err),
-                thickness: px(1.),
-                wavy: false,
-            });
-        if !caret_placed && start <= caret_byte && caret_byte <= painted_bytes {
-            let (before, after) = text.split_at(caret_byte - start);
-            if !before.is_empty() {
-                let shaped =
-                    shape_underlined_line(before, &skin.font, color, font_px, underline, window);
-                let _ = shaped.paint(
-                    point(x, origin.y),
-                    font_px,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-                x += shaped.width;
-            }
-            caret_quad(x, window);
-            x += px(2.);
-            if !after.is_empty() {
-                let shaped =
-                    shape_underlined_line(after, &skin.font, color, font_px, underline, window);
-                let _ = shaped.paint(
-                    point(x, origin.y),
-                    font_px,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-                x += shaped.width;
-            }
-            caret_placed = true;
-        } else if !text.is_empty() {
-            let shaped = shape_underlined_line(text, &skin.font, color, font_px, underline, window);
-            let _ = shaped.paint(
-                point(x, origin.y),
-                font_px,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            x += shaped.width;
-        }
-    }
-    if !caret_placed {
-        caret_quad(x, window);
-        x += px(2.);
-    }
-    if let Some(ghost) = ghost.filter(|ghost| !ghost.is_empty()) {
-        let shaped = shape_overlay_line(&ghost, &skin.font, dim, font_px, window);
-        let _ = shaped.paint(
-            point(x, origin.y),
-            font_px,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
-    }
-}
-
-/// One overlay text line — the ghost's visible string or a menu row
-/// — shaped once in the pane's font at its color, natural width (no
-/// cell-grid forcing: the overlays are not the grid).
-fn shape_overlay_line(
-    text: &str,
-    font: &gpui::Font,
-    color: gpui::Hsla,
-    font_size: Pixels,
-    window: &mut gpui::Window,
-) -> gpui::ShapedLine {
-    window.text_system().shape_line(
-        text.into(),
-        font_size,
-        &[gpui::TextRun {
-            len: text.len(),
-            font: font.clone(),
-            color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        }],
-        None,
-    )
 }
 
 /// The scheme's foreground as GPUI color (the selection overlay's

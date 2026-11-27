@@ -556,34 +556,24 @@ fn prompt_then_cat(
     }
 }
 
-// --- suggest-overlay SO-2: the ghost's accept is never the default
-// mode's ---
-
-#[gpui::test]
-fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpui::TestAppContext) {
-    // The ghost's accept arm in `on_key` had no mode gate, and the
-    // engine's screen-read step computes suggestions in every mode:
-    // in `native`, the default, a bare Right completed an invisible
-    // ghost into the shell and swallowed the key. `gi` is typed until
-    // the engine shows a suggestion; then Right, then Enter to flush
-    // the canonical line to the witness. The witness must hold the
-    // key's own bytes and nothing of the suffix.
-    cx.update(|cx| cx.background_executor().allow_parking());
-    cx.update(gpui_component::init);
-    cx.update(bind_pane_keys);
-    let mut config = request_config();
-    // The menu is not this pin's; the ghost stays on, because the
-    // engine has to show a suggestion for the press to mean anything.
-    config.input_menu = false;
-    let sink = std::env::temp_dir().join(format!(
-        "dropterm-native-right-pin-{}.txt",
-        std::process::id()
-    ));
+/// The ghost's seat: a focused pane under the Kit Root over
+/// [`prompt_then_cat`], `gi` typed, the engine showing a suggestion.
+/// The caller owes `allow_parking`, the Kit's init, and the key bind.
+fn ghost_showing(
+    cx: &mut gpui::TestAppContext,
+    name: &str,
+    config: &dropterm::core::config::DropTermConfig,
+) -> (
+    Arc<Mutex<Terminal>>,
+    std::path::PathBuf,
+    Option<String>,
+    gpui::VisualTestContext,
+) {
+    let sink = std::env::temp_dir().join(format!("dropterm-{name}-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&sink);
     let (terminal, _pane, mut visual) =
-        pane_under_kit_root(cx, &config, prompt_then_cat(&sink, &config));
+        pane_under_kit_root(cx, config, prompt_then_cat(&sink, config));
     let cx = &mut visual;
-
     // A fresh prompt sits at the top of an empty screen (the rows
     // below it stay blank), so the painted check is any row's.
     paint_until(
@@ -596,7 +586,6 @@ fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpu
     );
     // One frame past the paint: the prompt's update adopted it.
     paint_frame(cx);
-
     cx.simulate_keystrokes("g");
     cx.simulate_keystrokes("i");
     paint_until(
@@ -610,6 +599,28 @@ fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpu
         .expect("engine lock")
         .suggestion()
         .map(str::to_owned);
+    (terminal, sink, showing, visual)
+}
+
+// --- suggest-overlay SO-2: the ghost's accept is never the default
+// mode's ---
+
+#[gpui::test]
+fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpui::TestAppContext) {
+    // The ghost's accept arm in `on_key` had no mode gate, and the
+    // engine's screen-read step computes suggestions in every mode:
+    // in `native`, the default, a bare Right completed an invisible
+    // ghost into the shell and swallowed the key. The witness must
+    // hold the key's own bytes and nothing of the suffix.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let mut config = request_config();
+    // The menu is not this pin's; the ghost stays on, because the
+    // engine has to show a suggestion for the press to mean anything.
+    config.input_menu = false;
+    let (terminal, sink, showing, mut visual) = ghost_showing(cx, "native-right", &config);
+    let cx = &mut visual;
 
     cx.simulate_keystrokes("right");
     cx.simulate_keystrokes("enter");
@@ -618,6 +629,78 @@ fn a_native_right_press_reaches_the_shell_with_a_suggestion_showing(cx: &mut gpu
         poll_witness(&sink),
         "gi\x1b[C\n",
         "in native a Right press is the shell's own key while the engine shows {showing:?}: \
+         the line gains the key's bytes and nothing of the suffix"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
+}
+
+// --- suggest-overlay SO-5: the switch. The overlays are the live
+// rich pane's alone ---
+
+/// A rich-mode config with the popup off: the menu is never open
+/// behind the pin's dispatches, so each press meets a closed one.
+fn rich_config() -> dropterm::core::config::DropTermConfig {
+    dropterm::core::config::DropTermConfig {
+        input_mode: dropterm::core::config::InputMode::Rich,
+        input_auto_popup: false,
+        ..request_config()
+    }
+}
+
+#[gpui::test]
+fn a_live_rich_pane_accepts_the_ghost_on_right(cx: &mut gpui::TestAppContext) {
+    // The ghost's accepts are the overlay lane's: while a suggestion
+    // shows on a live rich pane, a bare Right writes the whole suffix
+    // and swallows the key.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let config = rich_config();
+    let (terminal, sink, showing, mut visual) = ghost_showing(cx, "rich-accept", &config);
+    let cx = &mut visual;
+    assert!(
+        terminal.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: the overlays are live"
+    );
+    let suffix = showing.expect("the pin's own stage: a suggestion shows");
+
+    cx.simulate_keystrokes("right");
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        poll_witness(&sink),
+        format!("gi{suffix}\n"),
+        "in rich mode the ghost's accept writes the showing suffix; Right's own bytes never reach the shell"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
+}
+
+#[gpui::test]
+fn a_stood_aside_rich_pane_forwards_the_ghosts_accept_key(cx: &mut gpui::TestAppContext) {
+    // A stood-aside rich pane routes nothing: with the engine
+    // unfocused the overlays are not live, and a Right press with a
+    // suggestion showing is the shell's own key, byte for byte.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let config = rich_config();
+    let (terminal, sink, showing, mut visual) = ghost_showing(cx, "rich-aside", &config);
+    let cx = &mut visual;
+    terminal.lock().expect("engine lock").set_focused(false);
+    assert!(
+        !terminal.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: the overlays stand aside"
+    );
+
+    cx.simulate_keystrokes("right");
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        poll_witness(&sink),
+        "gi\x1b[C\n",
+        "a stood-aside rich pane forwards Right while the engine shows {showing:?}: \
          the line gains the key's bytes and nothing of the suffix"
     );
     std::mem::forget(terminal);
@@ -1179,9 +1262,10 @@ fn a_released_drag_includes_both_boundary_cells(cx: &mut gpui::TestAppContext) {
     std::mem::forget(terminal);
 }
 
-// --- the two-inputs report: one caret on screen, in the live input ---
+// --- suggest-overlay SO-5: the grid's caret is the only one on screen ---
 
-/// The strip row's height, the layout's own constant.
+/// The retired strip row's height, the layout's former constant: a
+/// quad of this shape must never paint again.
 const STRIP_ROW_PX: f32 = 30.;
 
 /// What one frame's scene holds of the pane's carets, counted off
@@ -1191,32 +1275,39 @@ const STRIP_ROW_PX: f32 = 30.;
 /// channel).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct CaretQuads {
-    /// A quad the strip caret's size: two pixels wide, one font tall.
+    /// A quad the retired strip caret's size: two pixels wide, one
+    /// font tall.
     strip_caret: bool,
     /// A quad the grid's block caret's size — one cell. Presence,
     /// not a count: the caret is the block quad plus the inverted
     /// run background the row painter draws under it.
     grid_caret: bool,
-    /// A quad the strip row's own size at the dock's own edge — the
-    /// row carries the pane's background like the grid's rows do,
-    /// exactly its own height, where the dock puts it.
-    strip_row_background: bool,
+    /// A quad the retired strip row's own size — the pane's full
+    /// width, its own height, at either edge.
+    strip_row: bool,
 }
+
+/// Every `CaretQuads` the one-caret rule allows: the grid's caret,
+/// and nothing of a second input.
+const THE_GRID_CARET_ALONE: CaretQuads = CaretQuads {
+    strip_caret: false,
+    grid_caret: true,
+    strip_row: false,
+};
 
 /// Boot a rich-mode pane whose program is the session leader itself
 /// (`sleep`): the foreground check reads idle, since no child exists
 /// to hold the PTY, and nothing ever prints, so the PTY stays quiet
-/// and the editor's ownership is the zone marks' alone.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one pane through both states and both docks — the boot, the frame clock, and the four scene reads are one story"
-)]
+/// and the overlays' liveness is the zone marks' alone.
 #[gpui::test]
-fn one_caret_paints_in_the_live_input(cx: &mut gpui::TestAppContext) {
+fn the_grids_caret_is_the_only_one(cx: &mut gpui::TestAppContext) {
+    // The shell's line is the input in both modes: one caret on
+    // screen, the grid's, whether the overlays stand aside or are
+    // live. The editor's strip painted its own caret and its own
+    // row beside the grid's prompt.
     cx.update(gpui_component::init);
     let config = dropterm::core::config::DropTermConfig {
         input_mode: dropterm::core::config::InputMode::Rich,
-        input_position: dropterm::core::config::InputPosition::Top,
         ..request_config()
     };
     let (terminal, pane) = cx
@@ -1258,16 +1349,6 @@ fn one_caret_paints_in_the_live_input(cx: &mut gpui::TestAppContext) {
         window.focus(&pane.read(cx).focus_handle(), cx);
     });
 
-    // The paint clock (the drag pin's own shape): parked so the
-    // pane's own tasks land, then refresh-then-draw — a bare draw
-    // may skip render/paint.
-    let frame = |cx: &mut gpui::VisualTestContext| {
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.refresh();
-            window.draw(cx).clear(cx);
-        });
-    };
     let font_px = f32::from(config.font_size) * 4. / 3.;
     let (cell_w, cell_h) = {
         let size = terminal.lock().expect("engine lock").size();
@@ -1275,18 +1356,12 @@ fn one_caret_paints_in_the_live_input(cx: &mut gpui::TestAppContext) {
     };
     // Quads ride scaled pixels; the pane's own metrics ride logical —
     // one scale factor reconciles them, and every match is exact to
-    // well under a cell (the two carets differ by less than two
-    // pixels in height, so the tolerance stays under that).
-    let scene = |cx: &mut gpui::VisualTestContext, strip_at_top: bool| -> CaretQuads {
+    // well under a cell.
+    let scene = |cx: &mut gpui::VisualTestContext| -> CaretQuads {
         cx.update(|window, _| {
             let scale = window.scale_factor();
             let viewport = window.viewport_size();
             let (width, height) = (viewport.width.as_f32(), viewport.height.as_f32());
-            let row_top = if strip_at_top {
-                0.
-            } else {
-                height - STRIP_ROW_PX
-            };
             let near = |got: f32, want: f32| (got - want * scale).abs() <= 0.75 * scale;
             let mut found = CaretQuads::default();
             for quad in &window.rendered_scene().quads {
@@ -1300,62 +1375,39 @@ fn one_caret_paints_in_the_live_input(cx: &mut gpui::TestAppContext) {
                 } else if near(w, cell_w) && near(h, cell_h) {
                     found.grid_caret = true;
                 }
-                found.strip_row_background |=
-                    near(w, width) && near(h, STRIP_ROW_PX) && near(top, row_top);
+                found.strip_row |= near(w, width)
+                    && near(h, STRIP_ROW_PX)
+                    && (near(top, 0.) || near(top, height - STRIP_ROW_PX));
             }
             found
         })
     };
-    let owns_line =
-        |terminal: &Arc<Mutex<Terminal>>| terminal.lock().expect("engine lock").editor_owns_line();
-    // The two seats, asserted wherever the dock puts the strip: the
-    // editor standing aside leaves the grid's caret as the only one,
-    // the owned line leaves the strip's.
-    let assert_seats = |cx: &mut gpui::VisualTestContext, dock: &str, strip_at_top: bool| {
-        terminal.lock().expect("engine lock").note_terminal_reset();
-        assert!(
-            !owns_line(&terminal),
-            "{dock}: the pin's own stage — an unfed zone stands the editor aside"
-        );
-        frame(cx);
-        assert_eq!(
-            scene(cx, strip_at_top),
-            CaretQuads {
-                strip_caret: false,
-                grid_caret: true,
-                strip_row_background: true,
-            },
-            "{dock}, the editor standing aside: the strip paints nothing and the grid's caret is the one on screen"
-        );
+    let overlays_live =
+        |terminal: &Arc<Mutex<Terminal>>| terminal.lock().expect("engine lock").overlays_live();
 
-        terminal.lock().expect("engine lock").note_prompt_start();
-        assert!(
-            owns_line(&terminal),
-            "{dock}: the pin's own stage — the prompt-start mark owns the line"
-        );
-        frame(cx);
-        assert_eq!(
-            scene(cx, strip_at_top),
-            CaretQuads {
-                strip_caret: true,
-                grid_caret: false,
-                strip_row_background: true,
-            },
-            "{dock}, the owned line: the strip's caret is the one on screen and the grid's prompt row paints none"
-        );
-    };
+    terminal.lock().expect("engine lock").note_terminal_reset();
+    assert!(
+        !overlays_live(&terminal),
+        "the pin's own stage — an unfed zone stands the overlays aside"
+    );
+    paint_frame(cx);
+    assert_eq!(
+        scene(cx),
+        THE_GRID_CARET_ALONE,
+        "the overlays standing aside: the grid's caret, and no other input's"
+    );
 
-    assert_seats(cx, "the top dock", true);
-
-    // The bottom dock through the live settings pass (`apply_options`
-    // is the config echo's route): the same two seats, the row at the
-    // grid's foot.
-    let options = cx.update(|_, cx| dropterm::core::terminal::TerminalOptions {
-        input_position: dropterm::core::config::InputPosition::Bottom,
-        ..pane.read(cx).options.clone()
-    });
-    cx.update(|_, cx| pane.update(cx, |pane, cx| pane.apply_options(options, cx)));
-    assert_seats(cx, "the bottom dock", false);
+    terminal.lock().expect("engine lock").note_prompt_start();
+    assert!(
+        overlays_live(&terminal),
+        "the pin's own stage — the prompt-start mark makes the overlays live"
+    );
+    paint_frame(cx);
+    assert_eq!(
+        scene(cx),
+        THE_GRID_CARET_ALONE,
+        "the overlays live: the grid's caret is still the only one on screen"
+    );
 
     // The engine outlives the pin (the drag pin's own note): its PTY
     // reader must never exit inside the test.

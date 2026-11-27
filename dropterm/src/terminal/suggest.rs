@@ -3,11 +3,10 @@
 //! The suggest view-model (gpui-parity Task 1): the view-shaped
 //! policy the pane consumes — the libcosmic widget's own pure
 //! helpers (`accept_kind` and the visible-row window) re-stated over
-//! GPUI's keystroke shape. The grid overlay's routing table and
-//! panel geometry retired with its paint (rich-input RI-10): the
-//! editor lane owns the menu's keys and its panel now. Core owns the
-//! model ([`dropterm::core::terminal::suggest`]); this module owns
-//! only the view-shaped decisions, headless-tested beside the input
+//! GPUI's keystroke shape, the overlay lane's routing table, and the
+//! opener's key gate. Core owns the model
+//! ([`dropterm::core::terminal::suggest`]); this module owns only the
+//! view-shaped decisions, headless-tested beside the input
 //! translation's pins.
 //!
 //! The ordering contract these helpers serve (the libcosmic
@@ -20,8 +19,8 @@ use std::sync::Arc;
 
 use dropterm::core::config::DropTermConfig;
 use dropterm::core::terminal::TerminalOptions;
-use dropterm::core::terminal::suggest::{self, AcceptKind};
-use gpui::Modifiers;
+use dropterm::core::terminal::suggest::{self, AcceptKind, MenuKey};
+use gpui::{Keystroke, Modifiers};
 
 /// The autosuggest soft keys (the libcosmic `accept_kind`): bare
 /// Right accepts the whole showing suggestion, Alt+Right one
@@ -45,13 +44,99 @@ pub(crate) fn accept_kind(key: &str, modifiers: Modifiers) -> Option<AcceptKind>
     }
 }
 
-/// The menu overlay's visible-row window (the libcosmic shape over
-/// core's locked budget): at most [`suggest::MENU_VISIBLE_ROWS`]
-/// rows starting at the scroll offset, fewer only when the list
-/// itself is shorter.
-pub(crate) fn menu_visible_window(scroll: usize, rows: usize) -> std::ops::Range<usize> {
-    let start = scroll.min(rows);
-    start..(start + suggest::MENU_VISIBLE_ROWS).min(rows)
+/// The completion menu's scoped-key verdict (the libcosmic
+/// `MenuRouting`, same rules): the claimed keys — bare up/down/enter/
+/// escape, Tab, and Shift+Tab — are the menu's alone while it shows;
+/// every other press closes it first and then processes normally
+/// (the ghost's accepts included). `None` is no menu routing at all —
+/// no menu shows — and the press is the shell's verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuRouting {
+    /// The press is the menu's: navigate, fill, accept, or close.
+    Consume(MenuKey),
+    /// Bare Tab: the fill-or-cycle decision.
+    FillOrCycle,
+    /// The press is the shell's and the menu stays: an unmodified
+    /// printable while the menu shows — the as-you-type edit keeps
+    /// it alive, the rows recompute engine-side (suggest-parity
+    /// spec, record finding 4).
+    KeepOpen,
+    /// The press closes the menu, then processes normally.
+    CloseThenProcess,
+}
+
+/// The scoped routing itself — pure, pinned headless against the
+/// libcosmic rules (the same table in GPUI's key names: `"up"`,
+/// `"down"`, `"enter"`, `"escape"`). `key_char` is the
+/// keystroke's produced character — the printable test's honest
+/// input, shift-bearing capitals included (an edit is an edit; only
+/// the command modifiers ctrl/alt/super exempt a key). `equal_line`
+/// is the engine's two-stage Enter pre-check — the typed line
+/// already equals the selection — consulted only for a bare Enter,
+/// which then closes-and-processes so the bytes run the command.
+pub(crate) fn menu_routing(
+    key: &str,
+    modifiers: Modifiers,
+    open: bool,
+    key_char: Option<char>,
+    equal_line: bool,
+) -> Option<MenuRouting> {
+    if !open {
+        return None;
+    }
+    // The command modifiers exempt a key from the menu's claims —
+    // chords are the shell's. Shift on a printable is not a command
+    // modifier: an edit is an edit.
+    let no_command_mods = !(modifiers.control || modifiers.alt || modifiers.platform);
+    let unmodified = no_command_mods && !modifiers.shift;
+    if unmodified {
+        match key {
+            "up" => return Some(MenuRouting::Consume(MenuKey::Up)),
+            "down" => return Some(MenuRouting::Consume(MenuKey::Down)),
+            "enter" => {
+                // The two-stage Enter (suggest-parity spec, record
+                // finding 4): an equal line closes-and-processes so
+                // the Enter bytes run the command; a differing line
+                // accepts the suffix and closes.
+                return Some(if equal_line {
+                    MenuRouting::CloseThenProcess
+                } else {
+                    MenuRouting::Consume(MenuKey::Accept)
+                });
+            }
+            "escape" => return Some(MenuRouting::Consume(MenuKey::Other)),
+            _ => {}
+        }
+    }
+    // Tab is the menu's while it shows (the lift, tab-surface OQ-1):
+    // bare Tab fills or cycles, Shift+Tab steps backwards. The
+    // shell's own completion has the press only while the menu is
+    // closed, where the routing reads None and the bytes flow.
+    if no_command_mods && key == "tab" {
+        return Some(if modifiers.shift {
+            MenuRouting::Consume(MenuKey::Up)
+        } else {
+            MenuRouting::FillOrCycle
+        });
+    }
+    // The as-you-type edit (record finding 4): a printable keeps the
+    // menu alive — the key's bytes flow to the PTY and the rows
+    // recompute on the echo's update (SP3's gate).
+    if no_command_mods && key_char.is_some() {
+        return Some(MenuRouting::KeepOpen);
+    }
+    Some(MenuRouting::CloseThenProcess)
+}
+
+/// The conditioned opener's key gate (tab-surface OQ-1): bare Tab
+/// alone may open the closed menu — the opener is SP2's own, and
+/// Shift+Tab stays the shell's back-tab here (its backwards claim is
+/// the showing menu's, in [`menu_routing`]). Whether the line
+/// qualifies is the engine's answer, not this gate's.
+pub(crate) fn opener_claims_tab(keystroke: &Keystroke) -> bool {
+    let modifiers = &keystroke.modifiers;
+    keystroke.key == "tab"
+        && !(modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform)
 }
 
 /// The terminal options a pane renders with (the libcosmic
@@ -177,16 +262,161 @@ mod tests {
         }
     }
 
+    fn key(modifiers: Modifiers, key: &str, typed: Option<&str>) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.to_string(),
+            key_char: typed.map(str::to_string),
+        }
+    }
+
     #[test]
-    fn the_menu_window_covers_the_visible_budget() {
-        // The locked budget: eight rows from the scroll offset,
-        // fewer only when the list is shorter. A scroll at the list's
-        // own length (the engine's bounds never produce it) is the
-        // ported shape's empty window, not a clamp of its own.
-        assert_eq!(menu_visible_window(0, 12), 0..8);
-        assert_eq!(menu_visible_window(4, 12), 4..12);
-        assert_eq!(menu_visible_window(3, 5), 3..5);
-        assert_eq!(menu_visible_window(9, 9), 9..9);
+    fn a_closed_menu_routes_nothing() {
+        // No menu shows: every press reads None, and the press is
+        // the shell's verbatim.
+        for (key, modifiers) in [
+            ("up", bare()),
+            ("down", bare()),
+            ("tab", bare()),
+            ("enter", bare()),
+            ("escape", bare()),
+            ("space", ctrl()),
+            ("a", bare()),
+        ] {
+            assert_eq!(
+                menu_routing(key, modifiers, false, None, false),
+                None,
+                "closed menu routes nothing: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_menu_claims_its_bare_keys() {
+        // The menu's own keys: navigate, accept, close — bare only.
+        assert_eq!(
+            menu_routing("up", bare(), true, None, false),
+            Some(MenuRouting::Consume(MenuKey::Up))
+        );
+        assert_eq!(
+            menu_routing("down", bare(), true, None, false),
+            Some(MenuRouting::Consume(MenuKey::Down))
+        );
+        assert_eq!(
+            menu_routing("enter", bare(), true, None, false),
+            Some(MenuRouting::Consume(MenuKey::Accept))
+        );
+        assert_eq!(
+            menu_routing("escape", bare(), true, None, false),
+            Some(MenuRouting::Consume(MenuKey::Other))
+        );
+    }
+
+    #[test]
+    fn every_press_an_open_menu_does_not_claim_closes_it_first() {
+        // VS Code's HasFocusedSuggestion shape: a modified claimed
+        // key, a bare unclaimed non-printable, and a bound action
+        // chord all read CloseThenProcess — the press still processes
+        // normally below (the ghost's accepts included).
+        for (key, modifiers, key_char) in [
+            ("up", ctrl(), None),
+            ("up", shift(), None),
+            ("home", bare(), None),
+            ("c", ctrl(), None),
+        ] {
+            assert_eq!(
+                menu_routing(key, modifiers, true, key_char, false),
+                Some(MenuRouting::CloseThenProcess),
+                "unclaimed press closes: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_printable_keeps_the_menu_open() {
+        // The as-you-type rule (suggest-parity spec, record finding
+        // 4): an unmodified printable is an edit, not a close — the
+        // menu stays and the key's bytes flow to the PTY; the rows
+        // recompute on the echo's update.
+        assert_eq!(
+            menu_routing("a", bare(), true, Some('a'), false),
+            Some(MenuRouting::KeepOpen)
+        );
+        assert_eq!(
+            menu_routing("space", bare(), true, Some(' '), false),
+            Some(MenuRouting::KeepOpen)
+        );
+    }
+
+    #[test]
+    fn a_capital_is_still_a_printable_edit() {
+        // Shift is not a command modifier on a printable: typing a
+        // capital keeps the menu (an edit is an edit); only
+        // ctrl/alt/super exempt a key.
+        assert_eq!(
+            menu_routing("a", shift(), true, Some('A'), false),
+            Some(MenuRouting::KeepOpen)
+        );
+    }
+
+    #[test]
+    fn a_bare_tab_fills_or_cycles_while_the_menu_shows() {
+        // The lift (rich-input spec; on the overlay lane from
+        // suggest-overlay SO-5): Tab is the menu's fill while it
+        // shows — the longest common prefix of the rows' own
+        // continuations, else a cycle of the selection. The shell's
+        // completion is the press's only while the menu is closed.
+        assert_eq!(
+            menu_routing("tab", bare(), true, None, false),
+            Some(MenuRouting::FillOrCycle)
+        );
+    }
+
+    #[test]
+    fn shift_tab_steps_backwards_while_the_menu_shows() {
+        // Shift+Tab is the backwards step while the menu shows
+        // (tab-surface OQ-1, SP2's shape); its bytes are the shell's
+        // back-tab only while the menu is closed.
+        assert_eq!(
+            menu_routing("tab", shift(), true, None, false),
+            Some(MenuRouting::Consume(MenuKey::Up))
+        );
+    }
+
+    #[test]
+    fn enter_on_an_equal_line_runs_instead() {
+        // The two-stage Enter (suggest-parity spec, record finding
+        // 4): the typed line already equals the selection — the
+        // routing closes-and-processes so the Enter bytes reach the
+        // shell and the command runs.
+        assert_eq!(
+            menu_routing("enter", bare(), true, Some('\r'), true),
+            Some(MenuRouting::CloseThenProcess)
+        );
+    }
+
+    #[test]
+    fn enter_on_a_differing_line_accepts() {
+        // The accept stage: a differing line's Enter is the menu's —
+        // the suffix lands and the menu closes.
+        assert_eq!(
+            menu_routing("enter", bare(), true, Some('\r'), false),
+            Some(MenuRouting::Consume(MenuKey::Accept))
+        );
+    }
+
+    #[test]
+    fn the_conditioned_opener_is_bare_tab_alone() {
+        // Bare Tab is the opener's key while the menu is closed...
+        assert!(opener_claims_tab(&key(bare(), "tab", None)));
+        // ...and nothing else claims: Shift+Tab is the shell's
+        // back-tab here (tab-surface OQ-1 — its backwards claim is
+        // the showing menu's), and the command modifiers were never
+        // the opener's.
+        assert!(!opener_claims_tab(&key(shift(), "tab", None)));
+        assert!(!opener_claims_tab(&key(ctrl(), "tab", None)));
+        assert!(!opener_claims_tab(&key(alt(), "tab", None)));
+        assert!(!opener_claims_tab(&key(bare(), "a", Some("a"))));
     }
 
     #[test]
