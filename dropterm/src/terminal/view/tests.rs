@@ -996,6 +996,242 @@ fn a_released_drag_includes_both_boundary_cells(cx: &mut gpui::TestAppContext) {
     std::mem::forget(terminal);
 }
 
+// --- the drag that would not let go: the release off the pane, and
+// the release that never arrived ---
+
+/// The gesture pins' strip over the pane: the tab strip's stand-in.
+/// A release on it lands inside the window and outside the pane's
+/// hitbox — the shape the first row sits under in the drawer.
+const STRIP_HEIGHT: f32 = 40.;
+
+/// The gesture pins' stage: a pane under the strip, mounted the
+/// drawer's way (through the Kit Root).
+struct GestureStage {
+    pane: Entity<TerminalPane>,
+}
+
+impl gpui::Render for GestureStage {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().w_full().flex_none().h(px(STRIP_HEIGHT)))
+            .child(div().flex_1().min_h_0().child(self.pane.clone()))
+    }
+}
+
+/// A quiet pane on the gesture stage — a silent pty (`sleep`), so the
+/// engine's reader stays parked — drawn once so the pane's hitbox and
+/// listeners stand. The window's context, the engine, and the pane
+/// come back; the pins leak the engine on purpose (the tab pin's
+/// teardown note).
+fn staged_pane(
+    cx: &mut gpui::TestAppContext,
+) -> (
+    gpui::VisualTestContext,
+    Arc<Mutex<Terminal>>,
+    Entity<TerminalPane>,
+) {
+    // The tab pin's own switch: the boot pre-warms the suggestion
+    // generators on worker threads, and a landing worker wakes the
+    // pane's pump off the test's thread.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    let config = request_config();
+    let (terminal, pane) = cx
+        .update(|cx| {
+            let request = PaneRequest {
+                program: "/bin/sleep".to_string(),
+                args: vec!["60".to_string()],
+                cwd: None,
+                env: std::collections::HashMap::default(),
+                spawned_as: "sh".to_string(),
+                profile_id: None,
+                appearance: PaneAppearance {
+                    colors: boot_colors(&config, &[]),
+                    font_size: config.font_size,
+                    scrollback: config.scrollback_lines,
+                },
+            };
+            boot_pane(cx, &config, request, None, TabId(0), None)
+        })
+        .expect("boot the quiet pane");
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(px_bounds(900., 600.))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let stage = cx.new(|_| GestureStage { pane: pane.clone() });
+                    cx.new(|cx| gpui_component::Root::new(stage, window, cx))
+                },
+            )
+        })
+        .expect("open the stage's window");
+    let mut cx = gpui::VisualTestContext::from_window(handle.into(), cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    (cx, terminal, pane)
+}
+
+/// A window point over the pane's `row`th row, `cell` cells in plus
+/// `fraction` of one — the fraction picks the cell's side, so a
+/// press at 0.75 anchors after its character and a drag to 0.25
+/// ends before its target's.
+fn over_cell(pane: &TerminalPane, row: f32, cell: f32, fraction: f32) -> gpui::Point<Pixels> {
+    let (width, height) = {
+        let terminal = pane.terminal.lock().expect("engine lock");
+        let size = terminal.size();
+        (size.cell_width, size.cell_height)
+    };
+    let origin = *pane.viewport_origin.lock().expect("pane origin");
+    point(
+        origin.x + px((cell + fraction) * width),
+        origin.y + px((row + 0.5) * height),
+    )
+}
+
+/// The columns a Copy would take: the standing selection's first and
+/// last on its one row, `None` with nothing standing.
+fn selected_columns(terminal: &Arc<Mutex<Terminal>>) -> Option<(usize, usize)> {
+    let terminal = terminal.lock().expect("engine lock");
+    let term = terminal.term.lock();
+    term.selection
+        .as_ref()
+        .and_then(|selection| selection.to_range(&term))
+        .map(|range| (range.start.column.0, range.end.column.0))
+}
+
+#[gpui::test]
+fn a_release_inside_the_pane_ends_the_selection_drag(cx: &mut gpui::TestAppContext) {
+    // The standing path through gpui's real dispatch — the control
+    // for the two pins below it: press, drag, release over the grid
+    // finalizes the selection, and a pointer with no button held
+    // moves nothing after.
+    let (mut cx, terminal, pane) = staged_pane(cx);
+    let press = cx.read(|cx| over_cell(pane.read(cx), 0., 12., 0.75));
+    let drag = cx.read(|cx| over_cell(pane.read(cx), 0., 40., 0.25));
+    cx.simulate_mouse_down(press, gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_move(drag, gpui::MouseButton::Left, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((13, 39)),
+        "the drag stands unfinalized while the button holds"
+    );
+
+    cx.simulate_mouse_up(drag, gpui::MouseButton::Left, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "the release ends the drag with both boundary cells in"
+    );
+
+    let roam = cx.read(|cx| over_cell(pane.read(cx), 3., 60., 0.5));
+    cx.simulate_mouse_move(roam, None, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "a pointer with no button never extends the selection"
+    );
+    std::mem::forget(terminal);
+}
+
+#[gpui::test]
+fn a_release_outside_the_pane_ends_the_selection_drag(cx: &mut gpui::TestAppContext) {
+    // The owner's report: a drag across a row, the button held a
+    // beat, released — and the highlight went on following the
+    // pointer, as if Shift were held. gpui gates every div mouse
+    // listener on the hitbox under the pointer, the pane's release
+    // listener included, so a release landing off the pane — the tab
+    // strip over the first row, the band under the last, the desktop
+    // past the drawer's edge, every place a long drag ends — never
+    // reached it, and the drag stood armed for each motion after.
+    // The release is the drag's wherever it lands: off the hitbox,
+    // the pane takes it in the capture phase.
+    let (mut cx, terminal, pane) = staged_pane(cx);
+    let press = cx.read(|cx| over_cell(pane.read(cx), 0., 12., 0.75));
+    let drag = cx.read(|cx| over_cell(pane.read(cx), 0., 40., 0.25));
+    cx.simulate_mouse_down(press, gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_move(drag, gpui::MouseButton::Left, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((13, 39)),
+        "the drag stands unfinalized while the button holds"
+    );
+
+    // The release lands on the strip: inside the window, off the pane.
+    cx.simulate_mouse_up(
+        point(drag.x, px(STRIP_HEIGHT / 2.)),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "the off-pane release ends the drag through the release path, both boundary cells in"
+    );
+
+    // Back over the grid with no button held: nothing may move.
+    let roam = cx.read(|cx| over_cell(pane.read(cx), 3., 60., 0.5));
+    cx.simulate_mouse_move(roam, None, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "a pointer with no button never extends the selection"
+    );
+    std::mem::forget(terminal);
+}
+
+#[gpui::test]
+fn a_motion_with_no_button_held_ends_the_selection_drag(cx: &mut gpui::TestAppContext) {
+    // The same stuck drag by the other door: no release reaches the
+    // window at all. gpui's wayland client drops a button event that
+    // follows a pointer leave, and any platform can lose one; the
+    // pane had no second word on the drag. Every motion carries the
+    // platform's own button state (`pressed_button`), so the drag
+    // reconciles against it: a motion with no button held is the
+    // release that never came.
+    let (mut cx, terminal, pane) = staged_pane(cx);
+    let press = cx.read(|cx| over_cell(pane.read(cx), 0., 12., 0.75));
+    let drag = cx.read(|cx| over_cell(pane.read(cx), 0., 40., 0.25));
+    cx.simulate_mouse_down(press, gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.simulate_mouse_move(drag, gpui::MouseButton::Left, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((13, 39)),
+        "the drag stands unfinalized while the button holds"
+    );
+
+    // No release arrives. The pointer moves on with no button held.
+    let stray = cx.read(|cx| over_cell(pane.read(cx), 0., 30., 0.5));
+    cx.simulate_mouse_move(stray, None, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "the buttonless motion ends the drag where the button was last seen held, \
+         through the release path — the highlight does not follow it"
+    );
+
+    let roam = cx.read(|cx| over_cell(pane.read(cx), 3., 60., 0.5));
+    cx.simulate_mouse_move(roam, None, gpui::Modifiers::default());
+    assert_eq!(
+        selected_columns(&terminal),
+        Some((12, 40)),
+        "nor any motion after"
+    );
+    std::mem::forget(terminal);
+}
+
 /// The probe window's root: gpui demands a Render entity.
 struct PureApp;
 impl gpui::Render for PureApp {
