@@ -4,7 +4,7 @@ What each tagged release changed, newest first - a curated, linkable summary; th
 
 ## Next (unreleased)
 
-- **Rich input** — the Warp-behavior input editor behind `input_mode`, **default `native`**: the default build keeps today's bare shell exactly (every keystroke to the PTY, the whole suggestion lane dark — the old overlay surfaces retired with the editor's ship), while `input_mode = "rich"` gives DropTerm the prompt line at a live prompt — buffered editing with the full chord table, live syntax highlight with the unknown-command underline, the restored completion contract (as-you-type menu, Tab's fill-or-cycle restored inside the editor, two-stage Enter), DropTerm-side history navigation, Enter by PTY-write, and the strip's second dock under `input_position = "top"` ([rich input](rich-input.md), [configuration](configuration.md#auto-complete)).
+- **Rich input** — suggestions over your shell's own line behind `input_mode`, **default `native`**: the default build keeps the bare shell exactly (every keystroke to the PTY, nothing suggested), while `input_mode = "rich"` leaves the line the shell's and draws two overlays over the prompt row at a live prompt — a ghost for the rest of the command (Right accepts it whole, Alt+Right one word) and a completion menu that opens as you type from two characters and on Tab (Up/Down and Shift+Tab navigate, Tab fills the longest common prefix or cycles, Enter completes and a second Enter runs), laid out from the character cell: two-line rows, the type badge at the panel's right edge, about 560 px wide, at most eight rows and never past half the pane. The shell's editing, history, and key bindings stay yours ([rich input](rich-input.md), [configuration](configuration.md#auto-complete)).
 
 ## v0.5.0 (2026-11-12)
 

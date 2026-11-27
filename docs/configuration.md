@@ -85,11 +85,9 @@ A fresh install has no files here at all - each appears the first time something
 | `status_bar_activity_mark` | `true` |
 | `panel_rail_enabled` | `false` |
 | `input_mode` | `Native` |
-| `input_position` | `Bottom` |
 | `input_ghost` | `true` |
 | `input_menu` | `true` |
 | `input_auto_popup` | `true` |
-| `input_highlight` | `true` |
 | `input_descriptions` | `true` |
 | `input_badges` | `true` |
 | `input_icons` | `true` |
@@ -252,16 +250,14 @@ The toggles apply at their next natural trigger - the session toggle at the next
 
 ## Auto complete
 
-The prompt line's surfaces. `input_mode` picks who owns the line: `Native` - the default - is the bare shell, every keystroke forwarded verbatim and the whole suggest lane dark; `Rich` is DropTerm's input editor, owning the line at a live prompt (buffering, editing, highlighting, completing, executing by PTY-write). The three old keys - `autosuggestions_enabled`, `autosuggestions_menu_enabled`, `autosuggestions_menu_auto` - are gone outright, no migration: their roles live under the decoupled names below, and a config file still carrying the old lines loads and ignores them.
+The suggestions over the prompt line. `input_mode` picks whether they show: `Native` - the default - is the bare shell, every keystroke forwarded verbatim and nothing suggested; `Rich` keeps the shell's own line and draws the ghost and the completion menu over it at a live prompt ([rich input](rich-input.md)). The three old keys - `autosuggestions_enabled`, `autosuggestions_menu_enabled`, `autosuggestions_menu_auto` - are gone outright, no migration: their roles live under the decoupled names below, and a config file still carrying the old lines loads and ignores them.
 
 | Key | Default | What it does |
 |---|---|---|
-| `input_mode` | `Native` | Who owns the prompt line (per-profile through the profile field of the same name; unset follows this global). `Native` is the bare shell - every keystroke reaches the PTY verbatim, no ghost, no menu, no highlight. `Rich` is the editor: at a live, focused, unscrolled prompt DropTerm buffers and edits the line, highlights it, completes it, and runs it with Enter; a foreground program or an unsure prompt detection passes keys through. Applies live. |
-| `input_position` | `Bottom` | Where the rich-mode input strip docks: `Bottom` at the grid's foot where the prompt is; `Top` at the head of the grid region - every Enter drops the executed command into the flow below while the grid keeps scrolling like a normal terminal. Native mode ignores this. Applies live. |
-| `input_ghost` | `true` | Ghost text inside the editor: the dim rest-of-command after the cursor, Right accepting it whole and Alt+Right one word - the old `autosuggestions_enabled` role. `false` darkens the ghost alone. Applies live. |
-| `input_menu` | `true` | The completion menu ([the menu](autosuggestions.md#the-menu)): the candidate list over the owned line, opened by a bare Tab on a word with matching rows and - with `input_auto_popup` - as you type - the old `autosuggestions_menu_enabled` role. `false` removes the menu surface exactly; the ghost is untouched. Applies live: a showing menu closes the moment the switch lands. |
+| `input_mode` | `Native` | Whether the suggestions show (per-profile through the profile field of the same name; unset follows this global). `Native` is the bare shell - every keystroke reaches the PTY verbatim, no ghost, no menu. `Rich` leaves the line the shell's own and draws two overlays over the prompt row at a live, focused, unscrolled prompt: the ghost and the completion menu; a foreground program or a prompt DropTerm cannot recognize stands both aside and every key is the shell's. Applies live. |
+| `input_ghost` | `true` | Ghost text over the shell's prompt row: the dim rest-of-command after the cursor, Right accepting it whole and Alt+Right one word - the old `autosuggestions_enabled` role. `false` darkens the ghost alone. Applies live. |
+| `input_menu` | `true` | The completion menu ([the menu](autosuggestions.md#the-menu)): a panel over the prompt row listing every provider's candidates for the segment being typed, opened by a bare Tab on a word with matching rows and - with `input_auto_popup` - as you type - the old `autosuggestions_menu_enabled` role. `false` removes the menu surface exactly; the ghost is untouched. Applies live: a showing menu closes the moment the switch lands. |
 | `input_auto_popup` | `true` | The menu's as-you-type path: an idle prompt whose typed segment changes - at the line end, past the two-character floor - pops the menu without a key, a single qualifying row included - the old `autosuggestions_menu_auto` role. `false` leaves Tab the only opener. Applies live. |
-| `input_highlight` | `true` | Live syntax highlight of the owned line: command known-vs-unknown, flags, strings, variables, with the unknown command underlined in red. `false` renders the line plain. Applies live. |
 | `input_descriptions` | `true` | Menu rows carry the completions corpus' descriptions. `false` hides the description column. Applies live. |
 | `input_badges` | `true` | Menu rows carry their type badges - cmd/flag/path/hist/env/sub. `false` hides the badges. Applies live. |
 | `input_icons` | `true` | Menu rows carry their icons. `false` hides the icons. Applies live. |
@@ -336,7 +332,7 @@ Profiles are named presets of what a tab runs, managed on the [Settings window](
 | `color_scheme` | unset | A built-in scheme name for this profile's tabs - one name, independent of light/dark mode. | live |
 | `font_size` | unset | Font size in points for this profile's tabs. | live |
 | `scrollback_lines` | unset | Scrollback capacity; capacity is fixed when the terminal is created. | next spawn |
-| `input_mode` | unset | The prompt-line mode for this profile's tabs - `Rich` (DropTerm's editor) or `Native` (the bare shell); unset follows the global `input_mode`. | live |
+| `input_mode` | unset | Whether this profile's tabs show the suggestions - `Rich` (the ghost and the menu over the shell's line) or `Native` (the bare shell); unset follows the global `input_mode`. | live |
 | `env` | unset | Extra environment variables, merged over the inherited environment at spawn. | next spawn |
 
 The appearance fields resolve per field, never per profile: a set field wins, an unset field inherits the global value - and each decides on its own. A profile deleted while its tabs run degrades them to the global picks field by field, never rewritten, never an error. The window background follows the active tab's resolution, so the fallback background moves with a tab switch.

@@ -1598,6 +1598,60 @@ fn a_stale_dock_presence_key_still_loads_and_other_keys_apply() {
     assert!(!dir.join("config.ron.bak").exists());
 }
 
+/// README and every top-level page under `docs/`, read at run time
+/// so a page is covered the day it lands. `releases.md` is left out:
+/// release notes are history, not a description of the build.
+fn user_doc_pages() -> Vec<(String, String)> {
+    let docs = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs"));
+    let mut pages = vec![(
+        "README.md".to_string(),
+        include_str!("../../../../README.md").to_string(),
+    )];
+    for entry in std::fs::read_dir(docs).expect("the docs directory") {
+        let path = entry.expect("a docs entry").path();
+        let is_page = path.extension().is_some_and(|ext| ext == "md")
+            && path.file_name().is_some_and(|name| name != "releases.md");
+        if is_page {
+            let name = path.file_name().expect("a page has a name");
+            pages.push((
+                format!("docs/{}", name.to_string_lossy()),
+                std::fs::read_to_string(&path).expect("a docs page reads"),
+            ));
+        }
+    }
+    pages.sort();
+    pages
+}
+
+#[test]
+fn no_user_doc_names_the_retired_input() {
+    // DropTerm's own input editor left (suggest-overlay): its two
+    // keys, its strip, and the editor itself. No page that describes
+    // the build may still name them, in any of the vocabularies the
+    // docs used for it.
+    const RETIRED: [&str; 6] = [
+        "input_position",
+        "input_highlight",
+        "input strip",
+        "dropterm's editor",
+        "rich editor",
+        "owned line",
+    ];
+    let mut offenders = Vec::new();
+    for (page, text) in user_doc_pages() {
+        let lower = text.to_lowercase();
+        for retired in RETIRED {
+            if lower.contains(retired) {
+                offenders.push(format!("{page}: {retired:?}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a user doc still names the retired input: {offenders:#?}"
+    );
+}
+
 /// The key count one documentation index advertises on its
 /// Configuration line: "all N config keys".
 fn advertised_key_count(text: &str, page: &str) -> usize {
