@@ -403,13 +403,6 @@ impl Suggest {
     /// the committed command and its cwd, when the toggle armed one —
     /// consumed exactly once by the engine's store write after each
     /// step.
-    /// The ring's commands, newest-first (rich-input RI-5): the
-    /// editor's history-navigation slice, read fresh at each
-    /// navigation entry.
-    pub(crate) fn history_newest_first(&self) -> Vec<String> {
-        self.ring.iter().rev().cloned().collect()
-    }
-
     pub(crate) fn take_store_commit(&mut self) -> Option<(String, Option<String>)> {
         self.store_commit.take()
     }

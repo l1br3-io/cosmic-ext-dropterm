@@ -368,8 +368,6 @@ pub(crate) fn pane_options(
         // pass like the toggles (rich-input RI-3); the per-profile
         // resolution lands where the spawn knows its profile.
         input_mode: config.input_mode,
-        input_position: config.input_position,
-        input_highlight: config.input_highlight,
         input_descriptions: config.input_descriptions,
         input_badges: config.input_badges,
         input_icons: config.input_icons,
@@ -377,8 +375,7 @@ pub(crate) fn pane_options(
         input_compact_rows: config.input_compact_rows,
         // The folded surfaces read the decoupled rich-input keys
         // (rich-input RI-1's cull): the internal option names keep
-        // their shape — the editor's own wiring (RI-3/RI-4) renames
-        // them — but their truth is the new keys', roles unchanged.
+        // their shape, their truth is the keys', roles unchanged.
         autosuggestions_enabled: config.input_ghost,
         images_enabled: config.images_enabled,
         autosuggestions_paths_enabled: config.autosuggestions_paths_enabled,
