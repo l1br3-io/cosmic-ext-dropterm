@@ -221,7 +221,9 @@ pub(crate) struct TerminalPane {
     focus: gpui::FocusHandle,
     /// The click-kind state machine's last click.
     click: Option<(ClickKind, std::time::Instant)>,
-    /// Whether a left drag is extending the selection.
+    /// Whether a left drag is extending the selection — armed by the
+    /// press, ended by the release wherever it lands or by the first
+    /// motion holding no button.
     dragging: bool,
     /// The wheel accumulator (fractional notches carry over).
     scroll_lines: f32,
@@ -1763,15 +1765,35 @@ impl TerminalPane {
 
     /// A motion: a reported gesture extends through the encoder
     /// (motion only encodes while a button holds — the reporter's
-    /// own rule), a selection drag extends the selection.
+    /// own rule), a selection drag extends the selection — and a
+    /// motion holding no button ends a drag whose release never
+    /// reached the pane. Every motion carries the platform's own
+    /// button state, so that is the drag's second word on its end:
+    /// a release can be lost below the pane (gpui's wayland client
+    /// drops a button event that follows a pointer leave) and the
+    /// drag then followed the bare pointer as if Shift were held.
     fn on_motion(
         &mut self,
         position: gpui::Point<gpui::Pixels>,
+        pressed: Option<gpui::MouseButton>,
         modifiers: gpui::Modifiers,
         cx: &mut Context<Self>,
     ) {
         if self.reporting_gesture {
             self.report_pointer(PointerEvent::Moved, position, modifiers);
+            return;
+        }
+        if self.dragging && pressed != Some(gpui::MouseButton::Left) {
+            if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+                println!(
+                    "dropterm: motion at ({:.0},{:.0}) holds no button while a drag stands — \
+                     ending the drag (its release never reached the pane)",
+                    position.x.as_f32(),
+                    position.y.as_f32()
+                );
+            }
+            self.dragging = false;
+            self.finalize_selection(cx);
             return;
         }
         self.on_left_drag(position, cx);
@@ -1809,11 +1831,10 @@ impl TerminalPane {
     }
 
     /// A release: a reported gesture ends through the encoder
-    /// (whatever button it pressed); the left button finalizes the
-    /// selection — expanding its sides first, so every cell the drag
-    /// touched is included (the boundary-cell fix), then logging the
-    /// byte count a Copy would take. The libcosmic rows carry no
-    /// copy-on-select — the selection stands until Copy grabs it.
+    /// (whatever button it pressed); the left button ends the
+    /// selection drag through [`Self::finalize_selection`]. The
+    /// libcosmic rows carry no copy-on-select — the selection stands
+    /// until Copy grabs it.
     fn on_release(
         &mut self,
         button: gpui::MouseButton,
@@ -1827,6 +1848,13 @@ impl TerminalPane {
             gpui::MouseButton::Right => PointerButton::Right,
             gpui::MouseButton::Navigate(_) => return,
         };
+        if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+            println!(
+                "dropterm: release {neutral:?} at ({:.0},{:.0})",
+                position.x.as_f32(),
+                position.y.as_f32()
+            );
+        }
         if self.reporting_gesture {
             self.report_pointer(PointerEvent::Released(neutral), position, modifiers);
             self.reporting_gesture = false;
@@ -1836,6 +1864,46 @@ impl TerminalPane {
             return;
         }
         self.dragging = false;
+        self.finalize_selection(cx);
+    }
+
+    /// A left release that landed outside the pane's hitbox while a
+    /// selection drag stands. gpui gates the frame's bubble-phase
+    /// release listener on that hitbox, so a release landing off the
+    /// pane — the tab strip over the first row, the band under the
+    /// last, the desktop past the drawer's edge — never reached it
+    /// and the drag stood armed for every motion after (the owner's
+    /// 2026-11-27 report: the highlight "does not let go"). The
+    /// capture phase sees the release wherever it lands in the
+    /// window and hands it the same path. With no drag standing it is
+    /// another element's release and stays untouched.
+    fn on_release_outside(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.dragging {
+            return;
+        }
+        if std::env::var_os("DROPTERM_TRACE_KEYS").is_some() {
+            println!(
+                "dropterm: release at ({:.0},{:.0}) lands outside the pane's hitbox — \
+                 ending the drag through the capture phase",
+                position.x.as_f32(),
+                position.y.as_f32()
+            );
+        }
+        self.on_release(gpui::MouseButton::Left, position, modifiers, cx);
+    }
+
+    /// The selection's one finalize, the path every drag end shares
+    /// — the release under the pointer, the release off the pane, the
+    /// motion that reveals a lost one: expanding the selection's
+    /// sides first, so every cell the drag touched is included (the
+    /// boundary-cell fix), then logging the byte count a Copy would
+    /// take.
+    fn finalize_selection(&mut self, cx: &mut Context<Self>) {
         let selected = {
             let mut terminal = self.terminal.lock().expect("engine lock");
             let text = {
@@ -2046,7 +2114,7 @@ impl gpui::Render for TerminalPane {
                 let pane = pane.clone();
                 move |event: &gpui::MouseMoveEvent, _window, cx| {
                     pane.update(cx, |pane, cx| {
-                        pane.on_motion(event.position, event.modifiers, cx);
+                        pane.on_motion(event.position, event.pressed_button, event.modifiers, cx);
                     });
                 }
             })
@@ -2086,6 +2154,20 @@ impl gpui::Render for TerminalPane {
                             event.modifiers,
                             cx,
                         );
+                    });
+                }
+            })
+            // The release off the pane: the three bubble listeners
+            // above are hover-gated on the frame's hitbox, so a left
+            // release landing outside it never ended a selection
+            // drag. The capture phase's out-listener sees it wherever
+            // it lands in the window; with no drag standing it does
+            // nothing.
+            .on_mouse_up_out(gpui::MouseButton::Left, {
+                let pane = pane.clone();
+                move |event: &gpui::MouseUpEvent, _window, cx| {
+                    pane.update(cx, |pane, cx| {
+                        pane.on_release_outside(event.position, event.modifiers, cx);
                     });
                 }
             })
