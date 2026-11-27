@@ -2911,7 +2911,8 @@ impl Terminal {
     /// The overlay lane's Tab while the menu shows (suggest-overlay
     /// spec, SO-3): the fill, written to the PTY. The typed word is
     /// scraped off the screen, the decision is [`suggest::tab_fill`]'s
-    /// over the menu's own rows, and a fill's extension goes through
+    /// over the menu's own rows (each tier anchored at its own label,
+    /// [`suggest::fill_continuation`]), and a fill's extension goes through
     /// [`Self::input_no_scroll`]: typed characters, never a paste.
     /// One row standing closes the menu; otherwise the rows
     /// re-collect in place over the extended line, the one the shell
@@ -2931,14 +2932,7 @@ impl Terminal {
             .typed_segment(&before_cursor)
             .unwrap_or_default()
             .to_string();
-        let word = suggest::fill_word(&segment).to_string();
-        let labels: Vec<&str> = self
-            .menu
-            .rows()
-            .iter()
-            .map(|row| row.label.as_str())
-            .collect();
-        match suggest::tab_fill(&labels, &word) {
+        match suggest::tab_fill(self.menu.rows(), &segment) {
             suggest::TabFill::Insert { beyond, close } => {
                 self.menu_accept_echo = true;
                 self.input_no_scroll(beyond.clone().into_bytes());
@@ -2956,7 +2950,7 @@ impl Terminal {
                 }
             }
             suggest::TabFill::Cycle => {
-                self.menu.press(suggest::MenuKey::Down, &word);
+                self.menu.press(suggest::MenuKey::Down, &segment);
             }
         }
     }

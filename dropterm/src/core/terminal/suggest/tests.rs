@@ -2969,14 +2969,27 @@ fn env_rows_stay_silent_over_ssh() {
 }
 
 // --- Tab's fill while the menu shows (suggest-parity; on the overlay
-// lane from suggest-overlay SO-3) ---
+// --- lane from suggest-overlay SO-3, each tier at its own anchor SO-4b) ---
+
+/// A menu row as the fill reads it: the label and its tier.
+fn fill_row(label: &str, source: SuggestionSource) -> MenuCandidate {
+    MenuCandidate {
+        label: label.to_string(),
+        suffix: String::new(),
+        description: None,
+        source,
+    }
+}
 
 #[test]
 fn the_tab_fill_extends_the_lcp_else_cycles() {
-    // The LCP of the case-sensitive prefix rows extends "gi"
-    // (the rows that share it — gimp diverges and would cap the
-    // LCP at the query itself, the Cycle case below).
-    let rows = vec!["git", "git-status"];
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::Catalog;
+
+    // The LCP of the case-sensitive prefix rows extends "gi" (the
+    // rows that share it — gimp diverges and would cap the LCP at
+    // the query itself, the Cycle case below).
+    let rows = vec![fill_row("git", Catalog), fill_row("git-status", Catalog)];
     assert_eq!(
         tab_fill(&rows, "gi"),
         TabFill::Insert {
@@ -2993,11 +3006,120 @@ fn the_tab_fill_extends_the_lcp_else_cycles() {
         }
     );
     // No common extension: cycle.
-    assert_eq!(tab_fill(&["git", "gimp"], "gi"), TabFill::Cycle);
+    assert_eq!(
+        tab_fill(&[fill_row("git", Catalog), fill_row("gimp", Catalog)], "gi"),
+        TabFill::Cycle
+    );
     // Case-sensitive: a capital row never fills a lowercase query.
-    assert_eq!(tab_fill(&["Git", "Gimp"], "gi"), TabFill::Cycle);
+    assert_eq!(
+        tab_fill(&[fill_row("Git", Catalog), fill_row("Gimp", Catalog)], "gi"),
+        TabFill::Cycle
+    );
     // No prefix rows at all: cycle.
-    assert_eq!(tab_fill(&["cargo"], "gi"), TabFill::Cycle);
+    assert_eq!(
+        tab_fill(&[fill_row("cargo", Catalog)], "gi"),
+        TabFill::Cycle
+    );
+    // A line-equal row's empty continuation poisons the common
+    // prefix: Tab over an already-filled line cycles, never grows.
+    assert_eq!(tab_fill(&rows, "git"), TabFill::Cycle);
+}
+
+#[test]
+fn the_fill_anchors_a_path_row_at_the_tokens_final_component() {
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::Path;
+
+    // A path row's label is the bare listing entry, so the token is
+    // never its prefix: the row reads past the token's final
+    // component.
+    assert_eq!(
+        tab_fill(&[fill_row("Documents/", Path)], "cd ~/Doc"),
+        TabFill::Insert {
+            beyond: "uments/".to_string(),
+            close: true
+        }
+    );
+    // Two rows fill their shared component, and the menu stands.
+    assert_eq!(
+        tab_fill(
+            &[
+                fill_row("Documents/", Path),
+                fill_row("Documentaries/", Path)
+            ],
+            "cd ~/Docum"
+        ),
+        TabFill::Insert {
+            beyond: "ent".to_string(),
+            close: false
+        }
+    );
+    // The bare `~` root: the empty component, the whole entry the
+    // continuation.
+    assert_eq!(
+        tab_fill(&[fill_row(".config/", Path)], "ls ~"),
+        TabFill::Insert {
+            beyond: ".config/".to_string(),
+            close: true
+        }
+    );
+    // Control: two entries sharing nothing past the component fill
+    // nothing.
+    assert_eq!(
+        tab_fill(
+            &[fill_row("Documents/", Path), fill_row("Downloads/", Path)],
+            "cd ~/Do"
+        ),
+        TabFill::Cycle
+    );
+}
+
+#[test]
+fn the_fill_anchors_a_history_row_at_the_whole_typed_segment() {
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::History;
+
+    let rows = vec![
+        fill_row("cd src", History),
+        fill_row("cd src-cache", History),
+    ];
+    assert_eq!(
+        tab_fill(&rows, "cd s"),
+        TabFill::Insert {
+            beyond: "rc".to_string(),
+            close: false
+        }
+    );
+    assert_eq!(
+        tab_fill(&rows, "cd src-ca"),
+        TabFill::Insert {
+            beyond: "che".to_string(),
+            close: true
+        },
+        "the row the line outgrew contributes nothing"
+    );
+}
+
+#[test]
+fn the_fill_never_reinserts_the_typed_words_of_a_history_row() {
+    // The grow-the-line shape (the owner's 2026-11-24 report): a
+    // history row read past the token re-inserted the words already
+    // typed (`cd` Tab → `cd cd`). The whole segment is its anchor.
+    use super::{TabFill, tab_fill};
+    use SuggestionSource::History;
+
+    assert_eq!(
+        tab_fill(&[fill_row("cd", History)], "cd"),
+        TabFill::Cycle,
+        "a line-equal row has nothing to append"
+    );
+    assert_eq!(
+        tab_fill(&[fill_row("cd src", History)], "cd"),
+        TabFill::Insert {
+            beyond: " src".to_string(),
+            close: true
+        }
+    );
 }
 
 // --- the path rows: `./` and `../` leave every listing (suggest-overlay, SO-1) ---

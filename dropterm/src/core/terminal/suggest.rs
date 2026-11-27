@@ -2268,25 +2268,45 @@ pub(crate) enum MenuOutcome {
     Execute,
 }
 
-/// The word a menu row answers while the menu shows: the typed
-/// segment's last word. Tab's fill anchors each row's label at it,
-/// and the row's mark counts against it.
+/// One row's fill continuation against the current line
+/// (suggest-parity spec, the owner's 2026-11-24 reports): the bytes
+/// the row can still append at the cursor, derived per press, because
+/// the menu's rows may predate the line's edits. The anchor is the
+/// tier's own: a history label carries the whole typed segment; a
+/// path label is the bare listing entry, anchored at the token's
+/// final component (empty for the bare `~` root, and only while the
+/// token is path-shaped); the remaining tiers' labels begin with the
+/// trailing word (the catalog's command word, the walker's partial,
+/// the generator's token, the env name). `None` is a row that does
+/// not extend the line: it contributes nothing. A history row never
+/// rides the token: the token is the line's prefix only while the
+/// segment is one word long, and slicing past it on a multi-word line
+/// re-inserts bytes already typed.
 #[must_use]
-pub fn fill_word(typed: &str) -> &str {
-    typed.split_whitespace().next_back().unwrap_or_default()
+pub fn fill_continuation<'a>(row: &'a MenuCandidate, typed: &str, token: &str) -> Option<&'a str> {
+    let anchor = match row.source {
+        SuggestionSource::History => typed,
+        SuggestionSource::Path if is_path_shaped(token) => match token.rfind('/') {
+            Some(idx) => &token[idx + 1..],
+            None => "",
+        },
+        _ => token,
+    };
+    row.label.strip_prefix(anchor)
 }
 
 /// Tab's decision while the menu shows (suggest-parity spec): the
-/// longest common prefix of the rows whose label starts with the
-/// typed word case-sensitively. An extension of the word is the
-/// fill, with one row left standing closing the menu; anything else
-/// is a plain cycle. Pure over the labels the engine exposes.
+/// longest common prefix of the rows' continuations against the
+/// typed segment ([`fill_continuation`]), case-sensitively. A
+/// non-empty prefix is the fill, one row standing closing the menu;
+/// anything else is a plain cycle. Pure over the rows the engine
+/// exposes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TabFill {
-    /// The text beyond the typed word, and whether the menu closes
-    /// after it (one row left standing).
+    /// The text beyond what the typed line already holds, and
+    /// whether the menu closes after it (one row left standing).
     Insert {
-        /// What the line gains beyond the typed word.
+        /// What the line gains.
         beyond: String,
         /// Whether one row alone stands under the filled word.
         close: bool,
@@ -2295,39 +2315,29 @@ pub enum TabFill {
     Cycle,
 }
 
-/// Tab's fill-else-cycle over the showing rows ([`TabFill`]).
+/// Tab's fill-else-cycle over the showing rows ([`TabFill`]). A row
+/// with no continuation drops out; a line-equal row's empty
+/// continuation stays in and poisons the common prefix, so Tab over
+/// an already-filled line cycles rather than grows.
 #[must_use]
-pub fn tab_fill(labels: &[&str], typed: &str) -> TabFill {
-    let prefix_rows: Vec<&str> = labels
+pub fn tab_fill(rows: &[MenuCandidate], typed: &str) -> TabFill {
+    let token = trailing_token(typed);
+    let continuations: Vec<&str> = rows
         .iter()
-        .copied()
-        .filter(|label| label.starts_with(typed))
+        .filter_map(|row| fill_continuation(row, typed, token))
         .collect();
-    if prefix_rows.is_empty() {
+    let Some((first, rest)) = continuations.split_first() else {
+        return TabFill::Cycle;
+    };
+    let lcp = rest.iter().fold(*first, |common, continuation| {
+        shared_prefix(common, continuation)
+    });
+    if lcp.is_empty() {
         return TabFill::Cycle;
     }
-    let mut lcp = prefix_rows[0].to_string();
-    for label in &prefix_rows[1..] {
-        let common = lcp
-            .chars()
-            .zip(label.chars())
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a)
-            .collect::<String>();
-        lcp = common;
-    }
-    if lcp.len() > typed.len() && lcp.starts_with(typed) {
-        let beyond = lcp[typed.len()..].to_string();
-        let standing = prefix_rows
-            .iter()
-            .filter(|label| label.starts_with(lcp.as_str()))
-            .count();
-        TabFill::Insert {
-            beyond,
-            close: standing == 1,
-        }
-    } else {
-        TabFill::Cycle
+    TabFill::Insert {
+        beyond: lcp.to_string(),
+        close: continuations.len() == 1,
     }
 }
 

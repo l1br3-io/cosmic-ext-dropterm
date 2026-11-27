@@ -1128,24 +1128,13 @@ impl TerminalPane {
                 true
             }
             editor::EditorMenuRouting::FillOrCycle => {
-                let labels: Vec<String> = {
+                // The fill compares the rows' own continuations
+                // against the typed segment: the text to the caret.
+                let fill = {
                     let engine = self.terminal.lock().expect("engine lock");
-                    engine
-                        .menu_rows()
-                        .iter()
-                        .map(|row| row.label.clone())
-                        .collect()
+                    editor::tab_fill(engine.menu_rows(), &to_caret)
                 };
-                // The fill compares the typed segment — the last
-                // token of the buffer to the caret — against the
-                // rows' labels, case-sensitively.
-                let typed = to_caret
-                    .split_whitespace()
-                    .next_back()
-                    .unwrap_or_default()
-                    .to_string();
-                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-                match editor::tab_fill(&refs, &typed) {
+                match fill {
                     editor::TabFill::Insert { beyond, close } => {
                         self.editor.lock().expect("editor lock").paste(&beyond);
                         if close {

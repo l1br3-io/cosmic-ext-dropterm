@@ -5329,8 +5329,20 @@ fn a_fixed_family_host_answers_false_and_stays_healthy() {
 /// mode truth rides the options, and the auto-pop lane stands armed
 /// for the echo-handoff pin.
 fn rich_terminal() -> Terminal {
+    rich_terminal_over(|_options| {})
+}
+
+/// A rich-mode terminal whose options `tune` may shape (spawn truth
+/// included: it is read once at construction).
+fn rich_terminal_over(tune: impl FnOnce(&mut TerminalOptions)) -> Terminal {
     use alacritty_terminal::tty::Shell as PtyShell;
     let (tx, _rx) = mpsc::unbounded_channel();
+    let mut options = TerminalOptions {
+        input_mode: InputMode::Rich,
+        autosuggestions_menu_auto: true,
+        ..isolated_options()
+    };
+    tune(&mut options);
     Terminal::new(
         Box::new(PlainHost::default()),
         TabId(0),
@@ -5341,11 +5353,7 @@ fn rich_terminal() -> Terminal {
             drain_on_exit: true,
             ..Options::default()
         },
-        &TerminalOptions {
-            input_mode: InputMode::Rich,
-            autosuggestions_menu_auto: true,
-            ..isolated_options()
-        },
+        &options,
         &Colors::default(),
     )
     .expect("spawn a rich-mode /bin/sh test terminal")
@@ -5973,7 +5981,16 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
 /// A terminal on the screen-read lane in either mode, the popup as
 /// given, driven to a live prompt on the grid's bottom row.
 fn lane_terminal(mode: InputMode, menu_auto: bool) -> Terminal {
-    let mut terminal = rich_terminal();
+    lane_terminal_over(mode, menu_auto, |_options| {})
+}
+
+/// [`lane_terminal`] with the options `tune` may shape.
+fn lane_terminal_over(
+    mode: InputMode,
+    menu_auto: bool,
+    tune: impl FnOnce(&mut TerminalOptions),
+) -> Terminal {
+    let mut terminal = rich_terminal_over(tune);
     terminal.set_config(
         &TerminalOptions {
             input_mode: mode,
@@ -6308,4 +6325,46 @@ fn typed_text_reads_the_screen_under_the_anchor() {
         None,
         "a word no spec carries has no hint"
     );
+}
+
+// --- the fill anchors each tier at its own label (suggest-overlay SO-4b) ---
+
+#[test]
+fn a_tab_fill_completes_a_path_token_from_the_listing() {
+    // A path row's label is the bare listing entry, so the fill reads
+    // it past the token's final component: `cd <dir>/Doc` over
+    // `Documents/` fills `uments/`, one row standing closes the menu,
+    // and the echo lands the completed path.
+    let dir = path_fixture("fill");
+    std::fs::create_dir_all(dir.join("Documents")).expect("fixture directory");
+    let prefix = dir.to_string_lossy().into_owned();
+    // The path tier rides the spawn gate: a tab spawned as a shell.
+    let mut terminal = lane_terminal_over(InputMode::Rich, true, |options| {
+        options.spawned_program = "/bin/sh".to_string();
+    });
+    let typed = format!("cd {prefix}/Doc");
+    type_at_prompt(&mut terminal, &typed);
+    assert!(
+        terminal.menu_is_open(),
+        "the path tier's single row pops the menu"
+    );
+    assert_eq!(
+        row_labels(&terminal),
+        vec!["Documents/".to_string()],
+        "the pin's own stage: the path row is the menu's"
+    );
+    terminal.menu_tab();
+    assert!(!terminal.menu_is_open(), "one row standing closes the menu");
+    let filled = format!("$ cd {prefix}/Documents/");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == filled,
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        filled.chars().count(),
+        "the fill wrote exactly the extension"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
