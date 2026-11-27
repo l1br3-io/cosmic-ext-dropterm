@@ -6156,3 +6156,55 @@ fn a_tab_fill_completes_a_path_token_from_the_listing() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the row budget follows the pane (suggest-overlay SO-10) ---
+
+#[test]
+fn the_served_budget_follows_the_grid_and_the_density() {
+    // The budget is the pane's: the screen's rows by the cell height
+    // make the pane, the density makes the row, at most eight rows
+    // and never below one. A resize moves it with the grid, and a
+    // compact row fits twice as many under the ceiling.
+    let mut terminal = rich_terminal();
+    let (width, cell_h) = {
+        let size = terminal.size();
+        (size.width, size.cell_height)
+    };
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test row counts and their px products are far below both u32::MAX and f32's mantissa"
+    )]
+    let serve = |terminal: &mut Terminal, rows: u32| -> usize {
+        terminal.resize(width, (cell_h * rows as f32).ceil() as u32);
+        assert_eq!(
+            terminal.term.lock().grid().screen_lines(),
+            rows as usize,
+            "the pin's own stage: a {rows}-row grid"
+        );
+        terminal.menu_visible_rows()
+    };
+    assert_eq!(serve(&mut terminal, 40), 8, "forty rows: the ceiling alone");
+    assert_eq!(
+        serve(&mut terminal, 12),
+        2,
+        "twelve rows: about half the pane, comfortable"
+    );
+    assert_eq!(serve(&mut terminal, 4), 1, "four rows: never below one");
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: true,
+            input_compact_rows: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    assert_eq!(
+        serve(&mut terminal, 12),
+        4,
+        "twelve rows compact: twice the rows fit the same half"
+    );
+    assert_eq!(serve(&mut terminal, 40), 8, "the ceiling holds");
+}

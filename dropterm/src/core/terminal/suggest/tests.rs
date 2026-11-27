@@ -1739,7 +1739,7 @@ fn menu_accepts_append_the_trailing_space() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "cargo t"),
+        menu.press(MenuKey::Accept, "cargo t", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "est ".to_string()
         }
@@ -1758,7 +1758,7 @@ fn the_trailing_space_withholds_after_separators_and_assignments() {
         source: SuggestionSource::Path,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "s"),
+        menu.press(MenuKey::Accept, "s", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "rc/".to_string()
         }
@@ -1771,7 +1771,7 @@ fn the_trailing_space_withholds_after_separators_and_assignments() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "F"),
+        menu.press(MenuKey::Accept, "F", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "OO=".to_string()
         },
@@ -1792,7 +1792,7 @@ fn the_trailing_space_withholds_on_an_empty_insert() {
         source: SuggestionSource::History,
     }]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "cargo t"),
+        menu.press(MenuKey::Accept, "cargo t", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: String::new()
         }
@@ -3676,14 +3676,14 @@ fn move_wraps_at_both_ends_and_the_scroll_window_follows() {
         .collect();
     let mut menu = MenuState::new();
     menu.open(rows);
-    menu.press(MenuKey::Up, "");
+    menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
     assert_eq!(menu.selected(), 9, "up from the first wraps to the last");
     assert_eq!(menu.scroll(), 2, "the window follows: rows 2..10 visible");
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert_eq!(menu.selected(), 0, "down from the last wraps to the first");
     assert_eq!(menu.scroll(), 0);
     for _ in 0..12 {
-        menu.press(MenuKey::Down, "");
+        menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     }
     assert_eq!(menu.selected(), 2, "a longer walk cycles: 12 mod 10");
     assert_eq!(
@@ -3692,10 +3692,109 @@ fn move_wraps_at_both_ends_and_the_scroll_window_follows() {
         "a mid-list selection keeps the window at the top"
     );
     for _ in 0..12 {
-        menu.press(MenuKey::Up, "");
+        menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
     }
     assert_eq!(menu.selected(), 0);
     assert_eq!(menu.scroll(), 0);
+}
+
+#[test]
+fn the_row_height_is_a_fraction_of_the_cell_that_doubles_with_it() {
+    use super::{menu_hint_height, menu_row_height};
+
+    for cell_h in [12., 20., 26.5] {
+        let comfortable = menu_row_height(cell_h, false);
+        let compact = menu_row_height(cell_h, true);
+        assert!(
+            compact < comfortable,
+            "compact rows are the tighter density at cell {cell_h}"
+        );
+        assert!(
+            comfortable >= 2. * cell_h,
+            "a comfortable row holds its two text lines"
+        );
+        assert!(
+            compact >= cell_h && comfortable < 3. * cell_h,
+            "one line and its padding, never a third"
+        );
+        // The scaling pin: every vertical size doubles when the cell
+        // does.
+        assert_eq!(menu_row_height(2. * cell_h, false), 2. * comfortable);
+        assert_eq!(menu_row_height(2. * cell_h, true), 2. * compact);
+        assert_eq!(menu_hint_height(2. * cell_h), 2. * menu_hint_height(cell_h));
+    }
+}
+
+#[test]
+fn the_row_budget_caps_at_eight_half_the_pane_and_never_below_one() {
+    use super::{MENU_VISIBLE_ROWS, menu_visible_rows};
+
+    // A tall pane: the ceiling alone.
+    assert_eq!(menu_visible_rows(2000., 45., 0.), MENU_VISIBLE_ROWS);
+    assert_eq!(
+        menu_visible_rows(720., 45., 0.),
+        8,
+        "exactly eight fit a 720 px half"
+    );
+    // About half the pane: the rest of the rows scroll.
+    assert_eq!(
+        menu_visible_rows(600., 45., 0.),
+        6,
+        "300 px over 45 px rows"
+    );
+    assert_eq!(menu_visible_rows(100., 45., 0.), 1);
+    // The hint line is paid for first.
+    assert_eq!(menu_visible_rows(600., 45., 25.), 6);
+    assert_eq!(menu_visible_rows(300., 45., 25.), 2);
+    assert_eq!(
+        menu_visible_rows(50., 45., 25.),
+        1,
+        "nothing fits: one row still shows"
+    );
+    // A pane without the room for a row, or a hint taller than the
+    // half: never below one.
+    assert_eq!(menu_visible_rows(40., 45., 0.), 1);
+    assert_eq!(menu_visible_rows(40., 45., 60.), 1);
+    // Control: the budget follows the cell, through the row height.
+    let compact = |pane_h: f32| menu_visible_rows(pane_h, menu_row_height(20., true), 0.);
+    assert_eq!(compact(600.), 12.min(MENU_VISIBLE_ROWS));
+    assert_eq!(compact(200.), 4);
+}
+
+#[test]
+fn the_scroll_window_follows_the_budget_it_is_given() {
+    // The row budget is the pane's (suggest-overlay SO-10), handed
+    // to the press: with three rows to show, the window keeps the
+    // selection inside those three.
+    let rows: Vec<MenuCandidate> = (0..10)
+        .map(|i| MenuCandidate {
+            label: format!("row-{i}"),
+            suffix: format!("-{i}"),
+            description: None,
+            source: SuggestionSource::Specs,
+        })
+        .collect();
+    let mut menu = MenuState::new();
+    menu.open(rows);
+    menu.press(MenuKey::Up, "", 3);
+    assert_eq!(menu.selected(), 9, "up from the first wraps to the last");
+    assert_eq!(
+        menu.scroll(),
+        7,
+        "the window follows a budget of three: rows 7..10 visible"
+    );
+    menu.press(MenuKey::Down, "", 3);
+    assert_eq!(menu.selected(), 0);
+    assert_eq!(menu.scroll(), 0);
+    for _ in 0..4 {
+        menu.press(MenuKey::Down, "", 3);
+    }
+    assert_eq!(menu.selected(), 4);
+    assert_eq!(
+        menu.scroll(),
+        2,
+        "the fifth row: the window starts at row two"
+    );
 }
 
 #[test]
@@ -3704,8 +3803,8 @@ fn an_empty_menu_declines_navigation() {
     // open implies non-empty rows, so only a closed one carries an
     // empty set — answers Noop to every navigation and stays closed.
     let mut menu = MenuState::new();
-    menu.press(MenuKey::Up, "");
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Up, "", MENU_VISIBLE_ROWS);
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert!(!menu.is_open());
     assert_eq!(menu.selected(), 0);
     assert_eq!(menu.scroll(), 0);
@@ -3718,9 +3817,9 @@ fn accept_returns_only_the_selected_suffix_then_closes() {
     // PTY. After the accept the menu is closed and spent.
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("git status", "atus"), ("stash", "ash")]));
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert_eq!(
-        menu.press(MenuKey::Accept, "git st"),
+        menu.press(MenuKey::Accept, "git st", MENU_VISIBLE_ROWS),
         MenuOutcome::Accepted {
             suffix: "ash ".to_string()
         }
@@ -3728,7 +3827,7 @@ fn accept_returns_only_the_selected_suffix_then_closes() {
     assert!(!menu.is_open());
     assert!(menu.rows().is_empty());
     assert_eq!(
-        menu.press(MenuKey::Accept, "git st"),
+        menu.press(MenuKey::Accept, "git st", MENU_VISIBLE_ROWS),
         MenuOutcome::Noop,
         "a closed menu accepts nothing"
     );
@@ -3741,7 +3840,10 @@ fn any_other_key_closes_the_menu() {
     // through the normal handler (the widget's routing, Task 3).
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("stash", "ash")]));
-    assert_eq!(menu.press(MenuKey::Other, ""), MenuOutcome::Noop);
+    assert_eq!(
+        menu.press(MenuKey::Other, "", MENU_VISIBLE_ROWS),
+        MenuOutcome::Noop
+    );
     assert!(!menu.is_open());
 }
 
@@ -3756,14 +3858,14 @@ fn enter_on_an_equal_line_executes_instead_of_accepting() {
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("git status", ""), ("other", "")]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "git status"),
+        menu.press(MenuKey::Accept, "git status", MENU_VISIBLE_ROWS),
         MenuOutcome::Execute
     );
     assert!(!menu.is_open());
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("dir/", "/")]));
     assert_eq!(
-        menu.press(MenuKey::Accept, "dir"),
+        menu.press(MenuKey::Accept, "dir", MENU_VISIBLE_ROWS),
         MenuOutcome::Execute,
         "the slash tolerance"
     );
@@ -3787,7 +3889,7 @@ fn selected_equals_is_the_slash_tolerant_line_check() {
         !menu.selected_equals("git status --short"),
         "only the selected row's label counts"
     );
-    menu.press(MenuKey::Down, "");
+    menu.press(MenuKey::Down, "", MENU_VISIBLE_ROWS);
     assert!(menu.selected_equals("git status --short"));
     let mut menu = MenuState::new();
     menu.open(menu_rows(&[("dir/", "/")]));

@@ -2207,10 +2207,6 @@ fn catalog_candidates(typed: &str, obs: &Observation<'_>) -> Vec<MenuCandidate> 
     ladder_order(staged)
 }
 
-/// The menu's visible-row budget (suggest-menu spec, OQ-2, locked):
-/// eight rows with a scroll offset — Warp/VS Code show ~10; eight
-/// fits the drop-down's short surface. Shared by the model's scroll
-/// arithmetic and the renderer's window.
 /// The top-level spec a command name resolves to (rich-input
 /// RI-7): its hint pair, `None` when no spec carries the name.
 pub(crate) fn spec_hint(table: &[SpecCommand], command: &str) -> Option<(String, Option<String>)> {
@@ -2220,7 +2216,49 @@ pub(crate) fn spec_hint(table: &[SpecCommand], command: &str) -> Option<(String,
         .map(SpecCommand::hint_pair)
 }
 
+/// The menu's row budget's ceiling (suggest-menu spec, OQ-2, locked):
+/// eight rows — Warp/VS Code show ~10; eight fits the drop-down's
+/// short surface. Read by the budget function alone
+/// ([`menu_visible_rows`]) and the pins; the window itself follows
+/// the pane (suggest-overlay SO-10).
 pub const MENU_VISIBLE_ROWS: usize = 8;
+
+/// One menu row's height under the density switch (suggest-overlay
+/// SO-10): comfortable carries the description on its own line under
+/// the label (two text lines and a quarter cell of padding), compact
+/// one line and the same padding. Every vertical size is a fraction
+/// of the cell height, so the whole menu doubles when the cell does.
+#[must_use]
+pub fn menu_row_height(cell_h: f32, compact: bool) -> f32 {
+    cell_h * if compact { 1.25 } else { 2.25 }
+}
+
+/// The argument hint line's height over the panel (suggest-overlay
+/// SO-10): one text line and the padding, a compact row's own.
+#[must_use]
+pub fn menu_hint_height(cell_h: f32) -> f32 {
+    menu_row_height(cell_h, true)
+}
+
+/// How many rows the menu may show (suggest-overlay SO-10): at most
+/// [`MENU_VISIBLE_ROWS`], never past about half the pane once the
+/// hint line is paid for, and never below one — a pane too short for
+/// a whole row still lists one.
+#[must_use]
+pub fn menu_visible_rows(pane_h: f32, row_h: f32, hint_h: f32) -> usize {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the budget's ceiling is eight: exact in f32"
+    )]
+    let ceiling = MENU_VISIBLE_ROWS as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "floored and clamped into the budget's 1..=8 range before the cast"
+    )]
+    let fitting = ((pane_h / 2. - hint_h) / row_h).floor().clamp(1., ceiling) as usize;
+    fitting
+}
 
 /// One menu-scoped press (suggest-menu spec): the widget's scoped
 /// routing maps the keys the menu claims while open onto these —
@@ -2464,19 +2502,20 @@ impl MenuState {
     /// One menu-scoped press's transition: navigate, accept, or
     /// close on any other key. `typed` is the line's typed segment —
     /// the anchor-stripped before-cursor text — which the Enter
-    /// equality reads. A closed menu answers [`MenuOutcome::Noop`] to
-    /// everything and stays closed.
-    pub(crate) fn press(&mut self, key: MenuKey, typed: &str) -> MenuOutcome {
+    /// equality reads. `visible_rows` is the pane's row budget, the
+    /// window the scroll follows. A closed menu answers
+    /// [`MenuOutcome::Noop`] to everything and stays closed.
+    pub(crate) fn press(&mut self, key: MenuKey, typed: &str, visible_rows: usize) -> MenuOutcome {
         if !self.open {
             return MenuOutcome::Noop;
         }
         match key {
             MenuKey::Up => {
-                self.move_up();
+                self.move_up(visible_rows);
                 MenuOutcome::Noop
             }
             MenuKey::Down => {
-                self.move_down();
+                self.move_down(visible_rows);
                 MenuOutcome::Noop
             }
             MenuKey::Accept => {
@@ -2522,9 +2561,9 @@ impl MenuState {
 
     /// Moves the selection up one row, wrapping from the first to
     /// the last (Warp's `cycle = true`, suggest-parity spec), the
-    /// scroll window following so the selection stays visible. An
-    /// empty menu declines.
-    fn move_up(&mut self) {
+    /// scroll window following so the selection stays visible inside
+    /// the `visible_rows` the pane affords. An empty menu declines.
+    fn move_up(&mut self, visible_rows: usize) {
         if self.rows.is_empty() {
             return;
         }
@@ -2533,29 +2572,32 @@ impl MenuState {
         } else {
             self.selected - 1
         };
-        self.follow_scroll();
+        self.follow_scroll(visible_rows);
     }
 
     /// Moves the selection down one row, wrapping from the last to
     /// the first (Warp's `cycle = true`, suggest-parity spec), the
-    /// scroll window following so the selection stays visible. An
-    /// empty menu declines.
-    fn move_down(&mut self) {
+    /// scroll window following so the selection stays visible inside
+    /// the `visible_rows` the pane affords. An empty menu declines.
+    fn move_down(&mut self, visible_rows: usize) {
         if self.rows.is_empty() {
             return;
         }
         self.selected = (self.selected + 1) % self.rows.len();
-        self.follow_scroll();
+        self.follow_scroll(visible_rows);
     }
 
     /// Keeps the selected row inside the visible window after a
     /// move: scrolled past the top edge pulls the window up, past
-    /// the bottom edge pushes it down.
-    fn follow_scroll(&mut self) {
+    /// the bottom edge pushes it down. The window is the pane's row
+    /// budget (suggest-overlay SO-10); a zero budget is read as one,
+    /// the floor the budget function itself keeps.
+    fn follow_scroll(&mut self, visible_rows: usize) {
+        let visible_rows = visible_rows.max(1);
         if self.selected < self.scroll {
             self.scroll = self.selected;
-        } else if self.selected >= self.scroll + MENU_VISIBLE_ROWS {
-            self.scroll = self.selected + 1 - MENU_VISIBLE_ROWS;
+        } else if self.selected >= self.scroll + visible_rows {
+            self.scroll = self.selected + 1 - visible_rows;
         }
     }
 }

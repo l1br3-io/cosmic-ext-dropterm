@@ -142,12 +142,16 @@ pub(crate) fn opener_claims_tab(keystroke: &Keystroke) -> bool {
 }
 
 /// The menu overlay's visible-row window (the libcosmic shape over
-/// core's locked budget): at most [`suggest::MENU_VISIBLE_ROWS`]
-/// rows starting at the scroll offset, fewer only when the list
-/// itself is shorter.
-pub(crate) fn menu_visible_window(scroll: usize, rows: usize) -> std::ops::Range<usize> {
+/// the pane's row budget, suggest-overlay SO-10): at most
+/// `visible_rows` rows starting at the scroll offset, fewer only when
+/// the list itself is shorter.
+pub(crate) fn menu_visible_window(
+    scroll: usize,
+    rows: usize,
+    visible_rows: usize,
+) -> std::ops::Range<usize> {
     let start = scroll.min(rows);
-    start..(start + suggest::MENU_VISIBLE_ROWS).min(rows)
+    start..(start + visible_rows.max(1)).min(rows)
 }
 
 /// The menu chrome's toggles (rich-input RI-7): the RI-1 keys as
@@ -259,15 +263,6 @@ pub(crate) fn menu_row_models(
         .collect()
 }
 
-/// One menu row's height under the density switch (rich-input
-/// RI-7): comfortable carries the description on its own line,
-/// compact inlines it beside the label — the mock's padding pair.
-/// Suggest-overlay SO-11 derives it from the cell instead.
-#[must_use]
-pub(crate) fn menu_row_height_px(compact: bool) -> f32 {
-    if compact { 22. } else { 34. }
-}
-
 /// The overlay menu's paint bundle (suggest-overlay SO-6; the chrome
 /// rich-input RI-7 built): the rendered rows under the toggles, the
 /// selection and scroll the engine holds, and the hint line —
@@ -278,6 +273,9 @@ pub(crate) struct MenuPaint {
     pub(crate) selected: usize,
     pub(crate) scroll: usize,
     pub(crate) hint: Option<(String, Option<String>)>,
+    /// The pane's row budget the window follows
+    /// ([`Terminal::menu_visible_rows`]).
+    pub(crate) visible_rows: usize,
     pub(crate) chrome: MenuChrome,
 }
 
@@ -299,20 +297,12 @@ impl MenuPaint {
         if rows.is_empty() {
             return None;
         }
-        let hint = chrome
-            .argument_hint
-            .then(|| {
-                typed_text
-                    .split_whitespace()
-                    .next()
-                    .and_then(|command| engine.menu_hint(command))
-            })
-            .flatten();
         Some(Self {
             rows,
             selected: engine.menu_selected(),
             scroll: engine.menu_scroll(),
-            hint,
+            hint: engine.menu_hint_line(),
+            visible_rows: engine.menu_visible_rows(),
             chrome,
         })
     }
@@ -631,14 +621,22 @@ mod tests {
 
     #[test]
     fn the_menu_window_covers_the_visible_budget() {
-        // The locked budget: eight rows from the scroll offset,
-        // fewer only when the list is shorter. A scroll at the list's
-        // own length (the engine's bounds never produce it) is the
-        // ported shape's empty window, not a clamp of its own.
-        assert_eq!(menu_visible_window(0, 12), 0..8);
-        assert_eq!(menu_visible_window(4, 12), 4..12);
-        assert_eq!(menu_visible_window(3, 5), 3..5);
-        assert_eq!(menu_visible_window(9, 9), 9..9);
+        // The pane's budget (suggest-overlay SO-10) from the scroll
+        // offset, fewer only when the list is shorter. A scroll at
+        // the list's own length (the engine's bounds never produce
+        // it) is the ported shape's empty window, not a clamp of its
+        // own; a zero budget reads as one, the model's own floor.
+        assert_eq!(menu_visible_window(0, 12, 8), 0..8);
+        assert_eq!(menu_visible_window(4, 12, 8), 4..12);
+        assert_eq!(
+            menu_visible_window(0, 12, 3),
+            0..3,
+            "a budget of three shows three"
+        );
+        assert_eq!(menu_visible_window(3, 12, 3), 3..6);
+        assert_eq!(menu_visible_window(3, 5, 3), 3..5);
+        assert_eq!(menu_visible_window(9, 9, 8), 9..9);
+        assert_eq!(menu_visible_window(0, 12, 0), 0..1);
     }
 
     fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
@@ -800,17 +798,6 @@ mod tests {
         // The label and its mark survive every toggle.
         assert_eq!(off.label, "git");
         assert_eq!(off.marked, 2);
-    }
-
-    #[test]
-    fn the_density_switch_flips_the_row_height() {
-        use super::menu_row_height_px;
-        let comfortable = menu_row_height_px(false);
-        let compact = menu_row_height_px(true);
-        assert!(
-            compact < comfortable,
-            "compact rows are the tighter density"
-        );
     }
 
     #[test]

@@ -688,6 +688,14 @@ pub struct Terminal {
     /// truth the routing reads: the resolved options flag, re-read
     /// at every `set_config`, so the mode switch flips live.
     input_mode: InputMode,
+    /// The menu's density (suggest-overlay SO-10): the resolved
+    /// `input_compact_rows` flag, re-read at every `set_config`. The
+    /// row budget reads it: a compact row is half a comfortable one.
+    input_compact_rows: bool,
+    /// Whether the argument hint line rides the menu (suggest-overlay
+    /// SO-10): the resolved `input_argument_hint` flag, re-read at
+    /// every `set_config`. The row budget pays for the line first.
+    input_argument_hint: bool,
     /// Whether the open menu's session is auto-managed
     /// (suggest-menu spec): an auto-opened menu closes itself when
     /// narrowing leaves one or nothing; a chord-opened one obeys
@@ -1709,6 +1717,8 @@ impl Terminal {
             autosuggestions_menu_enabled: options.autosuggestions_menu_enabled,
             autosuggestions_menu_auto: options.autosuggestions_menu_auto,
             input_mode: options.input_mode,
+            input_compact_rows: options.input_compact_rows,
+            input_argument_hint: options.input_argument_hint,
             menu_auto_opened: false,
             menu_accept_echo: false,
             autosuggestions_delay_ms: options.autosuggestions_delay_ms,
@@ -2848,7 +2858,8 @@ impl Terminal {
                 .unwrap_or_default()
                 .to_owned()
         };
-        match self.menu.press(key, &typed) {
+        let visible_rows = self.menu_visible_rows();
+        match self.menu.press(key, &typed, visible_rows) {
             suggest::MenuOutcome::Accepted { suffix } if !suffix.is_empty() => {
                 // The write's echo will read as a typed change — arm
                 // the one-shot suppression (suggest-parity spec).
@@ -2857,6 +2868,47 @@ impl Terminal {
             }
             _ => {}
         }
+    }
+
+    /// The argument hint line the menu carries (suggest-overlay
+    /// SO-10): `None` while the toggle is off, nothing is typed, or
+    /// no spec carries the typed command word. The capture paints
+    /// it, the row budget pays for it.
+    pub fn menu_hint_line(&self) -> Option<(String, Option<String>)> {
+        self.input_argument_hint
+            .then(|| {
+                self.typed_text()
+                    .split_whitespace()
+                    .next()
+                    .and_then(|command| self.menu_hint(command))
+            })
+            .flatten()
+    }
+
+    /// The menu's row budget for the pane as it stands
+    /// (suggest-overlay SO-10): the screen's rows by the cell height
+    /// are the pane, the density makes the row, the hint line is
+    /// paid for first ([`suggest::menu_visible_rows`]). The scroll
+    /// window and the pane's own window both read it, so a resize
+    /// moves the menu's budget with the grid.
+    pub fn menu_visible_rows(&self) -> usize {
+        let cell_h = self.size().cell_height;
+        let screen_rows = self.term.lock().grid().screen_lines();
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "screen rows are far below f32's mantissa: exact"
+        )]
+        let pane_h = cell_h * screen_rows as f32;
+        let hint_h = if self.menu_hint_line().is_some() {
+            suggest::menu_hint_height(cell_h)
+        } else {
+            0.
+        };
+        suggest::menu_visible_rows(
+            pane_h,
+            suggest::menu_row_height(cell_h, self.input_compact_rows),
+            hint_h,
+        )
     }
 
     /// The typed text before the cursor on the screen's line, the
@@ -2928,7 +2980,9 @@ impl Terminal {
                 }
             }
             suggest::TabFill::Cycle => {
-                self.menu.press(suggest::MenuKey::Down, &segment);
+                let visible_rows = self.menu_visible_rows();
+                self.menu
+                    .press(suggest::MenuKey::Down, &segment, visible_rows);
             }
         }
     }
@@ -3460,6 +3514,16 @@ impl Terminal {
 
         if self.autosuggestions_menu_auto != options.autosuggestions_menu_auto {
             self.autosuggestions_menu_auto = options.autosuggestions_menu_auto;
+            update = true;
+        }
+
+        if self.input_compact_rows != options.input_compact_rows {
+            self.input_compact_rows = options.input_compact_rows;
+            update = true;
+        }
+
+        if self.input_argument_hint != options.input_argument_hint {
+            self.input_argument_hint = options.input_argument_hint;
             update = true;
         }
 

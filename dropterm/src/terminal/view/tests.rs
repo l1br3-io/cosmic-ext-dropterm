@@ -724,10 +724,15 @@ fn staged_rows() -> Vec<dropterm::core::terminal::suggest::MenuCandidate> {
         .collect()
 }
 
-/// The staged panel's height in logical pixels: two comfortable
-/// rows, no hint.
-fn staged_panel_height() -> f32 {
-    2. * suggest::menu_row_height_px(false)
+/// The staged panel's height in logical pixels at this cell: two
+/// comfortable rows, no hint.
+fn staged_panel_height(cell_h: f32) -> f32 {
+    2. * dropterm::core::terminal::suggest::menu_row_height(cell_h, false)
+}
+
+/// The engine's cell height in logical pixels.
+fn cell_height(terminal: &Arc<Mutex<Terminal>>) -> f32 {
+    terminal.lock().expect("engine lock").size().cell_height
 }
 
 /// Boot a pane in `mode` over `argv` — its program the session
@@ -856,8 +861,8 @@ fn the_menu_panel_paints_above_the_prompt_row_when_it_fits(cx: &mut gpui::TestAp
         },
         "the cursor never reached the tenth row",
     );
-    let cell_h = terminal.lock().expect("engine lock").size().cell_height;
-    let panel_h = staged_panel_height();
+    let cell_h = cell_height(&terminal);
+    let panel_h = staged_panel_height(cell_h);
     assert!(
         10. * cell_h >= panel_h,
         "the pin's own stage: the room over the prompt row holds the panel"
@@ -892,8 +897,8 @@ fn the_menu_panel_paints_below_a_top_prompt_row(cx: &mut gpui::TestAppContext) {
         0,
         "the pin's own stage: a top prompt"
     );
-    let cell_h = terminal.lock().expect("engine lock").size().cell_height;
-    let panel_h = staged_panel_height();
+    let cell_h = cell_height(&terminal);
+    let panel_h = staged_panel_height(cell_h);
     stage_a_showing_menu(&terminal);
     paint_frame(cx);
     let origin = panel_origin(cx, panel_h).expect("the panel's quad is in the scene");
@@ -913,7 +918,6 @@ fn no_menu_panel_paints_in_native_or_on_a_stood_aside_pane(cx: &mut gpui::TestAp
     // zone is unfed; the same pane paints it the moment the overlays
     // go live (the control).
     cx.update(|cx| cx.background_executor().allow_parking());
-    let panel_h = staged_panel_height();
 
     let (native, _pane, mut visual) = pane_over(
         cx,
@@ -921,6 +925,7 @@ fn no_menu_panel_paints_in_native_or_on_a_stood_aside_pane(cx: &mut gpui::TestAp
         dropterm::core::config::InputMode::Native,
     );
     let cx = &mut visual;
+    let panel_h = staged_panel_height(cell_height(&native));
     native.lock().expect("engine lock").note_prompt_start();
     native
         .lock()
@@ -1133,23 +1138,23 @@ fn the_overlays_paint_over_the_shells_line(cx: &mut gpui::TestAppContext) {
     );
     // The panel is the visible window tall (eight rows at most), the
     // hint line over it when a spec carries the command.
+    let cell_h = cell_height(&terminal);
     let (visible, hint_h) = {
         let engine = terminal.lock().expect("engine lock");
-        let hint = engine
-            .typed_text()
-            .split_whitespace()
-            .next()
-            .and_then(|command| engine.menu_hint(command));
         (
-            suggest::menu_visible_window(engine.menu_scroll(), rows).len(),
-            hint.map_or(0., |_| 26.),
+            suggest::menu_visible_window(engine.menu_scroll(), rows, engine.menu_visible_rows())
+                .len(),
+            engine.menu_hint_line().map_or(0., |_| {
+                dropterm::core::terminal::suggest::menu_hint_height(cell_h)
+            }),
         )
     };
     #[expect(
         clippy::cast_precision_loss,
         reason = "the visible row count is the menu's budget (<=8), exact in f32"
     )]
-    let panel_h = visible as f32 * suggest::menu_row_height_px(false) + hint_h;
+    let panel_h =
+        visible as f32 * dropterm::core::terminal::suggest::menu_row_height(cell_h, false) + hint_h;
     let origin = panel_origin(cx, panel_h).expect("the panel's quad is in the scene");
     println!(
         "dropterm: evidence: pane menu now {rows} rows (selected {selected}), {visible} visible, the panel at ({}, {})",

@@ -40,6 +40,7 @@ use dropterm::core::terminal::TerminalOptions;
 use dropterm::core::terminal::mouse_reporter::{
     self, MouseReporter, PointerButton, PointerEvent, PointerModifiers, PointerScrollDelta,
 };
+use dropterm::core::terminal::suggest as core_suggest;
 
 use alacritty_terminal::index::Column;
 
@@ -2404,8 +2405,11 @@ fn paint_menu(
     let dim = gpui::hsla(fg.h, fg.s, fg.l, 0.55);
     let palette = TokenPalette::for_scheme(fg.l > 0.5);
 
-    let row_h = px(suggest::menu_row_height_px(menu.chrome.compact_rows));
-    let range = suggest::menu_visible_window(menu.scroll, menu.rows.len());
+    let row_h = px(core_suggest::menu_row_height(
+        geometry.cell_height.as_f32(),
+        menu.chrome.compact_rows,
+    ));
+    let range = suggest::menu_visible_window(menu.scroll, menu.rows.len(), menu.visible_rows);
     if range.is_empty() {
         return;
     }
@@ -2415,7 +2419,11 @@ fn paint_menu(
         reason = "the visible row count is the menu's budget (<=8), exact in f32"
     )]
     let rows_height = row_h * visible.len() as f32;
-    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| px(26.));
+    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| {
+        px(core_suggest::menu_hint_height(
+            geometry.cell_height.as_f32(),
+        ))
+    });
     let panel = suggest::menu_panel_bounds(
         bounds,
         prompt_row_top,
