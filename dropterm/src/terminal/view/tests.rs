@@ -2129,6 +2129,21 @@ fn staged_pane(
     Arc<Mutex<Terminal>>,
     Entity<TerminalPane>,
 ) {
+    staged_pane_over(cx, "/bin/sleep", &["60"])
+}
+
+/// [`staged_pane`] over a chosen program — the reporting pins' own
+/// child, which has to speak (enable mouse tracking, record its
+/// stdin) where the selection pins' `sleep` stays silent.
+fn staged_pane_over(
+    cx: &mut gpui::TestAppContext,
+    program: &str,
+    args: &[&str],
+) -> (
+    gpui::VisualTestContext,
+    Arc<Mutex<Terminal>>,
+    Entity<TerminalPane>,
+) {
     // The tab pin's own switch: the boot pre-warms the suggestion
     // generators on worker threads, and a landing worker wakes the
     // pane's pump off the test's thread.
@@ -2138,8 +2153,8 @@ fn staged_pane(
     let (terminal, pane) = cx
         .update(|cx| {
             let request = PaneRequest {
-                program: "/bin/sleep".to_string(),
-                args: vec!["60".to_string()],
+                program: program.to_string(),
+                args: args.iter().map(|arg| (*arg).to_string()).collect(),
                 cwd: None,
                 env: std::collections::HashMap::default(),
                 spawned_as: "sh".to_string(),
@@ -2322,6 +2337,55 @@ fn a_motion_with_no_button_held_ends_the_selection_drag(cx: &mut gpui::TestAppCo
         "nor any motion after"
     );
     std::mem::forget(terminal);
+}
+
+// --- the press a mouse-grabbing program hears: the cell it pointed
+// at, converted once ---
+
+#[gpui::test]
+fn a_mouse_reporting_press_reports_the_cell_under_the_pointer(cx: &mut gpui::TestAppContext) {
+    // The owner's opencode report: drag-select highlighting started
+    // rows above the pointer. Every reported event converts window→pane
+    // exactly once inside `report_pointer`; `on_press` converted first
+    // and then handed the pane-local point in, so the press alone
+    // landed a strip above the pointed cell (motion and release, one
+    // conversion each, were right) — opencode anchors its drag
+    // selection on the press cell, so its highlight and its
+    // copy-on-select started above the pointer. The stage's 40 px
+    // strip (two cells) makes a second subtraction name row 1 where
+    // the pointer points at row 3.
+    let sink =
+        std::env::temp_dir().join(format!("dropterm-mouse-press-{}.bin", std::process::id()));
+    let _ = std::fs::remove_file(&sink);
+    let (mut cx, terminal, pane) = staged_pane_over(
+        cx,
+        "/bin/sh",
+        &[
+            "-c",
+            &format!(
+                "stty raw -echo 2>/dev/null; printf '\\033[?1002h\\033[?1006h'; exec cat > '{}'",
+                sink.display()
+            ),
+        ],
+    );
+    paint_until(
+        &mut cx,
+        &terminal,
+        |engine| engine.term.lock().mode().contains(TermMode::SGR_MOUSE),
+        "the child never enabled SGR mouse reporting",
+    );
+
+    let press = cx.read(|cx| over_cell(pane.read(cx), 3., 12., 0.5));
+    cx.simulate_mouse_down(press, gpui::MouseButton::Left, gpui::Modifiers::default());
+
+    let reported = poll_witness_quiet(&sink);
+    assert_eq!(
+        reported, "\x1b[<0;13;4M",
+        "the press must report the cell under the pointer (row 3, col 12 → SGR 13;4); \
+         the double conversion names row 1 instead"
+    );
+    std::mem::forget(terminal);
+    let _ = std::fs::remove_file(&sink);
 }
 
 // --- suggest-overlay SO-5: the grid's caret is the only one on screen ---

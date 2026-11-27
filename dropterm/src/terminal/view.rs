@@ -1493,11 +1493,14 @@ impl TerminalPane {
                 modifiers.shift
             );
         }
-        // The window→pane conversion (the status band's own shape):
-        // the event arrives in window coordinates and the cell
-        // arithmetic runs on the pane's own space.
-        let position = self.pane_local(position);
         if self.pointer_child_owns(modifiers.shift) {
+            // `report_pointer` owns the window→pane conversion (it is
+            // the one door every reported event — press, motion,
+            // release — walks). Converting here too subtracted the
+            // pane origin twice and anchored a mouse-grabbing
+            // program's press a strip above and left of the pointer;
+            // opencode's drag selection is the report that surfaced
+            // it, its highlight starting rows above the press.
             self.reporting_gesture = true;
             self.report_pointer(PointerEvent::Pressed(neutral), position, modifiers);
             // The child process owns a right press while reporting is
@@ -1512,6 +1515,12 @@ impl TerminalPane {
         if neutral != PointerButton::Left {
             return;
         }
+        // The selection path's window→pane conversion (the status
+        // band's own shape): the event arrives in window coordinates
+        // and the cell arithmetic runs on the pane's own space. Only
+        // the reporting branch above skips it — that path converts
+        // once, inside `report_pointer`.
+        let position = self.pane_local(position);
         let (cell, geometry) = {
             let terminal = self.terminal.lock().expect("engine lock");
             let size = terminal.size();
