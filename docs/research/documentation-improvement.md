@@ -255,9 +255,9 @@ here" mixes forms.
   and no in-repo release-notes file. `ROADMAP.md` (checkboxes per version,
   with "V4: improve docs" open) carries the roadmap role.
 - Packaging — README documents the tarball and source only;
-  `docs/research/packaging-and-release.md` rules "Native deb/AUR/nix
+  the standing ruling is "Native deb/AUR/nix
   following the System76 release convention … Flathub for the applet only"
-  with status "In progress" in `docs/research/README.md`; the applet Flatpak
+  with none of it shipped; the applet Flatpak
   path is documented in `docs/applet.md` (`packaging/flatpak/`,
   `just applet-flatpak-build`).
 
@@ -270,7 +270,7 @@ absent; DropTerm column cites the repo path.
 |---|---|---|---|---|---|
 | (a) README anatomy | ⚠️ pitch only; cosmic-files has license section; no install in 3 of 4 | ✅ pitch; tweaks/calculator have screenshots; quake-term has full task structure; no badges anywhere | ✅ pitch; Guake badges + screenshot; Yakuake/Terra bare | ✅ all; Alacritty promo image + FAQ in README | ✅ full anatomy incl. uninstall + non-goals; no image, no badges (`README.md`) |
 | (b) Visual assets | ⚠️ cosmic-edit only (`screenshot-1.png`) | ✅ all three (tweaks 2, calculator 2) | ⚠️ Guake static, tdrop 2 GIFs, Yakuake/Terra none | ⚠️ Alacritty image, WezTerm 1 screenshot, kitty demo video, foot/Ghostty none on README | ❌ zero images; `docs/assets/icon.svg` used only as favicon (`docs/_layouts/default.html:8`) |
-| (c) Install & packaging channels | ❌ build-from-source at best (cosmic-files) | ⚠️ source + just; no distro channels | ✅ Guake per-distro page (apt/dnf/pacman/pipx/PPA); tdrop AUR+Void; Terra PPA/AUR/Gentoo | ✅ kitty/WezTerm/Ghostty dedicated install pages; Alacritty INSTALL.md + prebuilts; foot INSTALL.md + Repology badge | ⚠️ tarball + source only (`README.md`); deb/AUR/nix ruled but not shipped (`docs/research/packaging-and-release.md`) |
+| (c) Install & packaging channels | ❌ build-from-source at best (cosmic-files) | ⚠️ source + just; no distro channels | ✅ Guake per-distro page (apt/dnf/pacman/pipx/PPA); tdrop AUR+Void; Terra PPA/AUR/Gentoo | ✅ kitty/WezTerm/Ghostty dedicated install pages; Alacritty INSTALL.md + prebuilts; foot INSTALL.md + Repology badge | ⚠️ tarball + source only (`README.md`); deb/AUR/nix ruled but not shipped |
 | (d) Docs architecture (Diátaxis) | ❌ README-only | ❌ README-only | ⚠️ Guake ReadTheDocs site | ✅ full sites; kitty Quickstart, WezTerm Recipes/FAQ/Troubleshooting, Ghostty Get Started | ⚠️ reference+excellent explanation; ~no how-to/tutorial layer (`docs/index.md`, `docs/research/`) |
 | (e) Configuration reference | ❌ | ⚠️ quake-term config section only | ❌ (Guake: GUI; config undocumented in README) | ✅ per-option reference, sample configs (kitty `Sample kitty.conf`, foot `foot.ini` template), Ghostty `+show-config --default --docs`, since-version notes | ✅ all 43 keys with defaults/semantics/live-vs-restart, test-gated (`docs/configuration.md`); no sample file, no since-versions |
 | (f) Keybindings docs | ❌ | ❌ | ⚠️ Guake GUI; tdrop sxhkd example | ✅ kitty mappable actions; foot README tables; WezTerm key docs | ✅ full table + config ids + rationale (`docs/keybindings.md`) |
@@ -380,10 +380,9 @@ AUR as tdrop-git … packaged for Void Linux"; Alacritty lists package
 managers + prebuilt binaries + INSTALL.md; foot links a **Repology badge**
 that tracks its presence across distros automatically.
 
-**DropTerm:** `README.md` documents the tarball and source; its own
-`docs/research/packaging-and-release.md` verdict is "Native deb/AUR/nix
-following the System76 release convention" with status "In progress" in
-`docs/research/README.md`. When those channels land, add them as a short
+**DropTerm:** `README.md` documents the tarball and source; the standing
+verdict is "Native deb/AUR/nix following the System76 release convention", not
+yet shipped. When those channels land, add them as a short
 channel list (exactly Guake's shape). Immediately, a Repology link in the
 README costs one line and auto-tracks whatever third parties package —
 Terra's rotted PPA/AUR/Gentoo list is the cautionary tale for hand-listing
@@ -555,9 +554,7 @@ would violate the fewer-larger-files bias in `AGENTS.md`.
   `docs/status-bar.md`, `docs/sessions.md`, `docs/animation.md`,
   `docs/theming.md`, `docs/bell.md`, `docs/autosuggestions.md`,
   `docs/applet.md`, `docs/development.md`, `docs/testing.md`,
-  `docs/architecture.md`, `docs/research/README.md`,
-  `docs/research/packaging-and-release.md`,
-  `docs/research/terminal-autocomplete.md` (format precedent).
+  `docs/architecture.md`, `docs/research/README.md`.
   Context that GitHub Pages is disabled in repo settings (prior
   `pages.yml` failure at configure-pages) was supplied by the maintainer
   alongside this survey task; the on-disk evidence for the intended site is

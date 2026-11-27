@@ -7,7 +7,7 @@
 // `ColorScheme` representation). The palettes are unmodified;
 // cosmic-term's serde/RON-file, per-profile, and import/export
 // machinery stays dropped — schemes compile in and resolve by name
-// (see docs/research/terminal-theming.md). The ten third-party
+// (see the terminal-theming record). The ten third-party
 // palettes are transcribed from alacritty-theme TOMLs and canonical
 // extras, each with its source and license recorded on the const
 // below. cosmic-term's own COSMIC Dark/Light pair left the registry
@@ -97,7 +97,7 @@ impl ColorSchemeAnsi {
 
 /// A complete color scheme: the industry-consensus field set
 /// (foreground, background, cursor, bright/dim foreground, and the
-/// normal/bright/dim 8-color tables — docs/research/terminal-theming.md
+/// normal/bright/dim 8-color tables — the terminal-theming record
 /// §4). Every shipped scheme fills the background; the slot keeps
 /// its `Option` shape from the cosmic-term representation, where a
 /// `None` background deferred to the host system theme via
@@ -117,7 +117,7 @@ pub(crate) struct ColorScheme {
 
 /// Alacritty's dim factor: a missing dim color derives as
 /// `normal * 0.66` per channel, truncating (`alacritty/src/display/
-/// color.rs` `DIM_FACTOR`; docs/research/terminal-theming.md §2).
+/// color.rs` `DIM_FACTOR`; the terminal-theming record §2).
 const DIM_FACTOR: f32 = 0.66;
 
 #[expect(
@@ -387,7 +387,7 @@ const CATPPUCCIN_MOCHA: ColorScheme = ColorScheme {
 /// against the canonical palette: bg `#282a36`, fg `#f8f8f2`, purple
 /// `#bd93f9`, pink `#ff79c6` all match — cosmic-term's own Dracula
 /// copy (`#1e1f29` bg) diverges and loses to canonical
-/// (docs/research/terminal-theming.md §Licensing).
+/// (the terminal-theming record §Licensing).
 const DRACULA: ColorScheme = ColorScheme {
     foreground: Some(rgb(0xF8_F8F2)),
     background: Some(rgb(0x28_2A36)),
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn conversion_derives_missing_dims_from_normals_at_the_alacritty_factor() {
         // Alacritty derives dims as `normal * 0.66` per channel
-        // (DIM_FACTOR, docs/research/terminal-theming.md §2); the cast
+        // (DIM_FACTOR, the terminal-theming record §2); the cast
         // truncates. 0xFF * 0.66 = 168.3 -> 168 = 0xA8.
         let colors = Colors::from(&plain_scheme());
         assert_eq!(colors[NamedColor::DimRed], Some(rgb(0xA8_3838)));

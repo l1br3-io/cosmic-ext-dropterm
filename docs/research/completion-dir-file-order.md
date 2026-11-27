@@ -287,8 +287,8 @@ convention, and it needs no change to match peers.
   ranks and the fallback carve); this record pins *how rows order within*
   the path tier, and confirms the same filter-not-order pattern it saw in
   fish's cd and Warp's folders template.
-- **Consumes** [autosuggest-warp-parity](archive/autosuggest-warp-parity.md)
-  and the menu spec rulings (2026-11-02/2026-11-06): the seat-scoped menu
+- **Consumes** the menu rulings
+  (2026-11-02/2026-11-06): the seat-scoped menu
   order (`menu_source_rank`) is untouched; this record surveys only the
   intra-tier order no prior record pinned.
 - Supersedes nothing.

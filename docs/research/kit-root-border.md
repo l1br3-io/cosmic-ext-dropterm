@@ -74,7 +74,7 @@ version bump — and any time the border is questioned:
 2. If one exists: drop the private copy, depend on the real crate
    again, and re-run the C2b kill check (Root + Popover/Tooltip
    through the 80 ms cadence, sway and COSMIC) plus one flush-edges
-   screenshot. Then this record's row moves to the archive.
+   screenshot. Then this record's row is marked retired in the index.
 3. Until then: re-apply the one-const change to the new source per
    the carried-patches section in [development](../development.md)
    once it ships.

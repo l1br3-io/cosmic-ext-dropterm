@@ -260,7 +260,7 @@ pub struct DropTermConfig {
     /// would stop any other input from ever keeping focus.
     pub keyboard_mode: KeyboardMode,
     /// Place the drop-down below panels and docks instead of covering them,
-    /// by requesting exclusive zone `0` (see docs/research/panel-visibility.md).
+    /// by requesting exclusive zone `0` (see the panel-visibility ruling).
     /// Applies on the next show. Defaults to `true`.
     pub respect_panel: bool,
     /// Name of the Wayland output to show on. `None` follows the
@@ -289,7 +289,7 @@ pub struct DropTermConfig {
     /// retracts the overlay. Note this is the *minority* default among
     /// peers (Yakuake `KeepOpen=true`, Guake `window-losefocus=false`,
     /// Ghostty `quick-terminal-autohide=false` on Linux — see
-    /// docs/research/terminal-de-integration.md); set `false` to keep
+    /// the terminal-de-integration ruling); set `false` to keep
     /// the overlay open when it loses focus — it then shares keyboard
     /// focus like a normal window (click away to type elsewhere,
     /// click the terminal to take focus back) instead of holding an

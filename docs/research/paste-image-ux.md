@@ -66,16 +66,15 @@ file path", d9b8151 "The inline render"); PI-3 (config gate + docs) and PI-4
 - **Status bar** — `SegmentId` (`src/status_bar.rs:133`), the two clusters
   (`LEFT_CLUSTER` `:175-181`, `RIGHT_CLUSTER` `:188-194`), the width-pressure
   drop order (`DROP_ORDER` `:210-220`), the band's transient write
-  confirmation (`pub enum Copied`, `:118-121`, the clipboard-ownership
-  record's report), and one action chip: `click_jumps(id) == SegmentId::Scrolled`
+  confirmation (`pub enum Copied`, `:118-121`), and one action chip: `click_jumps(id) == SegmentId::Scrolled`
   (`:997-999`) — a conditional segment whose click runs an app verb instead of
   the copy verb.
 - **Panel seams that already exist** — the settings drawer (a libcosmic
-  context drawer, the settings-sidebar record's verdict), and the in-widget
+  context drawer), and the in-widget
   overlay panel the completion menu uses: `with_layer` stacking at
   `src/terminal/widget.rs:1146-1230` with `menu_panel_bounds` (`:1208`) and
-  `menu_panel_style` (`:1229`). The suggest-menu-layering record's verdict
-  names the escalation path: "the Overlay-trait route is the same z-order plus
+  `menu_panel_style` (`:1229`). One escalation path is
+  named for it: "the Overlay-trait route is the same z-order plus
   event routing — the right next step when the menu wants mouse."
 - **Rulings in force** — SPEC-paste-image.md OQ-5 ruled the pasted text is the
   bare path ("no `[Image #1]` wrapper — the token means nothing to a shell;
@@ -300,7 +299,7 @@ crate and render through libcosmic's image primitives (the same handles the
 grid placement pipeline uses — terminal-images.md "What DropTerm has today");
 the panel surface has two proven seams (the settings drawer at app level, or
 the completion menu's `with_layer` panel in `src/terminal/widget.rs:1146-1230`
-— and the suggest-menu-layering record names the Overlay-trait escalation for
+— the Overlay-trait route being the named escalation for
 mouse-interactive surfaces); the chip is a new `SegmentId` riding
 `DROP_ORDER` with `click_jumps`-style verb routing (`src/status_bar.rs:997`),
 hidden at zero count per the exit-chip rule, with the paste confirmation
@@ -347,13 +346,13 @@ pixels with markers (terminal-images.md §7). Deferred, not the default.
    precedent, `src/app.rs:3247-3251` via `open::that_detached`), copy path
    (`clipboard::write`), copy image back to the clipboard (a data-control
    `image/png` write through wl-clipboard-rs — the focus-free write path
-   clipboard-ownership built, and the remote-friendly complement to the SSH
+   already shipped, and the remote-friendly complement to the SSH
    caveat: bytes travel where a local path cannot), re-paste the path, and
    remove (delete the cache file and the ledger row, bounded by PI-4's
    retention). Panel surface (drawer vs in-widget overlay) is a spec-phase
    choice between two proven seams; a mouse-interactive panel with thumbnails
-   leans toward the app-level drawer, per the suggest-menu-layering record's
-   "when the menu wants mouse" rule.
+   leans toward the app-level drawer, since the in-widget panel's route to
+   mouse input is the heavier escalation.
 5. **Ordering note**: this record lands before PI-3/PI-4, so `paste_image_enabled`
    (the config gate) and the retention sweep should ship governing the new
    shape — the gate's documented scope ("an image clipboard pastes nothing")
@@ -380,8 +379,8 @@ pixels with markers (terminal-images.md §7). Deferred, not the default.
 **Relations to existing records:** builds on terminal-images (2026-11-05,
 unchanged — this record rules only the paste-driven placement), the status-bar
 records (conditional-chip vocabulary, `DROP_ORDER`, the action-verb precedent),
-clipboard-ownership (the data-control write path the panel's copy-image action
-reuses), and panel-visibility/settings-sidebar (the drawer seam). It
+the shipped data-control write path (which the panel's copy-image action
+reuses), and the shipped drawer seam. It
 supersedes the *working spec's* render-confirmation premise only; records and
 shipped OSC behavior are untouched.
 
@@ -422,8 +421,7 @@ shipped OSC behavior are untouched.
   `SPEC-paste-image.md` (Objective, design items 4-5, OQ-2, OQ-5);
   `tasks/paste-image.md` (PI-1 done `cb39a39`, PI-2 done `d9b8151`,
   checkpoint state 2026-11-08); sibling records `terminal-images.md`,
-  `status-bar-ux.md`, `status-bar-capability.md`, `clipboard-ownership.md`,
-  `settings-sidebar.md`, `suggest-menu-layering.md`
+  `status-bar-ux.md`, `status-bar-capability.md`
 - WezTerm: wezterm/wezterm issue #7272 "Pasting Images" (opened 2025-09-30,
   closed; fetched 2026-11-08); PasteFrom documentation —
   <https://wezterm.org/config/lua/keyassignment/PasteFrom.html> (fetched
