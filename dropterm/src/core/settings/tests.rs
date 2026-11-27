@@ -167,12 +167,13 @@ fn a_close_clears_the_buffer_for_a_fresh_reopen() {
 }
 
 #[test]
-fn the_exactly_once_count_is_64() {
+fn the_exactly_once_count_is_62() {
     // The rich-input rebuild (RI-1) sat the map at 63; the shell
-    // integration's kill switch (SI-1) adds its row — one
-    // planned-write variant per exposed key, each in exactly one
-    // section.
-    assert_eq!(section_keys().len(), 64);
+    // integration's kill switch (SI-1) adds its row, and the editor's
+    // departure (suggest-overlay SO-9) takes the strip's dock and the
+    // highlight back out — one planned-write variant per exposed key,
+    // each in exactly one section.
+    assert_eq!(section_keys().len(), 62);
 }
 
 #[test]
@@ -196,11 +197,9 @@ fn the_control_map_covers_every_exposed_key_exactly_once_and_never_output() {
         PlannedWrite::CommandFinishNotificationEnabled(true),
         PlannedWrite::CommandFinishNotificationAfterSecs(5),
         PlannedWrite::InputMode(InputMode::Native),
-        PlannedWrite::InputPosition(InputPosition::Bottom),
         PlannedWrite::InputGhost(true),
         PlannedWrite::InputMenu(true),
         PlannedWrite::InputAutoPopup(true),
-        PlannedWrite::InputHighlight(true),
         PlannedWrite::InputDescriptions(true),
         PlannedWrite::InputBadges(true),
         PlannedWrite::InputIcons(true),
@@ -294,11 +293,9 @@ fn key_names_match_the_config_file_fields() {
             "command_finish_notification_after_secs",
         ),
         (ConfigKey::InputMode, "input_mode"),
-        (ConfigKey::InputPosition, "input_position"),
         (ConfigKey::InputGhost, "input_ghost"),
         (ConfigKey::InputMenu, "input_menu"),
         (ConfigKey::InputAutoPopup, "input_auto_popup"),
-        (ConfigKey::InputHighlight, "input_highlight"),
         (ConfigKey::InputDescriptions, "input_descriptions"),
         (ConfigKey::InputBadges, "input_badges"),
         (ConfigKey::InputIcons, "input_icons"),
@@ -954,11 +951,9 @@ fn the_terminal_card_joins_the_bell_after_scrollback() {
         Section::AutoComplete.keys(),
         &[
             ConfigKey::InputMode,
-            ConfigKey::InputPosition,
             ConfigKey::InputGhost,
             ConfigKey::InputMenu,
             ConfigKey::InputAutoPopup,
-            ConfigKey::InputHighlight,
             ConfigKey::InputDescriptions,
             ConfigKey::InputBadges,
             ConfigKey::InputIcons,
@@ -3295,5 +3290,21 @@ fn the_blur_decision_commits_valid_and_reverts_invalid() {
     assert_eq!(
         blur_decision(TextField::ScrollbackLines, "lots", "5000"),
         BlurDecision::Revert
+    );
+}
+
+#[test]
+fn the_rich_label_names_the_shells_line() {
+    // The mode dropdown's labels (suggest-overlay, the owner's ruling
+    // of 2026-11-27): rich mode is the shell's own line with the
+    // suggestions over it, and the native label is unchanged.
+    let rich = INPUT_MODE_OPTIONS
+        .iter()
+        .find(|(mode, _)| *mode == InputMode::Rich)
+        .expect("the rich option");
+    assert_eq!(rich.1, "Rich (suggestions on the shell's line)");
+    assert_eq!(
+        INPUT_MODE_OPTIONS[0],
+        (InputMode::Native, "Native (the shell's line)")
     );
 }

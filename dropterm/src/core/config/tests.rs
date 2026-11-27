@@ -872,19 +872,16 @@ fn a_disabled_status_bar_round_trips_through_the_config_store() {
 }
 
 #[test]
-fn rich_input_defaults_to_native_bottom_all_on_comfortable() {
-    // The rich-input rulings (intake 2026-11-25): a fresh config keeps
-    // the bare shell (`native` — no v1, no regression), the strip
-    // docks at the bottom, every editor surface ships on, and the
-    // menu rows render comfortable — `compact_rows` is the density
-    // switch, off by default.
+fn input_defaults_to_native_all_on_comfortable() {
+    // The rich-input rulings (intake 2026-11-25): a fresh config
+    // keeps the bare shell (`native` — no v1, no regression), every
+    // overlay surface ships on, and the menu rows render comfortable
+    // — `compact_rows` is the density switch, off by default.
     let config = DropTermConfig::default();
     assert_eq!(config.input_mode, InputMode::Native);
-    assert_eq!(config.input_position, InputPosition::Bottom);
     assert!(config.input_ghost);
     assert!(config.input_menu);
     assert!(config.input_auto_popup);
-    assert!(config.input_highlight);
     assert!(config.input_descriptions);
     assert!(config.input_badges);
     assert!(config.input_icons);
@@ -925,19 +922,67 @@ fn a_stale_autosuggestions_line_keeps_loading_and_is_ignored() {
 }
 
 #[test]
+fn the_retired_input_keys_never_serialize() {
+    // The strip's dock and the highlight left with the editor
+    // (suggest-overlay SO-9): neither key is in the settings
+    // section's shape, the cull's own precedent above.
+    let text = ron::to_string(&DropTermConfig::default()).expect("serialize");
+    assert!(
+        !text.contains("input_position"),
+        "the strip's dock serializes nowhere: {text}"
+    );
+    assert!(
+        !text.contains("input_highlight"),
+        "the highlight serializes nowhere: {text}"
+    );
+    assert!(
+        text.contains("input_mode"),
+        "the control: the mode's own key stands"
+    );
+}
+
+#[test]
+fn a_stale_input_dock_or_highlight_line_keeps_loading_and_other_keys_apply() {
+    // The removal's migration story (the dock-presence precedent): a
+    // config written by a version that had the two keys still carries
+    // them. The section has no `deny_unknown_fields`, so serde ignores
+    // the unknown keys, the file loads clean (no quarantine — only
+    // unparseable sections move aside), and every surviving key
+    // applies.
+    let dir = TempDir::new("stale-input-keys");
+    write_section(
+        &dir,
+        store::SETTINGS_FILE,
+        "(height_percent: 70, input_position: Top, input_highlight: false, input_mode: Rich, opacity: 55)",
+    );
+
+    let loaded = load_config(&dir);
+    assert_eq!(loaded.height_percent, 70);
+    assert_eq!(loaded.opacity, 55);
+    assert_eq!(loaded.input_mode, InputMode::Rich);
+    assert!(
+        loaded.input_ghost,
+        "the surviving keys answer their own values"
+    );
+    assert!(
+        dir.join(store::SETTINGS_FILE).exists(),
+        "the stale-key file loads, it is not quarantined"
+    );
+    assert!(!dir.join("config.ron.bak").exists());
+}
+
+#[test]
 fn an_all_off_input_config_round_trips_through_the_store() {
-    // The decoupled keys persist: the mode, the position, every
-    // surface's kill switch, and the density flip survive a
+    // The decoupled keys persist: the mode, every surface's kill
+    // switch, and the density flip survive a
     // write→load cycle (the control for the default-on pin: a
     // present off value is honored, not defaulted over).
     let dir = TempDir::new("input-all-off");
     let stored = DropTermConfig {
         input_mode: InputMode::Rich,
-        input_position: InputPosition::Top,
         input_ghost: false,
         input_menu: false,
         input_auto_popup: false,
-        input_highlight: false,
         input_descriptions: false,
         input_badges: false,
         input_icons: false,

@@ -78,9 +78,10 @@ pub struct Profile {
     /// default) follows the global `scrollback_lines`.
     #[serde(default)]
     pub scrollback_lines: Option<u32>,
-    /// The prompt-line mode the profile's tabs run (rich-input spec):
-    /// `Some` pins it — `Rich`, `DropTerm`'s input editor, or
-    /// `Native`, the bare shell — `None` (the default) follows the
+    /// The suggestion mode the profile's tabs run (rich-input spec):
+    /// `Some` pins it — `Rich`, the suggestions over the shell's
+    /// line, or `Native`, the bare shell — `None` (the default)
+    /// follows the
     /// global `input_mode`. Applied per tab at spawn and in the live
     /// config-apply pass (the `color_scheme` pattern).
     #[serde(default)]
