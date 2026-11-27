@@ -68,7 +68,7 @@ The status band release: a 28 px glance strip beside the grab bar narrating the 
 
 First release: the drop-down core and parity with Yakuake (the KDE drop-down terminal DropTerm takes its shape from). A layer-shell overlay anchored to the top or bottom edge - above other windows, hidden from Alt-Tab and the dock, shell session alive across hides - toggled by a second launch of the binary or a bound COSMIC shortcut. Tabs with everything that implies (rename, duplicate, reorder, cycling, numbered jumps, per-tab context menu), sessions saved and restored across shutdowns, drag-to-resize with remembered geometry, width and alignment, the 150 ms slide, an in-app settings drawer, twelve built-in color schemes following the system theme, and the CLI seam: `new-tab` and the tab verbs over the single-instance D-Bus surface, plus the COSMIC panel applet.
 
-- The drop-down core - layer shell, exclusive focus, session-alive hides ([README](https://github.com/l1br3-io/cosmic-ext-dropterm))
+- The drop-down core - layer shell, exclusive focus, session-alive hides ([README](https://github.com/l1br3-io/dropterm))
 - Tabs - open/close/rename/duplicate/reorder, title modes, per-tab menu ([keybindings](keybindings.md), [configuration](configuration.md#tab-titles))
 - Session persistence ([sessions](sessions.md))
 - Profiles - command, directory, scheme, font size, scrollback, environment per profile ([profiles](configuration.md#profiles))
