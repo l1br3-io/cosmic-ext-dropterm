@@ -2,10 +2,10 @@
 
 //! The pure editor model's pins (rich-input spec, RI-2): every v1
 //! key, paste, history navigation, the signal decisions, and the
-//! show/hide machine — each against the model alone, no engine, no
+//! highlight tokenizer — each against the model alone, no engine, no
 //! surface.
 
-use super::{Editor, Gates, Key, PromptDetection, Signal, Verdict, owns_line};
+use super::{Editor, Key, Signal, Verdict};
 
 fn editor(history: &[&str]) -> Editor {
     Editor::new(history.iter().map(|line| (*line).to_string()).collect())
@@ -14,15 +14,6 @@ fn editor(history: &[&str]) -> Editor {
 fn type_text(editor: &mut Editor, text: &str) {
     for ch in text.chars() {
         assert_eq!(editor.key(Key::Char(ch)), Verdict::Handled);
-    }
-}
-
-fn live_gates() -> Gates {
-    Gates {
-        focused: true,
-        no_foreground_child: true,
-        at_bottom: true,
-        prompt_detection: PromptDetection::Live,
     }
 }
 
@@ -402,49 +393,6 @@ fn ctrl_c_clears_the_line_and_the_navigation_state() {
     // The stale draft is gone: Down from the live line holds.
     assert_eq!(editor.key(Key::Down), Verdict::Handled);
     assert_eq!(editor.line(), "");
-}
-
-// --- the show/hide machine (OQ-4: unsure hides) ---
-
-#[test]
-fn every_gate_passing_owns_the_line() {
-    assert!(owns_line(&live_gates()));
-}
-
-#[test]
-fn a_foreground_child_stands_the_editor_aside() {
-    let gates = Gates {
-        no_foreground_child: false,
-        ..live_gates()
-    };
-    assert!(!owns_line(&gates));
-}
-
-#[test]
-fn an_unfocused_or_scrolled_view_stands_the_editor_aside() {
-    let unfocused = Gates {
-        focused: false,
-        ..live_gates()
-    };
-    assert!(!owns_line(&unfocused));
-
-    let scrolled = Gates {
-        at_bottom: false,
-        ..live_gates()
-    };
-    assert!(!owns_line(&scrolled));
-}
-
-#[test]
-fn an_unsure_prompt_hides_the_editor() {
-    // The default-hide ruling: a missed editor costs richness, a
-    // wrongly-shown editor eats a program's input — every other
-    // gate may hold, unsure alone stands the editor aside.
-    let gates = Gates {
-        prompt_detection: PromptDetection::Unsure,
-        ..live_gates()
-    };
-    assert!(!owns_line(&gates));
 }
 
 // --- the highlight tokenizer (rich-input RI-6) ---

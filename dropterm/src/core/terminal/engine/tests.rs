@@ -5408,26 +5408,27 @@ fn the_options_default_mode_stays_native() {
 #[test]
 fn native_mode_never_opens_the_lane() {
     // The bare-mode pin: with every live-prompt gate passing (a real
-    // /bin/sh prompt, focused, at the bottom), `native` still never
-    // claims — the lane stays dark and keys forward verbatim.
+    // /bin/sh prompt, focused, at the bottom), `native`'s overlays
+    // are still never live — the lane stays dark and keys forward
+    // verbatim.
     let mut terminal = autosuggest_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        |t| editor::owns_line(&t.editor_gates()),
+        |t| suggest::overlays_live(&t.overlay_gates()),
         "a live prompt with every gate passing",
     );
-    assert!(!terminal.editor_owns_line());
+    assert!(!terminal.overlays_live());
 }
 
 #[test]
-fn rich_mode_claims_at_a_live_prompt() {
+fn rich_mode_is_live_at_a_live_prompt() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
-        "the editor to own the line",
+        Terminal::overlays_live,
+        "the overlays to go live",
     );
 }
 
@@ -5445,61 +5446,59 @@ fn assert_cursor_above_the_bottom_row(terminal: &Terminal) {
 }
 
 #[test]
-fn rich_mode_claims_the_boot_prompt_of_an_unfinished_screen() {
-    // The 2026-10-24 fresh-terminal ruling, now the editor's too: a
-    // new tab's first prompt sits at the top of an empty screen and
-    // the editor owns it all the same — the ghost lane dropped its
-    // bottom-row requirement for this exact screen. The owner's
-    // report: a fresh rich-mode tab passed every keystroke to the
-    // shell (bash echoed it on the prompt row, its own caret
-    // showing) while the strip stood empty. The shell's own mark
-    // speaks first here: an integrated bash reports A for its boot
-    // prompt, so no grid-read is involved.
+fn rich_mode_is_live_at_the_boot_prompt_of_an_unfinished_screen() {
+    // The 2026-10-24 fresh-terminal ruling, the overlays' too: a
+    // new tab's first prompt sits at the top of an empty screen, and
+    // the overlays are live there all the same. The ghost lane
+    // dropped its bottom-row requirement for this exact screen, and
+    // the gates read the scrollback, never the cursor's row. The
+    // shell's own mark speaks first here: an integrated bash reports
+    // A for its boot prompt, so no grid-read is involved.
     let mut terminal = rich_terminal();
     terminal.note_prompt_start();
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
-        "the editor to own the boot prompt",
+        Terminal::overlays_live,
+        "the overlays to go live at the boot prompt",
     );
     assert_cursor_above_the_bottom_row(&terminal);
 }
 
 #[test]
-fn the_grid_read_claims_the_boot_prompt_of_an_unfinished_screen() {
+fn the_grid_read_makes_the_boot_prompt_of_an_unfinished_screen_live() {
     // The same screen with no mark to speak (the kill switch, a
     // shell without an emitter): the settle path adopts the first
-    // prompt as the grid-read's anchor, and that verdict owns the
-    // line where the cursor stands.
+    // prompt as the grid-read's anchor, and that verdict keeps the
+    // overlays live where the cursor stands.
     let mut terminal = rich_terminal();
     terminal.arm_spawn_grid_next_resize();
     resize_cols(&mut terminal, 100);
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
-        "the grid read to claim the boot prompt",
+        Terminal::overlays_live,
+        "the grid read to make the boot prompt live",
     );
     assert_cursor_above_the_bottom_row(&terminal);
 }
 
 #[test]
-fn a_scrolled_back_view_still_stands_the_editor_aside() {
+fn a_scrolled_back_view_still_stands_the_overlays_aside() {
     // The half of the viewport gate that stays: an unfinished screen
     // is owned, a viewport scrolled into its history is not.
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
 
     terminal.scroll(TerminalScroll::Delta(1));
     assert!(
-        !terminal.editor_owns_line(),
-        "a viewport scrolled back stands the editor aside"
+        !terminal.overlays_live(),
+        "a viewport scrolled back stands the overlays aside"
     );
 
     terminal.scroll(TerminalScroll::Bottom);
     assert!(
-        terminal.editor_owns_line(),
-        "back at the bottom the line is owned again"
+        terminal.overlays_live(),
+        "back at the bottom the overlays are live again"
     );
 }
 
@@ -5512,13 +5511,13 @@ fn an_unknown_prompt_maps_to_unsure_and_a_read_one_to_live() {
     // read yet.
     let mut terminal = rich_terminal();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        |t| t.editor_gates().prompt_detection == editor::PromptDetection::Live,
+        |t| t.overlay_gates().prompt_detection == suggest::PromptDetection::Live,
         "the prompt to be read",
     );
 }
@@ -5532,8 +5531,8 @@ fn the_prompt_zone_starts_unfed_and_the_grid_read_decides() {
     let terminal = rich_terminal();
     assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
@@ -5546,14 +5545,14 @@ fn a_prompt_start_mark_flips_the_zone_and_lives_without_a_grid_read() {
     // the zone can be speaking.
     let mut terminal = rich_terminal();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
     terminal.note_prompt_start();
     assert_eq!(terminal.prompt_zone(), PromptZone::InPrompt);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
 }
 
@@ -5567,8 +5566,8 @@ fn a_command_start_mark_stands_aside_to_the_grid_read() {
     terminal.note_command_start();
     assert_eq!(terminal.prompt_zone(), PromptZone::InCommand);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
@@ -5582,13 +5581,13 @@ fn a_command_start_after_a_grid_read_leaves_the_read_verdict_standing() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
     terminal.note_command_start();
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Live
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Live
     );
 }
 
@@ -5613,24 +5612,24 @@ fn a_terminal_reset_returns_the_zone_to_unfed() {
     terminal.note_terminal_reset();
     assert_eq!(terminal.prompt_zone(), PromptZone::Unfed);
     assert_eq!(
-        terminal.editor_gates().prompt_detection,
-        editor::PromptDetection::Unsure
+        terminal.overlay_gates().prompt_detection,
+        suggest::PromptDetection::Unsure
     );
 }
 
 #[test]
-fn a_foreground_child_stands_the_rich_editor_aside() {
+fn a_foreground_child_stands_the_overlays_aside() {
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        Terminal::editor_owns_line,
+        Terminal::overlays_live,
         "a live prompt first",
     );
     terminal.input_no_scroll(&b"sleep 5\n"[..]);
     poll_update_until(
         &mut terminal,
-        |t| !t.editor_owns_line(),
+        |t| !t.overlays_live(),
         "the foreground child to take the screen",
     );
 }
@@ -5645,7 +5644,7 @@ fn execution_writes_the_line_and_the_echo_does_not_reopen_the_lane() {
     // lane from re-opening over the echo.
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
 
     terminal.editor_execute("ec");
     poll_update_until(
@@ -5906,7 +5905,7 @@ fn the_conditioned_opener_declines_a_line_nothing_answers() {
     // forward verbatim.
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
     record_command(&mut terminal, "sleep 30");
 
     assert!(
@@ -5928,7 +5927,7 @@ fn the_conditioned_opener_declines_while_the_pane_is_unfocused() {
     // qualifies with the pane focused declines unfocused.
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
     record_command(&mut terminal, "sleep 30");
 
     assert!(
@@ -5952,7 +5951,7 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
     // qualifying line declines from then on.
     let mut terminal = rich_terminal();
     drive_to_a_bottom_prompt(&mut terminal);
-    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    poll_update_until(&mut terminal, Terminal::overlays_live, "a live prompt");
     record_command(&mut terminal, "sleep 30");
 
     assert!(
@@ -6002,7 +6001,7 @@ fn lane_terminal_over(
     drive_to_a_bottom_prompt(&mut terminal);
     poll_update_until(
         &mut terminal,
-        |t| editor::owns_line(&t.editor_gates()),
+        |t| suggest::overlays_live(&t.overlay_gates()),
         "a live prompt",
     );
     terminal
@@ -6246,7 +6245,7 @@ fn a_showing_menu_closes_when_a_program_takes_the_foreground() {
     assert!(terminal.menu_is_open());
     run_the_typed_line(&mut terminal);
     assert!(
-        !terminal.editor_owns_line(),
+        !terminal.overlays_live(),
         "the pin's own stage: the gates dropped"
     );
     assert!(

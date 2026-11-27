@@ -964,21 +964,21 @@ impl PathListingCache {
 /// The prompt truth the gates read (rich-input spec): the shell's
 /// own mark first, and otherwise the grid read's verdict — an
 /// adopted suggest anchor is a prompt the grid can see.
-fn prompt_detection(zone: PromptZone, anchored: bool) -> editor::PromptDetection {
+fn prompt_detection(zone: PromptZone, anchored: bool) -> suggest::PromptDetection {
     match zone {
-        PromptZone::InPrompt => editor::PromptDetection::Live,
+        PromptZone::InPrompt => suggest::PromptDetection::Live,
         PromptZone::InCommand | PromptZone::Unfed => {
             if anchored {
-                editor::PromptDetection::Live
+                suggest::PromptDetection::Live
             } else {
-                editor::PromptDetection::Unsure
+                suggest::PromptDetection::Unsure
             }
         }
     }
 }
 
 /// The live-prompt gates over facts the caller already read
-/// (rich-input spec, RI-3). [`Terminal::editor_gates`] gathers them
+/// (rich-input spec, RI-3). [`Terminal::overlay_gates`] gathers them
 /// itself; `update()` needs the live answer while it holds the host
 /// buffer's mutable borrow, where the builder's own reads are out of
 /// reach.
@@ -986,9 +986,9 @@ fn gates_over(
     focused: bool,
     foreground_child: bool,
     at_bottom: bool,
-    prompt_detection: editor::PromptDetection,
-) -> editor::Gates {
-    editor::Gates {
+    prompt_detection: suggest::PromptDetection,
+) -> suggest::OverlayGates {
+    suggest::OverlayGates {
         focused,
         no_foreground_child: !foreground_child,
         at_bottom,
@@ -2002,21 +2002,22 @@ impl Terminal {
         self.notifier.notify(input);
     }
 
-    /// The editor's live-prompt gates (rich-input spec, RI-3): the
-    /// same facts the ghost lane reads — focus, a fresh foreground
-    /// check, the viewport at the bottom of the scrollback — plus the
-    /// prompt truth: the shell's own mark first (shell-integration
-    /// spec — zone `InPrompt` is `Live` with no grid-read at all, the
-    /// OQ-4 narrowing), and otherwise the grid-read's verdict
-    /// unchanged — an adopted suggest anchor is a prompt the grid can
-    /// see (`Live`); none yet is `Unsure`, and unsure hides (OQ-4).
-    pub fn editor_gates(&self) -> editor::Gates {
+    /// The live-prompt gates (rich-input spec, RI-3; the overlay
+    /// lane's from suggest-overlay SO-7): the same facts the ghost
+    /// lane reads — focus, a fresh foreground check, the viewport at
+    /// the bottom of the scrollback — plus the prompt truth: the
+    /// shell's own mark first (shell-integration spec — zone `InPrompt`
+    /// is `Live` with no grid-read at all, the OQ-4 narrowing), and
+    /// otherwise the grid-read's verdict unchanged — an adopted
+    /// suggest anchor is a prompt the grid can see (`Live`); none yet
+    /// is `Unsure`, and unsure hides (OQ-4).
+    pub fn overlay_gates(&self) -> suggest::OverlayGates {
         // The viewport gate is the scrollback's, not the cursor row's
         // (the 2026-10-24 fresh-terminal ruling, the ghost lane's
         // own): a new tab's first prompt — and every prompt after a
         // `clear` — sits at the top of an unfinished screen with the
         // viewport at the bottom of its (short) history. Reading the
-        // bottom row there stands the editor aside at exactly the
+        // bottom row there stands the overlays aside at exactly the
         // prompt a fresh tab opens on.
         let at_bottom = self.term.lock().grid().display_offset() == 0;
         gates_over(
@@ -2027,22 +2028,13 @@ impl Terminal {
         )
     }
 
-    /// The routing decision (rich-input spec, RI-3): whether the
-    /// editor owns the line for a keystroke arriving right now — the
-    /// mode and the gates in one answer. `native` never opens the
-    /// lane (the bare-mode pin), whatever the gates say. The pane's
-    /// paint asks the same question: the strip, its menu, and the
-    /// grid's standing-down caret are the owned line's alone.
-    pub fn editor_owns_line(&self) -> bool {
-        self.input_mode == InputMode::Rich && editor::owns_line(&self.editor_gates())
-    }
-
     /// The overlay lane's one predicate (suggest-overlay spec): rich
     /// mode and the four live-prompt gates, the paint, the key
     /// routing, and the update's close all asking it, so a menu state
     /// left open behind a running program is never consulted.
+    /// `native` is never live, whatever the gates say.
     pub fn overlays_live(&self) -> bool {
-        self.editor_owns_line()
+        self.input_mode == InputMode::Rich && suggest::overlays_live(&self.overlay_gates())
     }
 
     /// Enter's execution (rich-input spec): PTY-write the line plus
@@ -4091,7 +4083,7 @@ impl Terminal {
                     // live-prompt gates, read off facts the update
                     // already holds.
                     let rich_live = self.input_mode == InputMode::Rich
-                        && editor::owns_line(&gates_over(
+                        && suggest::overlays_live(&gates_over(
                             self.is_focused,
                             foreground_child,
                             observation.display_offset == 0,

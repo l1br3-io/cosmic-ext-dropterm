@@ -2968,6 +2968,60 @@ fn env_rows_stay_silent_over_ssh() {
     );
 }
 
+// --- the live-prompt gates (rich-input RI-3; the overlay lane's
+// --- from suggest-overlay SO-7): unsure hides ---
+
+fn live_gates() -> OverlayGates {
+    OverlayGates {
+        focused: true,
+        no_foreground_child: true,
+        at_bottom: true,
+        prompt_detection: PromptDetection::Live,
+    }
+}
+
+#[test]
+fn every_gate_passing_makes_the_overlays_live() {
+    assert!(overlays_live(&live_gates()));
+}
+
+#[test]
+fn a_foreground_child_stands_the_overlays_aside() {
+    let gates = OverlayGates {
+        no_foreground_child: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&gates));
+}
+
+#[test]
+fn an_unfocused_or_scrolled_view_stands_the_overlays_aside() {
+    let unfocused = OverlayGates {
+        focused: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&unfocused));
+
+    let scrolled = OverlayGates {
+        at_bottom: false,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&scrolled));
+}
+
+#[test]
+fn an_unsure_prompt_hides_the_overlays() {
+    // The default-hide ruling: a missed overlay costs richness, a
+    // wrongly-shown overlay can insert into a program's input —
+    // every other gate may hold, unsure alone stands the overlays
+    // aside.
+    let gates = OverlayGates {
+        prompt_detection: PromptDetection::Unsure,
+        ..live_gates()
+    };
+    assert!(!overlays_live(&gates));
+}
+
 // --- Tab's fill while the menu shows (suggest-parity; on the overlay
 // --- lane from suggest-overlay SO-3, each tier at its own anchor SO-4b) ---
 

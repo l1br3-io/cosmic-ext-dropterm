@@ -2268,6 +2268,42 @@ pub(crate) enum MenuOutcome {
     Execute,
 }
 
+/// What the gates concluded about the prompt (rich-input OQ-4):
+/// `Live` is a prompt the gates can see; `Unsure` is anything they
+/// cannot decide — and unsure hides (a wrongly-shown overlay can
+/// insert into a program's input on an accept key; a hidden one only
+/// costs richness).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDetection {
+    Live,
+    Unsure,
+}
+
+/// The live-prompt gates (today's ghost gates, restated as contract
+/// by rich-input RI-3; the overlay lane's from suggest-overlay SO-7):
+/// all four must hold for the overlays to be live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayGates {
+    /// The surface holds keyboard focus.
+    pub focused: bool,
+    /// No foreground child owns the screen (the `tcgetpgrp` check).
+    pub no_foreground_child: bool,
+    /// The viewport sits at the bottom of the scrollback.
+    pub at_bottom: bool,
+    /// What the grid read concluded about the prompt.
+    pub prompt_detection: PromptDetection,
+}
+
+/// The overlays' decision under these gates: live only when every
+/// gate holds (unsure hides).
+#[must_use]
+pub fn overlays_live(gates: &OverlayGates) -> bool {
+    gates.focused
+        && gates.no_foreground_child
+        && gates.at_bottom
+        && gates.prompt_detection == PromptDetection::Live
+}
+
 /// One row's fill continuation against the current line
 /// (suggest-parity spec, the owner's 2026-11-24 reports): the bytes
 /// the row can still append at the cursor, derived per press, because

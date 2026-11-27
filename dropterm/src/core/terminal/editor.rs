@@ -230,41 +230,6 @@ fn classify_span(
     }
 }
 
-/// What the grid-read gates concluded about the prompt (rich-input
-/// OQ-4): `Live` is a prompt the gates can see; `Unsure` is anything
-/// they cannot decide — and unsure hides (a wrongly-shown editor
-/// eats a program's input; a hidden one only costs richness).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptDetection {
-    Live,
-    Unsure,
-}
-
-/// The live-prompt gates the engine feeds the model (today's ghost
-/// gates, restated as contract): all four must hold for the editor
-/// to own the line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Gates {
-    /// The surface holds keyboard focus.
-    pub focused: bool,
-    /// No foreground child owns the screen (the `tcgetpgrp` check).
-    pub no_foreground_child: bool,
-    /// The viewport sits at the bottom of the scrollback.
-    pub at_bottom: bool,
-    /// What the grid read concluded about the prompt.
-    pub prompt_detection: PromptDetection,
-}
-
-/// The show/hide machine's decision: whether the editor owns the
-/// line under these gates (every gate must hold; unsure hides).
-#[must_use]
-pub fn owns_line(gates: &Gates) -> bool {
-    gates.focused
-        && gates.no_foreground_child
-        && gates.at_bottom
-        && gates.prompt_detection == PromptDetection::Live
-}
-
 /// The owned line's editor state: the buffer with a char-index
 /// cursor, the history slice (newest-first, the caller's ordering —
 /// the store's context ranking is applied before it reaches here),
