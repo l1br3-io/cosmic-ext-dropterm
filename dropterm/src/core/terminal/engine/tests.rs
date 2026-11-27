@@ -5967,3 +5967,186 @@ fn the_conditioned_opener_declines_while_the_menu_key_is_off() {
     );
     assert!(!terminal.menu_is_open(), "the decline opens nothing");
 }
+
+// --- the overlay lane: Tab fills by PTY-write (suggest-overlay SO-3) ---
+
+/// An overlay-lane terminal: rich mode with the popup as given,
+/// driven to a live prompt on the grid's bottom row.
+fn overlay_terminal(menu_auto: bool) -> Terminal {
+    let mut terminal = rich_terminal();
+    if !menu_auto {
+        terminal.set_config(
+            &TerminalOptions {
+                input_mode: InputMode::Rich,
+                autosuggestions_menu_auto: false,
+                ..isolated_options()
+            },
+            &Colors::default(),
+        );
+    }
+    drive_to_a_bottom_prompt(&mut terminal);
+    poll_update_until(&mut terminal, Terminal::editor_owns_line, "a live prompt");
+    terminal
+}
+
+/// The bottom line's text without the shaper's isolator and the
+/// grid's padding.
+fn prompt_line(terminal: &Terminal) -> String {
+    bottom_line_text(terminal)
+        .trim_start_matches('\u{2066}')
+        .trim_end()
+        .to_string()
+}
+
+/// The cursor's column on the grid.
+fn cursor_column(terminal: &Terminal) -> usize {
+    terminal.term.lock().grid().cursor.point.column.0
+}
+
+/// Type `text` at the prompt and let its echo land.
+fn type_at_prompt(terminal: &mut Terminal, text: &str) {
+    terminal.input_no_scroll(text.as_bytes().to_vec());
+    poll_update_until(
+        terminal,
+        |t| prompt_line(t).ends_with(text),
+        "the typed text echoes",
+    );
+}
+
+/// The showing menu's row labels.
+fn row_labels(terminal: &Terminal) -> Vec<String> {
+    terminal
+        .menu_rows()
+        .iter()
+        .map(|row| row.label.clone())
+        .collect()
+}
+
+/// The two-row fill under either popup setting: `slee` over
+/// `sleep 30` and `sleep 15` fills `p `, the rows answer `sleep `
+/// before the echo lands, and the echo's update leaves them.
+fn assert_the_two_row_fill(menu_auto: bool) {
+    let mut terminal = overlay_terminal(menu_auto);
+    record_command(&mut terminal, "sleep 30");
+    record_command(&mut terminal, "sleep 15");
+    type_at_prompt(&mut terminal, "slee");
+    if !menu_auto {
+        assert!(terminal.menu_open(), "Tab's opener opens");
+    }
+    assert!(terminal.menu_is_open(), "the menu shows before the fill");
+    terminal.menu_tab();
+    let filled = row_labels(&terminal);
+    let mut sorted = filled.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec!["sleep 15".to_string(), "sleep 30".to_string()],
+        "the rows answer the extended segment before the echo lands"
+    );
+    assert_eq!(
+        terminal.menu_selected(),
+        0,
+        "the re-collect selects the top"
+    );
+    assert!(terminal.menu_is_open(), "two rows stand: the menu stays");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep",
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep ".len(),
+        "the fill wrote exactly the extension, its trailing space included"
+    );
+    terminal.update();
+    assert_eq!(
+        row_labels(&terminal),
+        filled,
+        "the echo's update leaves the rows alone"
+    );
+    assert!(terminal.menu_is_open());
+}
+
+#[test]
+fn a_tab_fill_writes_the_extension_and_the_rows_answer_it() {
+    assert_the_two_row_fill(true);
+}
+
+#[test]
+fn a_tab_fill_writes_the_extension_with_the_popup_off() {
+    assert_the_two_row_fill(false);
+}
+
+#[test]
+fn a_lone_row_fill_writes_the_extension_and_closes() {
+    // One row standing closes the menu (the fill completed the
+    // line's only candidate), and the echo's update never re-opens
+    // it.
+    let mut terminal = overlay_terminal(true);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "slee");
+    assert!(terminal.menu_is_open(), "the single row pops");
+    terminal.menu_tab();
+    assert!(!terminal.menu_is_open(), "one row standing closes the menu");
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep 30",
+        "the fill's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep 30".len(),
+        "the fill wrote exactly the extension"
+    );
+    terminal.update();
+    assert!(
+        !terminal.menu_is_open(),
+        "the echo's update does not re-open the closed menu"
+    );
+}
+
+#[test]
+fn a_spent_echo_never_swallows_a_later_keystroke() {
+    // The one-shot's spend rule (suggest-overlay SO-3): an accept's
+    // echo arms it, and in rich mode the first update that sees the
+    // typed change on the live pane spends it, whichever way the
+    // popup switch stands. With the popup off the echo's update used
+    // to skip the whole popup chain, so the one-shot lingered and
+    // swallowed the first two-character keystroke after the switch
+    // was turned on.
+    let mut terminal = overlay_terminal(false);
+    record_command(&mut terminal, "sleep 30");
+    type_at_prompt(&mut terminal, "slee");
+    assert!(terminal.menu_open(), "Tab's opener opens");
+    terminal.menu_press(suggest::MenuKey::Accept);
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t) == "$ sleep 30",
+        "the accept's echo lands",
+    );
+    assert_eq!(
+        cursor_column(&terminal),
+        "$ sleep 30 ".len(),
+        "the accept's trailing space landed: the cursor stands one past the word"
+    );
+    terminal.set_config(
+        &TerminalOptions {
+            input_mode: InputMode::Rich,
+            autosuggestions_menu_auto: true,
+            ..isolated_options()
+        },
+        &Colors::default(),
+    );
+    terminal.input_no_scroll(&b"\x15"[..]);
+    poll_update_until(
+        &mut terminal,
+        |t| prompt_line(t).trim_end() == "$",
+        "the shell clears the line",
+    );
+    type_at_prompt(&mut terminal, "sl");
+    assert!(
+        terminal.menu_is_open(),
+        "the menu pops for the fresh keystroke: the echo's one-shot was spent"
+    );
+}

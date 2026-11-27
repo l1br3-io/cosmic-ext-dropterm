@@ -2968,6 +2968,38 @@ fn env_rows_stay_silent_over_ssh() {
     );
 }
 
+// --- Tab's fill while the menu shows (suggest-parity; on the overlay
+// lane from suggest-overlay SO-3) ---
+
+#[test]
+fn the_tab_fill_extends_the_lcp_else_cycles() {
+    // The LCP of the case-sensitive prefix rows extends "gi"
+    // (the rows that share it — gimp diverges and would cap the
+    // LCP at the query itself, the Cycle case below).
+    let rows = vec!["git", "git-status"];
+    assert_eq!(
+        tab_fill(&rows, "gi"),
+        TabFill::Insert {
+            beyond: "t".to_string(),
+            close: false
+        }
+    );
+    // One row left standing closes the menu.
+    assert_eq!(
+        tab_fill(&rows, "git-st"),
+        TabFill::Insert {
+            beyond: "atus".to_string(),
+            close: true
+        }
+    );
+    // No common extension: cycle.
+    assert_eq!(tab_fill(&["git", "gimp"], "gi"), TabFill::Cycle);
+    // Case-sensitive: a capital row never fills a lowercase query.
+    assert_eq!(tab_fill(&["Git", "Gimp"], "gi"), TabFill::Cycle);
+    // No prefix rows at all: cycle.
+    assert_eq!(tab_fill(&["cargo"], "gi"), TabFill::Cycle);
+}
+
 // --- the path rows: `./` and `../` leave every listing (suggest-overlay, SO-1) ---
 
 #[test]

@@ -12,6 +12,9 @@ use dropterm::core::terminal::suggest::SuggestionSource;
 // Re-exported for the view, which owns the pane-side instance and
 // routes the lane's menu outcomes and paints the token classes.
 pub(crate) use dropterm::core::terminal::editor::{Editor, MenuPress, TokenClass};
+// The Tab fill lives in core now (suggest-overlay SO-3); the view
+// keeps resolving it here until this module goes.
+pub(crate) use dropterm::core::terminal::suggest::{TabFill, tab_fill};
 use gpui::{Keystroke, px};
 
 /// The strip's colored segments under the toggle (rich-input
@@ -268,55 +271,6 @@ pub(crate) fn opener_claims_tab(keystroke: &Keystroke) -> bool {
     let modifiers = &keystroke.modifiers;
     keystroke.key == "tab"
         && !(modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform)
-}
-
-/// Tab's decision (the restored LCP-fill-else-cycle): the longest
-/// common prefix of the rows whose label starts with the typed
-/// segment case-sensitively — extending the segment means the fill
-/// (the insert is the extension beyond the typed text, the last row
-/// standing closing the menu), anything else a plain cycle. Pure
-/// over the rows the engine exposes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TabFill {
-    /// The insert beyond the typed text, and whether the menu
-    /// closes after (one row left standing).
-    Insert { beyond: String, close: bool },
-    /// No common extension: cycle the selection.
-    Cycle,
-}
-
-pub(crate) fn tab_fill(labels: &[&str], typed: &str) -> TabFill {
-    let prefix_rows: Vec<&str> = labels
-        .iter()
-        .copied()
-        .filter(|label| label.starts_with(typed))
-        .collect();
-    if prefix_rows.is_empty() {
-        return TabFill::Cycle;
-    }
-    let mut lcp = prefix_rows[0].to_string();
-    for label in &prefix_rows[1..] {
-        let common = lcp
-            .chars()
-            .zip(label.chars())
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a)
-            .collect::<String>();
-        lcp = common;
-    }
-    if lcp.len() > typed.len() && lcp.starts_with(typed) {
-        let beyond = lcp[typed.len()..].to_string();
-        let standing = prefix_rows
-            .iter()
-            .filter(|label| label.starts_with(lcp.as_str()))
-            .count();
-        TabFill::Insert {
-            beyond,
-            close: standing == 1,
-        }
-    } else {
-        TabFill::Cycle
-    }
 }
 
 // --- the menu chrome (rich-input RI-7) ---
@@ -956,37 +910,6 @@ mod tests {
             editor_menu_routing(&key(ctrl(), "a", None), false),
             EditorMenuRouting::CloseThenProcess
         );
-    }
-
-    #[test]
-    fn the_tab_fill_extends_the_lcp_else_cycles() {
-        use super::{TabFill, tab_fill};
-
-        // The LCP of the case-sensitive prefix rows extends "gi"
-        // (the rows that share it — gimp diverges and would cap the
-        // LCP at the query itself, the Cycle case below).
-        let rows = vec!["git", "git-status"];
-        assert_eq!(
-            tab_fill(&rows, "gi"),
-            TabFill::Insert {
-                beyond: "t".to_string(),
-                close: false
-            }
-        );
-        // One row left standing closes the menu.
-        assert_eq!(
-            tab_fill(&rows, "git-st"),
-            TabFill::Insert {
-                beyond: "atus".to_string(),
-                close: true
-            }
-        );
-        // No common extension: cycle.
-        assert_eq!(tab_fill(&["git", "gimp"], "gi"), TabFill::Cycle);
-        // Case-sensitive: a capital row never fills a lowercase query.
-        assert_eq!(tab_fill(&["Git", "Gimp"], "gi"), TabFill::Cycle);
-        // No prefix rows at all: cycle.
-        assert_eq!(tab_fill(&["cargo"], "gi"), TabFill::Cycle);
     }
 
     // --- the conditioned opener's key gate (tab-surface TS-1) ---

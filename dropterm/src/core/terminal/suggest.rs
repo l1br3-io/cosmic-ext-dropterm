@@ -2268,6 +2268,69 @@ pub(crate) enum MenuOutcome {
     Execute,
 }
 
+/// The word a menu row answers while the menu shows: the typed
+/// segment's last word. Tab's fill anchors each row's label at it,
+/// and the row's mark counts against it.
+#[must_use]
+pub fn fill_word(typed: &str) -> &str {
+    typed.split_whitespace().next_back().unwrap_or_default()
+}
+
+/// Tab's decision while the menu shows (suggest-parity spec): the
+/// longest common prefix of the rows whose label starts with the
+/// typed word case-sensitively. An extension of the word is the
+/// fill, with one row left standing closing the menu; anything else
+/// is a plain cycle. Pure over the labels the engine exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabFill {
+    /// The text beyond the typed word, and whether the menu closes
+    /// after it (one row left standing).
+    Insert {
+        /// What the line gains beyond the typed word.
+        beyond: String,
+        /// Whether one row alone stands under the filled word.
+        close: bool,
+    },
+    /// No common extension: cycle the selection.
+    Cycle,
+}
+
+/// Tab's fill-else-cycle over the showing rows ([`TabFill`]).
+#[must_use]
+pub fn tab_fill(labels: &[&str], typed: &str) -> TabFill {
+    let prefix_rows: Vec<&str> = labels
+        .iter()
+        .copied()
+        .filter(|label| label.starts_with(typed))
+        .collect();
+    if prefix_rows.is_empty() {
+        return TabFill::Cycle;
+    }
+    let mut lcp = prefix_rows[0].to_string();
+    for label in &prefix_rows[1..] {
+        let common = lcp
+            .chars()
+            .zip(label.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a)
+            .collect::<String>();
+        lcp = common;
+    }
+    if lcp.len() > typed.len() && lcp.starts_with(typed) {
+        let beyond = lcp[typed.len()..].to_string();
+        let standing = prefix_rows
+            .iter()
+            .filter(|label| label.starts_with(lcp.as_str()))
+            .count();
+        TabFill::Insert {
+            beyond,
+            close: standing == 1,
+        }
+    } else {
+        TabFill::Cycle
+    }
+}
+
 /// The completion menu's state (suggest-menu spec): the open fact,
 /// the displayed rows, the selected index, and the scroll offset —
 /// pure transitions over [`MenuCandidate`] lists, never the grid,

@@ -709,9 +709,10 @@ pub struct Terminal {
     /// One-shot accept-echo suppression (suggest-parity spec): a
     /// menu accept's write echoes back as a typed change, and the
     /// update that lands it must not re-collect, or the menu pops
-    /// over the line the accept just completed. The accept path
-    /// arms it; the first update that would re-collect consumes it,
-    /// so only a genuine new keystroke does.
+    /// over the line the accept just completed. The accept and fill
+    /// paths arm it; in rich mode the first update that sees a typed
+    /// change on a live pane consumes it, in `native` the popup's own
+    /// chain does — so only a genuine new keystroke re-collects.
     menu_accept_echo: bool,
     /// The idle-delay display gate (suggest-delay spec) — the
     /// resolved options value, re-read at every `set_config`: the
@@ -957,6 +958,41 @@ impl PathListingCache {
             self.key = Some(key);
         }
         Some(&self.entries)
+    }
+}
+
+/// The prompt truth the gates read (rich-input spec): the shell's
+/// own mark first, and otherwise the grid read's verdict — an
+/// adopted suggest anchor is a prompt the grid can see.
+fn prompt_detection(zone: PromptZone, anchored: bool) -> editor::PromptDetection {
+    match zone {
+        PromptZone::InPrompt => editor::PromptDetection::Live,
+        PromptZone::InCommand | PromptZone::Unfed => {
+            if anchored {
+                editor::PromptDetection::Live
+            } else {
+                editor::PromptDetection::Unsure
+            }
+        }
+    }
+}
+
+/// The live-prompt gates over facts the caller already read
+/// (rich-input spec, RI-3). [`Terminal::editor_gates`] gathers them
+/// itself; `update()` needs the live answer while it holds the host
+/// buffer's mutable borrow, where the builder's own reads are out of
+/// reach.
+fn gates_over(
+    focused: bool,
+    foreground_child: bool,
+    at_bottom: bool,
+    prompt_detection: editor::PromptDetection,
+) -> editor::Gates {
+    editor::Gates {
+        focused,
+        no_foreground_child: !foreground_child,
+        at_bottom,
+        prompt_detection,
     }
 }
 
@@ -1983,22 +2019,12 @@ impl Terminal {
         // bottom row there stands the editor aside at exactly the
         // prompt a fresh tab opens on.
         let at_bottom = self.term.lock().grid().display_offset() == 0;
-        let prompt_detection = match self.prompt_zone {
-            PromptZone::InPrompt => editor::PromptDetection::Live,
-            PromptZone::InCommand | PromptZone::Unfed => {
-                if self.suggest.anchored() {
-                    editor::PromptDetection::Live
-                } else {
-                    editor::PromptDetection::Unsure
-                }
-            }
-        };
-        editor::Gates {
-            focused: self.is_focused,
-            no_foreground_child: !self.foreground_child_running(),
+        gates_over(
+            self.is_focused,
+            self.foreground_child_running(),
             at_bottom,
-            prompt_detection,
-        }
+            prompt_detection(self.prompt_zone, self.suggest.anchored()),
+        )
     }
 
     /// The routing decision (rich-input spec, RI-3): whether the
@@ -2859,6 +2885,59 @@ impl Terminal {
             return false;
         };
         self.menu.selected_equals(typed)
+    }
+
+    /// The overlay lane's Tab while the menu shows (suggest-overlay
+    /// spec, SO-3): the fill, written to the PTY. The typed word is
+    /// scraped off the screen, the decision is [`suggest::tab_fill`]'s
+    /// over the menu's own rows, and a fill's extension goes through
+    /// [`Self::input_no_scroll`]: typed characters, never a paste.
+    /// One row standing closes the menu; otherwise the rows
+    /// re-collect in place over the extended line, the one the shell
+    /// is about to echo (OQ-2), so the menu never waits on the echo's
+    /// timing. With no common extension the selection steps. Every
+    /// fill arms the echo one-shot: the write's echo reads as a
+    /// typed change, and it must neither re-collect a second time nor
+    /// re-open a menu the fill closed. A closed menu is a spent one:
+    /// nothing happens.
+    pub fn menu_tab(&mut self) {
+        if !self.menu.is_open() {
+            return;
+        }
+        let (before_cursor, ..) = self.scrape_cursor_line();
+        let segment = self
+            .suggest
+            .typed_segment(&before_cursor)
+            .unwrap_or_default()
+            .to_string();
+        let word = suggest::fill_word(&segment).to_string();
+        let labels: Vec<&str> = self
+            .menu
+            .rows()
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect();
+        match suggest::tab_fill(&labels, &word) {
+            suggest::TabFill::Insert { beyond, close } => {
+                self.menu_accept_echo = true;
+                self.input_no_scroll(beyond.clone().into_bytes());
+                if close {
+                    self.menu.close();
+                    return;
+                }
+                let extended_line = format!("{before_cursor}{beyond}");
+                let extended = format!("{segment}{beyond}");
+                let rows = self.menu_candidates_over(&extended, &extended_line, true);
+                if rows.iter().any(|row| !row.suffix.is_empty()) {
+                    self.menu.open(rows);
+                } else {
+                    self.menu.close();
+                }
+            }
+            suggest::TabFill::Cycle => {
+                self.menu.press(suggest::MenuKey::Down, &word);
+            }
+        }
     }
 
     // --- the rich-input editor lane (rich-input spec, RI-5): the
@@ -4006,9 +4085,25 @@ impl Terminal {
                     // spec): a menu accept's write echoes back as a
                     // typed change — the update that lands it must not
                     // re-collect, or the menu pops over the line the
-                    // accept just completed. One-shot, consumed by the
-                    // first update that would re-collect, so only a
-                    // genuine new keystroke does.
+                    // accept just completed. One-shot, and a fill's
+                    // write arms it too (suggest-overlay SO-3). In
+                    // rich mode the first update that sees a typed
+                    // change on a live pane spends it, whichever way
+                    // the popup switch stands: spent only inside the
+                    // popup's chain, it lingered with the popup off
+                    // and swallowed the first two-character keystroke
+                    // after the switch was turned on. `native` keeps
+                    // the chain's own spend, where nothing paints the
+                    // menu.
+                    let rich_live = self.input_mode == InputMode::Rich
+                        && editor::owns_line(&gates_over(
+                            self.is_focused,
+                            foreground_child,
+                            observation.display_offset == 0,
+                            prompt_detection(self.prompt_zone, self.suggest.anchored()),
+                        ));
+                    let echo_spent =
+                        rich_live && typed_changed && std::mem::take(&mut self.menu_accept_echo);
                     if self.autosuggestions_menu_auto
                         && self.autosuggestions_menu_enabled
                         && self.autosuggestions_enabled
@@ -4019,7 +4114,8 @@ impl Terminal {
                         && typed_changed
                         && let Some(typed) = self.suggest.typed_segment(observation.before_cursor)
                         && typed.chars().count() >= 2
-                        && !std::mem::take(&mut self.menu_accept_echo)
+                        && !echo_spent
+                        && (rich_live || !std::mem::take(&mut self.menu_accept_echo))
                     {
                         let collected = suggest::candidates(typed, &self.suggest, &observation);
                         // The qualifying floor (suggest-depth spec):
