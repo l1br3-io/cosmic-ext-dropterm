@@ -60,7 +60,7 @@ They are local-machine knowledge by design: history comes from this tab and the 
 The ghost clips to what fits - the longest prefix plus a two-cell ellipsis - exactly fish's rule, and below three free columns nothing draws. The clip is display-only: pressing Right always accepts the *full* suggestion, never the truncated text ([autosuggestions](autosuggestions.md)).
 
 **Can I turn the suggestions off?**
-`autosuggestions_enabled: false` is the kill switch; path, command-name, and flag completion each have their own key if you want history-only or any subset ([configuration](configuration.md#behavior-toggles)).
+`input_ghost: false` is the kill switch, and `input_mode: Native` (the default) shows no suggestions at all; path, command-name, and flag completion each have their own key if you want history-only or any subset ([configuration](configuration.md#auto-complete)).
 
 ## Running two copies
 

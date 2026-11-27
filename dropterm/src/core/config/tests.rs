@@ -1598,6 +1598,38 @@ fn a_stale_dock_presence_key_still_loads_and_other_keys_apply() {
     assert!(!dir.join("config.ron.bak").exists());
 }
 
+/// The key count one documentation index advertises on its
+/// Configuration line: "all N config keys".
+fn advertised_key_count(text: &str, page: &str) -> usize {
+    let line = text
+        .lines()
+        .find(|line| line.contains("config keys"))
+        .unwrap_or_else(|| panic!("{page} advertises the config key count"));
+    line.split("all ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{page}: no number before \"config keys\" in {line:?}"))
+}
+
+#[test]
+fn the_documented_key_counts_match_the_serialized_keys() {
+    // README and the docs index each advertise how many keys the
+    // settings section carries. Both read the count serde enumerates
+    // (suggest-overlay SO-12): the two had drifted apart by hand.
+    let settings_keys = serialized_default_sections()[0].len();
+    assert_eq!(
+        advertised_key_count(include_str!("../../../../README.md"), "README.md"),
+        settings_keys,
+        "README.md's Configuration entry"
+    );
+    assert_eq!(
+        advertised_key_count(include_str!("../../../../docs/index.md"), "docs/index.md"),
+        settings_keys,
+        "docs/index.md's Configuration entry"
+    );
+}
+
 /// Every `.rs` file under this crate's `src/` as (`src/…` path,
 /// text), sorted for deterministic failures — the drift gate's
 /// enumeration.

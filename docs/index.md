@@ -21,7 +21,7 @@ the panel and dock unless you tell it not to ([theming](theming.md)).
 ## Start here
 
 - [Common tasks](howto.md) — the exact key or verb for what you want to do
-- [Configuration](configuration.md) — all 53 config keys, profiles, and direct editing
+- [Configuration](configuration.md) — all 68 config keys, profiles, and direct editing
 - [Keybindings](keybindings.md) — every default chord, and how to rebind
 - [CLI reference](cli.md) — script the running instance: new tabs, the tab verbs, `--is-visible`
 - [FAQ](faq.md) — the recurring questions, answered directly
