@@ -40,7 +40,6 @@ use dropterm::core::terminal::TerminalOptions;
 use dropterm::core::terminal::mouse_reporter::{
     self, MouseReporter, PointerButton, PointerEvent, PointerModifiers, PointerScrollDelta,
 };
-use dropterm::core::terminal::suggest as core_suggest;
 
 use alacritty_terminal::index::Column;
 
@@ -2376,18 +2375,107 @@ fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
     gpui::rgb(u32::from(color.r()) << 16 | u32::from(color.g()) << 8 | u32::from(color.b())).into()
 }
 
-/// The overlay menu's panel paint (suggest-overlay SO-6; the chrome
-/// rich-input RI-7 built): icon, the marked label (the typed prefix
-/// semibold), the badge chip in its class color, the description dim
-/// (its own line comfortable, inline compact), the selection's tint,
-/// the visible window from the scroll offset, the argument hint line
-/// above the panel, and the popover surface — every element behind
-/// its toggle at capture time (the bundle carries None). The panel
-/// sits where [`suggest::menu_panel_bounds`] puts it, over the prompt
-/// row.
+/// One text's natural shaped width in the pane's font.
+fn shaped_width(
+    text: &str,
+    font: &gpui::Font,
+    font_size: Pixels,
+    window: &mut gpui::Window,
+) -> f32 {
+    shape_overlay_line(text, font, gpui::black(), font_size, window)
+        .width
+        .as_f32()
+}
+
+/// One overlay text line cut to its box (suggest-overlay SO-11): the
+/// engine's own truncation, which keeps whole characters and appends
+/// the marker while the result fits the width; the whole text when it
+/// already fits. `None` when even the marker alone overflows the box:
+/// a run never paints outside its box.
+fn shape_overlay_line_fitting(
+    text: &str,
+    font: &gpui::Font,
+    color: gpui::Hsla,
+    font_size: Pixels,
+    max_width: Pixels,
+    window: &mut gpui::Window,
+) -> Option<gpui::ShapedLine> {
+    let text_system = window.text_system();
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let runs = [run];
+    let mut wrapper = text_system.line_wrapper(font.clone(), font_size);
+    let (text, runs) = wrapper.truncate_line(
+        text.to_string().into(),
+        max_width,
+        "\u{2026}",
+        &runs,
+        gpui::TruncateFrom::End,
+    );
+    let shaped = text_system.shape_line(text, font_size, &runs, None);
+    (shaped.width <= max_width).then_some(shaped)
+}
+
+/// Place one text run in the box the layout named: a right-aligned
+/// run hugs the box's right edge, an overflowing run is cut with an
+/// ellipsis, and an empty box, an empty text, or a box without the
+/// room for the marker paints nothing.
+fn place_run(
+    text: &str,
+    font: &gpui::Font,
+    color: gpui::Hsla,
+    run: &suggest::RunBox,
+    font_size: Pixels,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    if text.is_empty() || run.width <= 0. {
+        return;
+    }
+    let Some(shaped) =
+        shape_overlay_line_fitting(text, font, color, font_size, px(run.width), window)
+    else {
+        return;
+    };
+    let align = if run.align_right {
+        TextAlign::Right
+    } else {
+        TextAlign::Left
+    };
+    let _ = shaped.paint(
+        point(px(run.x), px(run.y)),
+        px(run.line_h),
+        align,
+        Some(px(run.width)),
+        window,
+        cx,
+    );
+}
+
+/// A logical-pixel rectangle as GPUI bounds.
+fn rect_of(rect: suggest::Rect) -> gpui::Bounds<Pixels> {
+    gpui::Bounds {
+        origin: point(px(rect.x), px(rect.y)),
+        size: gpui::size(px(rect.w), px(rect.h)),
+    }
+}
+
+/// The overlay menu's panel paint (suggest-overlay spec; the chrome
+/// rich-input RI-7 built): the icon, the marked label (the typed
+/// prefix semibold), the badge chip in its class color, the
+/// description dim, the selection's tint, and the argument hint line
+/// over the rows. [`suggest::layout_menu`] names every box; the paint
+/// shapes each text for its width, hands the widths to the layout, and
+/// places every run in its box. It holds no size of its own.
 #[expect(
     clippy::too_many_lines,
-    reason = "one panel painted in one pass — rows, chrome, and hint share the one geometry"
+    reason = "one panel painted in one pass — the measuring, the layout, and the rows' runs share the one geometry"
 )]
 fn paint_menu(
     menu: &suggest::MenuPaint,
@@ -2399,76 +2487,119 @@ fn paint_menu(
     cx: &mut gpui::App,
 ) {
     let theme = cx.theme();
-    let panel_bg = theme.popover;
-    let panel_border = theme.border;
     let fg = theme.popover_foreground;
     let dim = gpui::hsla(fg.h, fg.s, fg.l, 0.55);
     let palette = TokenPalette::for_scheme(fg.l > 0.5);
+    let cell_w = geometry.cell_width.as_f32();
+    let cell_h = geometry.cell_height.as_f32();
+    let font_px = geometry.font_size;
+    let mut mark_font = skin.font.clone();
+    mark_font.weight = FontWeight::SEMIBOLD;
 
-    let row_h = px(core_suggest::menu_row_height(
-        geometry.cell_height.as_f32(),
-        menu.chrome.compact_rows,
-    ));
+    // The visible window, under the pane's row budget.
     let range = suggest::menu_visible_window(menu.scroll, menu.rows.len(), menu.visible_rows);
     if range.is_empty() {
         return;
     }
-    let visible = &menu.rows[range.clone()];
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the visible row count is the menu's budget (<=8), exact in f32"
-    )]
-    let rows_height = row_h * visible.len() as f32;
-    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| {
-        px(core_suggest::menu_hint_height(
-            geometry.cell_height.as_f32(),
-        ))
-    });
-    let panel = suggest::menu_panel_bounds(
-        bounds,
-        prompt_row_top,
-        geometry.cell_height,
-        rows_height + hint_h,
-    );
-    let mut panel_quad = fill(panel, panel_bg);
-    panel_quad.corner_radii = gpui::Corners::all(px(6.));
-    panel_quad.border_widths = gpui::Edges::all(px(1.));
-    panel_quad.border_color = panel_border;
-    window.paint_quad(panel_quad);
+    let rows = &menu.rows[range.clone()];
+    let selected = range
+        .contains(&menu.selected)
+        .then_some(menu.selected - range.start);
 
-    // The argument hint line (the mock's own seat: the panel's top
-    // strip, the command semibold, its description dim).
-    let mut y = panel.origin.y;
-    if let Some((name, description)) = &menu.hint {
-        let mut hint_font = skin.font.clone();
-        hint_font.weight = FontWeight::SEMIBOLD;
-        let shaped = shape_overlay_line(name, &hint_font, fg, geometry.font_size, window);
-        let _ = shaped.paint(
-            point(panel.origin.x + px(10.), y + px(4.)),
-            geometry.font_size,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
-        let x_after = panel.origin.x + px(10.) + shaped.width + px(8.);
-        if let Some(description) = description {
-            let shaped =
-                shape_overlay_line(description, &skin.font, dim, geometry.font_size, window);
-            let _ = shaped.paint(
-                point(x_after, y + px(4.)),
-                geometry.font_size,
-                TextAlign::Left,
-                None,
+    // Every text shaped once for its natural width: the layout reads
+    // the widths and names the boxes. The two fixed columns are the
+    // widest glyph of the icon vocabulary and the widest word of the
+    // badge vocabulary.
+    let icon_column = suggest::BADGE_WORDS
+        .iter()
+        .map(|badge| {
+            shaped_width(
+                &suggest::icon_for(badge).to_string(),
+                &skin.font,
+                font_px,
                 window,
-                cx,
-            );
-        }
-        y += hint_h;
+            )
+        })
+        .fold(0., f32::max);
+    let badge_column = suggest::BADGE_WORDS
+        .iter()
+        .map(|badge| shaped_width(badge, &skin.font, font_px, window))
+        .fold(0., f32::max);
+    let widths: Vec<suggest::MenuRowWidths> = rows
+        .iter()
+        .map(|row| {
+            let marked_byte = row
+                .label
+                .char_indices()
+                .nth(row.marked)
+                .map_or(row.label.len(), |(byte, _)| byte);
+            suggest::MenuRowWidths {
+                marked: shaped_width(&row.label[..marked_byte], &mark_font, font_px, window),
+                label: shaped_width(&row.label[marked_byte..], &skin.font, font_px, window),
+                description: row
+                    .description
+                    .as_deref()
+                    .map_or(0., |text| shaped_width(text, &skin.font, font_px, window)),
+            }
+        })
+        .collect();
+    let hint_widths = menu.hint.as_ref().map(|(name, description)| {
+        (
+            shaped_width(name, &mark_font, font_px, window),
+            description
+                .as_deref()
+                .map(|text| shaped_width(text, &skin.font, font_px, window)),
+        )
+    });
+    let layout = suggest::layout_menu(&suggest::MenuLayoutInput {
+        cell_w,
+        cell_h,
+        chrome: menu.chrome,
+        metrics: suggest::MenuMetrics {
+            icon_column,
+            badge_column,
+        },
+        rows,
+        widths: &widths,
+        hint: hint_widths,
+        pane: suggest::Rect {
+            x: bounds.origin.x.as_f32(),
+            y: bounds.origin.y.as_f32(),
+            w: bounds.size.width.as_f32(),
+            h: bounds.size.height.as_f32(),
+        },
+        prompt_row_top: prompt_row_top.as_f32(),
+        budget: menu.visible_rows,
+        selected,
+    });
+    if layout.rows.is_empty() {
+        return;
     }
 
-    // The rows: icon, the marked label, the badge, the description —
-    // the selected one tinted.
+    // The panel.
+    let mut panel_quad = fill(rect_of(layout.panel), theme.popover);
+    panel_quad.corner_radii = gpui::Corners::all(px(layout.corner_radius));
+    panel_quad.border_widths = gpui::Edges::all(px(layout.border_width));
+    panel_quad.border_color = theme.border;
+    window.paint_quad(panel_quad);
+
+    // The argument hint line over the rows: the command semibold,
+    // its description dim.
+    if let (Some((name, description)), Some((name_text, description_text))) =
+        (layout.hint, menu.hint.as_ref())
+    {
+        place_run(name_text, &mark_font, fg, &name, font_px, window, cx);
+        if let (Some(box_), Some(text)) = (description, description_text.as_deref()) {
+            place_run(text, &skin.font, dim, &box_, font_px, window, cx);
+        }
+    }
+
+    // The selected row's tint.
+    if let Some(selection) = layout.selection {
+        window.paint_quad(fill(rect_of(selection), gpui::hsla(fg.h, fg.s, fg.l, 0.12)));
+    }
+
+    // The rows: icon, the marked label, the badge, the description.
     let badge_color = |badge: &str| -> gpui::Hsla {
         match badge {
             "cmd" => palette.cmd,
@@ -2479,114 +2610,59 @@ fn paint_menu(
             _ => fg,
         }
     };
-    for (index, row) in visible.iter().enumerate() {
-        let absolute = range.start + index;
-        let row_bounds = gpui::Bounds {
-            origin: point(panel.origin.x, y),
-            size: gpui::Size::new(panel.size.width, row_h),
-        };
-        if absolute == menu.selected {
-            window.paint_quad(fill(
-                gpui::Bounds {
-                    origin: point(row_bounds.origin.x + px(2.), row_bounds.origin.y + px(1.)),
-                    size: gpui::Size::new(row_bounds.size.width - px(4.), row_h - px(2.)),
-                },
-                gpui::hsla(fg.h, fg.s, fg.l, 0.12),
-            ));
-        }
-        let mut x = row_bounds.origin.x + px(10.);
-        if let Some(icon) = row.icon {
-            let shaped = shape_overlay_line(
+    for (row, boxes) in rows.iter().zip(&layout.rows) {
+        if let (Some(icon), Some(box_)) = (row.icon, boxes.icon) {
+            place_run(
                 &icon.to_string(),
                 &skin.font,
                 dim,
-                geometry.font_size,
-                window,
-            );
-            let _ = shaped.paint(
-                point(x, y + (row_h - geometry.font_size) / 2.),
-                geometry.font_size,
-                TextAlign::Left,
-                None,
+                &box_,
+                font_px,
                 window,
                 cx,
             );
-            x += shaped.width + px(8.);
         }
         // The marked label: the typed prefix semibold, the rest
-        // normal — two shapes split at the char mark.
+        // normal, split at the char mark.
         let marked_byte = row
             .label
             .char_indices()
             .nth(row.marked)
             .map_or(row.label.len(), |(byte, _)| byte);
-        let (before, after) = row.label.split_at(marked_byte);
-        let mut mark_font = skin.font.clone();
-        mark_font.weight = FontWeight::SEMIBOLD;
-        let shaped = shape_overlay_line(before, &mark_font, fg, geometry.font_size, window);
-        let _ = shaped.paint(
-            point(x, y + (row_h - geometry.font_size) / 2.),
-            geometry.font_size,
-            TextAlign::Left,
-            None,
+        place_run(
+            &row.label[..marked_byte],
+            &mark_font,
+            fg,
+            &boxes.marked,
+            font_px,
             window,
             cx,
         );
-        x += shaped.width;
-        if !after.is_empty() {
-            let shaped = shape_overlay_line(after, &skin.font, fg, geometry.font_size, window);
-            let _ = shaped.paint(
-                point(x, y + (row_h - geometry.font_size) / 2.),
-                geometry.font_size,
-                TextAlign::Left,
-                None,
+        if let Some(box_) = boxes.label {
+            place_run(
+                &row.label[marked_byte..],
+                &skin.font,
+                fg,
+                &box_,
+                font_px,
                 window,
                 cx,
             );
-            x += shaped.width;
         }
-        if let Some(badge) = row.badge {
-            x += px(8.);
-            let shaped = shape_overlay_line(
+        if let (Some(badge), Some(box_)) = (row.badge, boxes.badge) {
+            place_run(
                 badge,
                 &skin.font,
                 badge_color(badge),
-                geometry.font_size,
-                window,
-            );
-            let _ = shaped.paint(
-                point(x, y + (row_h - geometry.font_size) / 2.),
-                geometry.font_size,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-            x += shaped.width;
-        }
-        if let Some(description) = &row.description {
-            let desc_x = if menu.chrome.compact_rows {
-                x + px(8.)
-            } else {
-                row_bounds.origin.x + px(28.)
-            };
-            let desc_y = if menu.chrome.compact_rows {
-                y + (row_h - geometry.font_size) / 2.
-            } else {
-                y + row_h - geometry.font_size - px(4.)
-            };
-            let shaped =
-                shape_overlay_line(description, &skin.font, dim, geometry.font_size, window);
-            let _ = shaped.paint(
-                point(desc_x, desc_y),
-                geometry.font_size,
-                TextAlign::Left,
-                None,
+                &box_,
+                font_px,
                 window,
                 cx,
             );
         }
-        y += row_h;
+        if let (Some(description), Some(box_)) = (row.description.as_deref(), boxes.description) {
+            place_run(description, &skin.font, dim, &box_, font_px, window, cx);
+        }
     }
 }
 
