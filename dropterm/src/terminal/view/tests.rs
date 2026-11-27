@@ -707,6 +707,459 @@ fn a_stood_aside_rich_pane_forwards_the_ghosts_accept_key(cx: &mut gpui::TestApp
     let _ = std::fs::remove_file(&sink);
 }
 
+// --- suggest-overlay SO-6: the overlays paint over the prompt row ---
+
+/// The staged menu's rows: two history lines, so the panel is two
+/// comfortable rows tall.
+fn staged_rows() -> Vec<dropterm::core::terminal::suggest::MenuCandidate> {
+    use dropterm::core::terminal::suggest::SuggestionSource;
+    ["sleep 30", "sleep 15"]
+        .into_iter()
+        .map(|label| dropterm::core::terminal::suggest::MenuCandidate {
+            label: label.to_string(),
+            suffix: String::new(),
+            description: None,
+            source: SuggestionSource::History,
+        })
+        .collect()
+}
+
+/// The staged panel's height in logical pixels: two comfortable
+/// rows, no hint.
+fn staged_panel_height() -> f32 {
+    2. * suggest::menu_row_height_px(false)
+}
+
+/// Boot a pane in `mode` over `argv` — its program the session
+/// leader's own, so no child ever holds the foreground — in a
+/// 900 by 600 window, focused, with the visual context to drive it.
+fn pane_over(
+    cx: &mut gpui::TestAppContext,
+    argv: &[&str],
+    mode: dropterm::core::config::InputMode,
+) -> (
+    Arc<Mutex<Terminal>>,
+    gpui::Entity<TerminalPane>,
+    gpui::VisualTestContext,
+) {
+    cx.update(gpui_component::init);
+    let config = dropterm::core::config::DropTermConfig {
+        input_mode: mode,
+        ..request_config()
+    };
+    let (terminal, pane) = cx
+        .update(|cx| {
+            let request = PaneRequest {
+                program: argv[0].to_string(),
+                args: argv[1..].iter().map(|arg| (*arg).to_string()).collect(),
+                cwd: None,
+                env: std::collections::HashMap::default(),
+                spawned_as: "sh".to_string(),
+                profile_id: None,
+                appearance: PaneAppearance {
+                    colors: boot_colors(&config, &[]),
+                    font_size: config.font_size,
+                    scrollback: config.scrollback_lines,
+                },
+            };
+            boot_pane(cx, &config, request, None, TabId(0), None)
+        })
+        .expect("boot the pane");
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::size(px(900.), px(600.)),
+                    })),
+                    ..Default::default()
+                },
+                |_, _| pane.clone(),
+            )
+        })
+        .expect("open the pane's window");
+    let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+    let cx = &mut visual;
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.focus(&pane.read(cx).focus_handle(), cx);
+    });
+    (terminal, pane, visual)
+}
+
+/// The cursor's row on the grid.
+fn cursor_row(terminal: &Arc<Mutex<Terminal>>) -> i32 {
+    let terminal = terminal.lock().expect("engine lock");
+    terminal.term.lock().grid().cursor.point.line.0
+}
+
+/// The menu panel's quad in the scene, its origin in logical pixels:
+/// the width today's paint gives the panel and the given height.
+/// `None` when no quad of that shape was painted.
+fn panel_origin(cx: &mut gpui::VisualTestContext, height: f32) -> Option<gpui::Point<Pixels>> {
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let near = |got: f32, want: f32| (got - want * scale).abs() <= 0.75 * scale;
+        window
+            .rendered_scene()
+            .quads
+            .iter()
+            .find(|quad| {
+                near(quad.bounds.size.width.as_f32(), 460.)
+                    && near(quad.bounds.size.height.as_f32(), height)
+            })
+            .map(|quad| gpui::Point {
+                x: px(quad.bounds.origin.x.as_f32() / scale),
+                y: px(quad.bounds.origin.y.as_f32() / scale),
+            })
+    })
+}
+
+/// Stage a showing menu on a live pane: the prompt-start mark makes
+/// the overlays live, the engine's seam opens the menu.
+fn stage_a_showing_menu(terminal: &Arc<Mutex<Terminal>>) {
+    terminal.lock().expect("engine lock").note_prompt_start();
+    assert!(
+        terminal.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: the overlays are live"
+    );
+    terminal
+        .lock()
+        .expect("engine lock")
+        .stage_menu(staged_rows());
+}
+
+#[gpui::test]
+fn the_menu_panel_paints_above_the_prompt_row_when_it_fits(cx: &mut gpui::TestAppContext) {
+    // The cursor ten rows down an empty screen (ten newlines, then
+    // `sleep` as the session leader): the panel fits in the room
+    // over the prompt row, and sits with its foot on the row's top.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    let (terminal, _pane, mut visual) = pane_over(
+        cx,
+        &[
+            "/bin/sh",
+            "-c",
+            "printf '\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n'; exec sleep 60",
+        ],
+        dropterm::core::config::InputMode::Rich,
+    );
+    let cx = &mut visual;
+    paint_until(
+        cx,
+        &terminal,
+        |engine| {
+            let row = engine.term.lock().grid().cursor.point.line.0;
+            row == 10
+        },
+        "the cursor never reached the tenth row",
+    );
+    let cell_h = terminal.lock().expect("engine lock").size().cell_height;
+    let panel_h = staged_panel_height();
+    assert!(
+        10. * cell_h >= panel_h,
+        "the pin's own stage: the room over the prompt row holds the panel"
+    );
+    stage_a_showing_menu(&terminal);
+    paint_frame(cx);
+    let origin = panel_origin(cx, panel_h).expect("the panel's quad is in the scene");
+    assert_eq!(
+        origin.y,
+        px(10. * cell_h - panel_h),
+        "above the prompt row: the panel's foot on the row's top"
+    );
+    assert_eq!(origin.x, px(8.), "the pane's left edge plus the margin");
+    assert_eq!(cursor_row(&terminal), 10, "the pin's own stage held");
+    std::mem::forget(terminal);
+}
+
+#[gpui::test]
+fn the_menu_panel_paints_below_a_top_prompt_row(cx: &mut gpui::TestAppContext) {
+    // A fresh tab's first prompt: the cursor on the screen's first
+    // row, no room over it, the panel under the prompt row.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    let (terminal, _pane, mut visual) = pane_over(
+        cx,
+        &["/bin/sleep", "60"],
+        dropterm::core::config::InputMode::Rich,
+    );
+    let cx = &mut visual;
+    paint_frame(cx);
+    assert_eq!(
+        cursor_row(&terminal),
+        0,
+        "the pin's own stage: a top prompt"
+    );
+    let cell_h = terminal.lock().expect("engine lock").size().cell_height;
+    let panel_h = staged_panel_height();
+    stage_a_showing_menu(&terminal);
+    paint_frame(cx);
+    let origin = panel_origin(cx, panel_h).expect("the panel's quad is in the scene");
+    assert_eq!(
+        origin.y,
+        px(cell_h),
+        "below the prompt row: no room over the screen's first row"
+    );
+    assert_eq!(origin.x, px(8.), "the pane's left edge plus the margin");
+    std::mem::forget(terminal);
+}
+
+#[gpui::test]
+fn no_menu_panel_paints_in_native_or_on_a_stood_aside_pane(cx: &mut gpui::TestAppContext) {
+    // The overlays are the live rich pane's alone: a staged menu
+    // paints nothing in `native`, and nothing on a rich pane whose
+    // zone is unfed; the same pane paints it the moment the overlays
+    // go live (the control).
+    cx.update(|cx| cx.background_executor().allow_parking());
+    let panel_h = staged_panel_height();
+
+    let (native, _pane, mut visual) = pane_over(
+        cx,
+        &["/bin/sleep", "60"],
+        dropterm::core::config::InputMode::Native,
+    );
+    let cx = &mut visual;
+    native.lock().expect("engine lock").note_prompt_start();
+    native
+        .lock()
+        .expect("engine lock")
+        .stage_menu(staged_rows());
+    assert!(
+        native.lock().expect("engine lock").menu_is_open(),
+        "the pin's own stage: the engine's menu is open"
+    );
+    paint_frame(cx);
+    assert!(
+        panel_origin(cx, panel_h).is_none(),
+        "in native no overlay paints, whatever the engine's menu holds"
+    );
+    std::mem::forget(native);
+
+    let (rich, _pane, mut visual) = pane_over(
+        cx,
+        &["/bin/sleep", "60"],
+        dropterm::core::config::InputMode::Rich,
+    );
+    let cx = &mut visual;
+    rich.lock().expect("engine lock").stage_menu(staged_rows());
+    assert!(
+        !rich.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: an unfed zone stands the overlays aside"
+    );
+    paint_frame(cx);
+    assert!(
+        panel_origin(cx, panel_h).is_none(),
+        "a stood-aside rich pane paints no overlay"
+    );
+    assert!(
+        !rich.lock().expect("engine lock").menu_is_open(),
+        "the gates' close spent the staged menu while the pane stood aside"
+    );
+    rich.lock().expect("engine lock").note_prompt_start();
+    rich.lock().expect("engine lock").stage_menu(staged_rows());
+    paint_frame(cx);
+    assert!(
+        panel_origin(cx, panel_h).is_some(),
+        "the control: a staged menu paints once the overlays are live"
+    );
+    std::mem::forget(rich);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pane's whole overlay lane through its own paint clock — the boot, the run, the ghost, the menu, and the scene read are one piece of evidence"
+)]
+#[gpui::test]
+#[ignore = "a live PTY reader thread cannot satisfy the gpui test scheduler's thread-affinity gate at teardown: every assertion runs and prints its evidence, then the harness may panic at drop — read the stdout, not the exit code (V=1 just test the_overlays_paint_over_the_shells_line -- --ignored --nocapture)"]
+fn the_overlays_paint_over_the_shells_line(cx: &mut gpui::TestAppContext) {
+    // The evidence pin, pty-driven: bash in rich mode, `sleep 30`
+    // run, then `sl` dispatched. The echo lands on the shell's own
+    // row, the ghost's walk-log row appears, the menu opens on a
+    // bare Tab, and the panel's quad is in the scene. The store's
+    // toggle is off, so the run commits to the tab's ring alone and
+    // never to the owner's history file.
+    cx.update(|cx| cx.background_executor().allow_parking());
+    cx.update(gpui_component::init);
+    cx.update(bind_pane_keys);
+    let mut config = rich_config();
+    config.autosuggestions_history_context = false;
+    let (terminal, pane) = cx
+        .update(|cx| {
+            let request = PaneRequest {
+                program: "/bin/bash".to_string(),
+                args: vec!["--norc".to_string(), "-i".to_string()],
+                cwd: None,
+                env: std::collections::HashMap::from([
+                    ("PS1".to_string(), "P$ ".to_string()),
+                    ("TERM".to_string(), "xterm-256color".to_string()),
+                ]),
+                spawned_as: "bash".to_string(),
+                profile_id: None,
+                appearance: PaneAppearance {
+                    colors: boot_colors(&config, &[]),
+                    font_size: config.font_size,
+                    scrollback: config.scrollback_lines,
+                },
+            };
+            boot_pane(cx, &config, request, None, TabId(0), None)
+        })
+        .expect("boot the pane");
+    let pane_read = pane.clone();
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: gpui::size(px(900.), px(600.)),
+                    })),
+                    ..Default::default()
+                },
+                |_, _| pane,
+            )
+        })
+        .expect("open the pane's window");
+    let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+    let cx = &mut visual;
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.focus(&pane_read.read(cx).focus_handle(), cx);
+    });
+    let prompt_painted = |engine: &Terminal| {
+        engine.with_buffer(|buffer| {
+            buffer
+                .lines
+                .iter()
+                .any(|line| line.text().trim_end().ends_with("P$"))
+        })
+    };
+    let ghost_logged = |cx: &mut gpui::VisualTestContext| -> Option<String> {
+        cx.update(|_, cx| {
+            pane_read
+                .read(cx)
+                .walk_log
+                .lock()
+                .expect("walk log")
+                .ghost
+                .clone()
+        })
+    };
+    let menu_logged = |cx: &mut gpui::VisualTestContext| -> Option<(usize, usize)> {
+        cx.update(|_, cx| pane_read.read(cx).walk_log.lock().expect("walk log").menu)
+    };
+
+    paint_until(
+        cx,
+        &terminal,
+        prompt_painted,
+        "the first prompt never painted",
+    );
+    paint_frame(cx);
+
+    // `sleep 30` typed, its echo landed, then run and interrupted:
+    // the run commits to the tab's ring (the capture refreshes on an
+    // idle update that observes the echoed line, so the Enter is its
+    // own write), and the prompt returns.
+    terminal
+        .lock()
+        .expect("engine lock")
+        .input_no_scroll(&b"sleep 30"[..]);
+    paint_until(
+        cx,
+        &terminal,
+        |engine| engine.typed_text() == "sleep 30",
+        "the typed command never echoed",
+    );
+    terminal
+        .lock()
+        .expect("engine lock")
+        .input_no_scroll(&b"\r"[..]);
+    paint_until(
+        cx,
+        &terminal,
+        Terminal::foreground_child_running,
+        "sleep never took the foreground",
+    );
+    terminal
+        .lock()
+        .expect("engine lock")
+        .input_no_scroll(&b"\x03"[..]);
+    paint_until(
+        cx,
+        &terminal,
+        |engine| !engine.foreground_child_running(),
+        "SIGINT never returned the prompt",
+    );
+    paint_until(
+        cx,
+        &terminal,
+        |engine| prompt_painted(engine) && engine.typed_text().is_empty(),
+        "the bare prompt never stood on the shell's row",
+    );
+    assert!(
+        terminal.lock().expect("engine lock").overlays_live(),
+        "the pin's own stage: the overlays are live at the shell's prompt"
+    );
+
+    cx.simulate_keystrokes("s");
+    cx.simulate_keystrokes("l");
+    paint_until(
+        cx,
+        &terminal,
+        |engine| engine.suggestion() == Some("eep 30"),
+        "the ghost never showed the recorded command's remainder",
+    );
+    assert_eq!(
+        ghost_logged(cx).as_deref(),
+        Some("eep 30"),
+        "the ghost's walk-log row: `dropterm: pane ghost now \"eep 30\" (6 cells past the caret)`"
+    );
+    println!("dropterm: evidence: pane ghost now \"eep 30\" (6 cells past the caret)");
+
+    cx.simulate_keystrokes("tab");
+    let (rows, selected) = {
+        let engine = terminal.lock().expect("engine lock");
+        assert!(engine.menu_is_open(), "a bare Tab opened the menu");
+        (engine.menu_rows().len(), engine.menu_selected())
+    };
+    paint_frame(cx);
+    assert_eq!(
+        menu_logged(cx),
+        Some((rows, selected)),
+        "the menu's walk-log row: `dropterm: pane menu now {rows} rows (selected {selected})`"
+    );
+    // The panel is the visible window tall (eight rows at most), the
+    // hint line over it when a spec carries the command.
+    let (visible, hint_h) = {
+        let engine = terminal.lock().expect("engine lock");
+        let hint = engine
+            .typed_text()
+            .split_whitespace()
+            .next()
+            .and_then(|command| engine.menu_hint(command));
+        (
+            suggest::menu_visible_window(engine.menu_scroll(), rows).len(),
+            hint.map_or(0., |_| 26.),
+        )
+    };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the visible row count is the menu's budget (<=8), exact in f32"
+    )]
+    let panel_h = visible as f32 * suggest::menu_row_height_px(false) + hint_h;
+    let origin = panel_origin(cx, panel_h).expect("the panel's quad is in the scene");
+    println!(
+        "dropterm: evidence: pane menu now {rows} rows (selected {selected}), {visible} visible, the panel at ({}, {})",
+        origin.x.as_f32(),
+        origin.y.as_f32()
+    );
+
+    std::mem::forget(terminal);
+}
+
 // --- the covering report's third telling: a pasted path hides
 // until a backspace redraws the line ---
 

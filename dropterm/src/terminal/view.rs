@@ -31,6 +31,7 @@ use gpui::{
     App, Context, Entity, FontWeight, Pixels, TextAlign, UnderlineStyle, canvas, div, fill, point,
     prelude::*, px,
 };
+use gpui_component::ActiveTheme as _;
 use tokio::sync::mpsc;
 
 use dropterm::core::tabs::TabId;
@@ -90,6 +91,12 @@ pub(crate) struct WalkLog {
     grid: Option<(usize, usize)>,
     caret: Option<(usize, usize)>,
     rows: Vec<String>,
+    /// The last logged ghost's visible string (the ghost rows'
+    /// evidence: one line per change the suggestion makes).
+    ghost: Option<String>,
+    /// The last logged menu shape (its row count and selection: one
+    /// line per change the menu makes).
+    menu: Option<(usize, usize)>,
     /// The image ids whose placement has been logged (the images
     /// rows' evidence: one line per placed image, not per frame).
     placed_images: Vec<u64>,
@@ -1929,6 +1936,15 @@ impl gpui::Render for TerminalPane {
         // The grid is the pane's one child in both modes
         // (suggest-overlay spec): the shell's line is the input, and
         // the overlays paint over its prompt row.
+        // The menu chrome's toggles (suggest-overlay spec, the keys
+        // rich-input RI-1 built), folded once per frame for the paint.
+        let menu_chrome = suggest::MenuChrome {
+            descriptions: self.options.input_descriptions,
+            badges: self.options.input_badges,
+            icons: self.options.input_icons,
+            argument_hint: self.options.input_argument_hint,
+            compact_rows: self.options.input_compact_rows,
+        };
         let grid = canvas(
             move |bounds, _, _| bounds,
             move |bounds, _, window, cx| {
@@ -1938,6 +1954,7 @@ impl gpui::Render for TerminalPane {
                     &walk_log,
                     &image_cache,
                     &viewport_origin,
+                    menu_chrome,
                     bounds,
                     window,
                     cx,
@@ -1968,6 +1985,7 @@ fn paint_pane(
     walk_log: &Arc<Mutex<WalkLog>>,
     image_cache: &Arc<Mutex<super::images::ImageCache>>,
     viewport_origin: &Arc<Mutex<gpui::Point<Pixels>>>,
+    menu_chrome: suggest::MenuChrome,
     bounds: gpui::Bounds<Pixels>,
     window: &mut gpui::Window,
     cx: &mut App,
@@ -1986,8 +2004,9 @@ fn paint_pane(
     // resize here waits forever. The close at the grid already held
     // freezes the record and arms the fresh-prompt latch; the update
     // it owes runs in this frame's own drain, so the shell's first
-    // prompt adopts and the overlays answer on a fresh tab. A zero-width frame makes no request and settles
-    // nothing; a settled record never re-snapshots.
+    // prompt adopts and the overlays answer on a fresh tab. A
+    // zero-width frame makes no request and settles nothing; a
+    // settled record never re-snapshots.
     if granted && terminal.settle_spawn_grid_now() {
         terminal.needs_update = true;
     }
@@ -1996,6 +2015,32 @@ fn paint_pane(
     if terminal.needs_update {
         terminal.needs_update = false;
         let _ = terminal.update();
+    }
+
+    // The overlays are the live rich pane's (suggest-overlay spec):
+    // the fact and the menu's bundle are read once per frame here,
+    // before the term guard below, because the gates take that lock
+    // themselves. `native`, and a rich pane that stands aside, paint
+    // neither the ghost nor the menu.
+    let overlays_live = terminal.overlays_live();
+    let menu = suggest::MenuPaint::capture(&terminal, menu_chrome);
+    // The walk's menu evidence row: the menu's shape, once per
+    // change.
+    if let Some(menu) = menu.as_ref() {
+        let mut log = walk_log.lock().expect("walk log");
+        let shape = (menu.rows.len(), menu.selected);
+        if log.menu != Some(shape) {
+            println!(
+                "dropterm: pane menu now {} rows (selected {}) — {:?}",
+                menu.rows.len(),
+                menu.selected,
+                menu.rows
+                    .iter()
+                    .map(|row| row.label.clone())
+                    .collect::<Vec<_>>()
+            );
+            log.menu = Some(shape);
+        }
     }
 
     let term = terminal.term.lock();
@@ -2036,8 +2081,8 @@ fn paint_pane(
     // the rows.
     let cursor = grid.cursor.point;
     let shows_cursor = term.mode().contains(TermMode::SHOW_CURSOR);
-    let caret_row =
-        shows_cursor.then(|| usize::try_from(cursor.line.0).unwrap_or(0) + display_offset);
+    let cursor_row = usize::try_from(cursor.line.0).unwrap_or(0) + display_offset;
+    let caret_row = shows_cursor.then_some(cursor_row);
 
     // The visible rows, grouped from `display_iter` — the same walk
     // the engine's own projection rides, top row first (hand-rolled
@@ -2217,6 +2262,58 @@ fn paint_pane(
         );
     }
 
+    // The ghost-text overlay (suggest-overlay spec): the showing's
+    // visible string as dim glyphs starting one cell past the cursor,
+    // on the cursor's display row. An overlay, never the grid and
+    // never the engine's own buffers, so selection, scrollback, and
+    // copy see nothing. The engine's clip already guaranteed the fit,
+    // and an empty visible (below the three-column draw threshold)
+    // fills nothing while the showing still accepts.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "cell indices < 2^24, exact in f32"
+    )]
+    let cursor_row_top = bounds.origin.y + geometry.cell_height * cursor_row as f32;
+    if overlays_live
+        && let Some(visible) = terminal.suggestion().map(str::to_string)
+        && !visible.is_empty()
+    {
+        let tint = color_hsla(terminal.ghost_color());
+        let shaped = shape_overlay_line(&visible, &skin.font, tint, geometry.font_size, window);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a grid column is far below 2^24: exact in f32"
+        )]
+        let origin = point(
+            bounds.origin.x + geometry.cell_width * (cursor.column.0 + 1) as f32,
+            cursor_row_top,
+        );
+        let _ = shaped.paint(
+            origin,
+            geometry.cell_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let mut log = walk_log.lock().expect("walk log");
+        if log.ghost.as_deref() != Some(visible.as_str()) {
+            println!(
+                "dropterm: pane ghost now {:?} ({} cells past the caret)",
+                visible,
+                visible.chars().count()
+            );
+            log.ghost = Some(visible);
+        }
+    } else {
+        // The ghost's dismissal is evidence too: the dismissal rows
+        // (another keystroke, a resize, a focus loss) name it.
+        let mut log = walk_log.lock().expect("walk log");
+        if log.ghost.take().is_some() {
+            println!("dropterm: pane ghost cleared");
+        }
+    }
+
     // The selection overlay: the range projected onto row spans,
     // the pane foreground at quarter alpha (the repo's text-selection
     // convention). Absolute line L sits at display row L + offset.
@@ -2262,6 +2359,278 @@ fn paint_pane(
             log.caret = Some(cell_at);
         }
     }
+
+    // The completion menu over the prompt row (suggest-overlay
+    // spec): the panel and its rows are issued after the grid, so
+    // they float above it with no layering ceremony.
+    if let Some(menu) = menu.as_ref() {
+        paint_menu(menu, skin, bounds, &geometry, cursor_row_top, window, cx);
+    }
+}
+
+/// A cosmic-text color as GPUI color (the ghost tint and the menu's
+/// text seats — the engine hands scheme colors over in cosmic-text's
+/// shape).
+fn color_hsla(color: cosmic_text::Color) -> gpui::Hsla {
+    gpui::rgb(u32::from(color.r()) << 16 | u32::from(color.g()) << 8 | u32::from(color.b())).into()
+}
+
+/// The overlay menu's panel paint (suggest-overlay SO-6; the chrome
+/// rich-input RI-7 built): icon, the marked label (the typed prefix
+/// semibold), the badge chip in its class color, the description dim
+/// (its own line comfortable, inline compact), the selection's tint,
+/// the visible window from the scroll offset, the argument hint line
+/// above the panel, and the popover surface — every element behind
+/// its toggle at capture time (the bundle carries None). The panel
+/// sits where [`suggest::menu_panel_bounds`] puts it, over the prompt
+/// row.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one panel painted in one pass — rows, chrome, and hint share the one geometry"
+)]
+fn paint_menu(
+    menu: &suggest::MenuPaint,
+    skin: &PaneSkin,
+    bounds: gpui::Bounds<Pixels>,
+    geometry: &GridGeometry,
+    prompt_row_top: Pixels,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let theme = cx.theme();
+    let panel_bg = theme.popover;
+    let panel_border = theme.border;
+    let fg = theme.popover_foreground;
+    let dim = gpui::hsla(fg.h, fg.s, fg.l, 0.55);
+    let palette = TokenPalette::for_scheme(fg.l > 0.5);
+
+    let row_h = px(suggest::menu_row_height_px(menu.chrome.compact_rows));
+    let range = suggest::menu_visible_window(menu.scroll, menu.rows.len());
+    if range.is_empty() {
+        return;
+    }
+    let visible = &menu.rows[range.clone()];
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the visible row count is the menu's budget (<=8), exact in f32"
+    )]
+    let rows_height = row_h * visible.len() as f32;
+    let hint_h = menu.hint.as_ref().map_or(px(0.), |_| px(26.));
+    let panel = suggest::menu_panel_bounds(
+        bounds,
+        prompt_row_top,
+        geometry.cell_height,
+        rows_height + hint_h,
+    );
+    let mut panel_quad = fill(panel, panel_bg);
+    panel_quad.corner_radii = gpui::Corners::all(px(6.));
+    panel_quad.border_widths = gpui::Edges::all(px(1.));
+    panel_quad.border_color = panel_border;
+    window.paint_quad(panel_quad);
+
+    // The argument hint line (the mock's own seat: the panel's top
+    // strip, the command semibold, its description dim).
+    let mut y = panel.origin.y;
+    if let Some((name, description)) = &menu.hint {
+        let mut hint_font = skin.font.clone();
+        hint_font.weight = FontWeight::SEMIBOLD;
+        let shaped = shape_overlay_line(name, &hint_font, fg, geometry.font_size, window);
+        let _ = shaped.paint(
+            point(panel.origin.x + px(10.), y + px(4.)),
+            geometry.font_size,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let x_after = panel.origin.x + px(10.) + shaped.width + px(8.);
+        if let Some(description) = description {
+            let shaped =
+                shape_overlay_line(description, &skin.font, dim, geometry.font_size, window);
+            let _ = shaped.paint(
+                point(x_after, y + px(4.)),
+                geometry.font_size,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        y += hint_h;
+    }
+
+    // The rows: icon, the marked label, the badge, the description —
+    // the selected one tinted.
+    let badge_color = |badge: &str| -> gpui::Hsla {
+        match badge {
+            "cmd" => palette.cmd,
+            "flag" => palette.flag,
+            "path" => palette.string,
+            "env" => palette.err,
+            "hist" => dim,
+            _ => fg,
+        }
+    };
+    for (index, row) in visible.iter().enumerate() {
+        let absolute = range.start + index;
+        let row_bounds = gpui::Bounds {
+            origin: point(panel.origin.x, y),
+            size: gpui::Size::new(panel.size.width, row_h),
+        };
+        if absolute == menu.selected {
+            window.paint_quad(fill(
+                gpui::Bounds {
+                    origin: point(row_bounds.origin.x + px(2.), row_bounds.origin.y + px(1.)),
+                    size: gpui::Size::new(row_bounds.size.width - px(4.), row_h - px(2.)),
+                },
+                gpui::hsla(fg.h, fg.s, fg.l, 0.12),
+            ));
+        }
+        let mut x = row_bounds.origin.x + px(10.);
+        if let Some(icon) = row.icon {
+            let shaped = shape_overlay_line(
+                &icon.to_string(),
+                &skin.font,
+                dim,
+                geometry.font_size,
+                window,
+            );
+            let _ = shaped.paint(
+                point(x, y + (row_h - geometry.font_size) / 2.),
+                geometry.font_size,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width + px(8.);
+        }
+        // The marked label: the typed prefix semibold, the rest
+        // normal — two shapes split at the char mark.
+        let marked_byte = row
+            .label
+            .char_indices()
+            .nth(row.marked)
+            .map_or(row.label.len(), |(byte, _)| byte);
+        let (before, after) = row.label.split_at(marked_byte);
+        let mut mark_font = skin.font.clone();
+        mark_font.weight = FontWeight::SEMIBOLD;
+        let shaped = shape_overlay_line(before, &mark_font, fg, geometry.font_size, window);
+        let _ = shaped.paint(
+            point(x, y + (row_h - geometry.font_size) / 2.),
+            geometry.font_size,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        x += shaped.width;
+        if !after.is_empty() {
+            let shaped = shape_overlay_line(after, &skin.font, fg, geometry.font_size, window);
+            let _ = shaped.paint(
+                point(x, y + (row_h - geometry.font_size) / 2.),
+                geometry.font_size,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width;
+        }
+        if let Some(badge) = row.badge {
+            x += px(8.);
+            let shaped = shape_overlay_line(
+                badge,
+                &skin.font,
+                badge_color(badge),
+                geometry.font_size,
+                window,
+            );
+            let _ = shaped.paint(
+                point(x, y + (row_h - geometry.font_size) / 2.),
+                geometry.font_size,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            x += shaped.width;
+        }
+        if let Some(description) = &row.description {
+            let desc_x = if menu.chrome.compact_rows {
+                x + px(8.)
+            } else {
+                row_bounds.origin.x + px(28.)
+            };
+            let desc_y = if menu.chrome.compact_rows {
+                y + (row_h - geometry.font_size) / 2.
+            } else {
+                y + row_h - geometry.font_size - px(4.)
+            };
+            let shaped =
+                shape_overlay_line(description, &skin.font, dim, geometry.font_size, window);
+            let _ = shaped.paint(
+                point(desc_x, desc_y),
+                geometry.font_size,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+        y += row_h;
+    }
+}
+
+/// The mock's token palette (rich-input RI-6; the menu's badge
+/// colors, suggest-overlay spec): the light/dark pairs keyed on the
+/// scheme's foreground luminance — command, flag, string, and the
+/// error red.
+struct TokenPalette {
+    cmd: gpui::Hsla,
+    flag: gpui::Hsla,
+    string: gpui::Hsla,
+    err: gpui::Hsla,
+}
+
+impl TokenPalette {
+    fn for_scheme(light: bool) -> Self {
+        Self {
+            cmd: hex_hsla(if light { 0x174_7c2 } else { 0x82b_7ff }),
+            flag: hex_hsla(if light { 0x966_60a } else { 0xffd_37e }),
+            string: hex_hsla(if light { 0x177_245 } else { 0x93e_6a5 }),
+            err: hex_hsla(if light { 0xc03_434 } else { 0xff8_080 }),
+        }
+    }
+}
+
+fn hex_hsla(hex: u32) -> gpui::Hsla {
+    gpui::rgb(hex).into()
+}
+
+/// One overlay text line — the ghost's visible string or a menu row
+/// — shaped once in the pane's font at its color, natural width (no
+/// cell-grid forcing: the overlays are not the grid).
+fn shape_overlay_line(
+    text: &str,
+    font: &gpui::Font,
+    color: gpui::Hsla,
+    font_size: Pixels,
+    window: &mut gpui::Window,
+) -> gpui::ShapedLine {
+    window.text_system().shape_line(
+        text.into(),
+        font_size,
+        &[gpui::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    )
 }
 
 /// The pane's own background under a paint: the scheme background

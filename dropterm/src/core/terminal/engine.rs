@@ -2823,6 +2823,15 @@ impl Terminal {
         self.menu.open(rows)
     }
 
+    /// Test seam only: open the menu over given rows, whatever the
+    /// screen says. The paint's pins stage a showing menu without a
+    /// typed line; the runtime's openers are [`Self::menu_open`] and
+    /// the auto-popup.
+    pub fn stage_menu(&mut self, rows: Vec<suggest::MenuCandidate>) {
+        self.menu_auto_opened = false;
+        self.menu.open(rows);
+    }
+
     /// Whether the completion menu shows.
     pub fn menu_is_open(&self) -> bool {
         self.menu.is_open()
