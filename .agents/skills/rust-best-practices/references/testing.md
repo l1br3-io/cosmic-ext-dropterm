@@ -1,24 +1,23 @@
-# Rust Testing Rule
+# Rust Testing
 
-Testing standards synthesized from Effective Rust Item 30 and RfR Chapter 6.
-Enforced by the rust-test-engineer agent and the developer workflow.
+Every test is *hermetic*: it passes on any machine, timezone, and order, with no
+real clock, network, RNG, env var, or host filesystem layout.
 
-## 1. Test pyramid — use all layers
+## 1. Layers
 
-| Layer         | Location                        | Access       | Purpose                              |
-|---------------|---------------------------------|--------------|--------------------------------------|
-| Unit          | `#[cfg(test)] mod tests` in src | private      | fast, fine-grained, edge cases       |
-| Integration   | `tests/*.rs`                    | public API   | consumer-perspective, wiring bugs    |
-| Doc           | `///` blocks                    | public API   | examples that must stay correct      |
-| Property      | `proptest`/`quickcheck`         | any          | invariants over input domains        |
-| Fuzz          | `cargo-fuzz` targets            | input funcs  | untrusted-bytes robustness           |
-| Bench         | `benches/` (`criterion`)        | hot paths    | performance regressions              |
+| Layer | Location | Access | Purpose |
+|-------|----------|--------|---------|
+| Unit | `#[cfg(test)] mod tests` in src | private | edge cases |
+| Integration | `tests/*.rs` | public API | wiring, visibility, ergonomics |
+| Doc | `///` blocks | public API | examples that stay correct |
+| Property | `proptest` | any | invariants over input domains |
+| Fuzz | `cargo-fuzz` targets | byte-input fns | untrusted-input robustness |
+| Bench | `benches/` (`criterion`) | hot paths | performance regressions |
 
-"Write more than unit tests" (Effective 30): unit tests alone miss integration
-and API-ergonomics issues. Every public capability needs at least one
-integration or doc test exercising it end-to-end.
+Every public capability has at least one integration or doc test exercising it
+end to end.
 
-## 2. Unit tests — `#[cfg(test)]`
+## 2. Unit tests
 
 ```rust
 #[cfg(test)]
@@ -26,115 +25,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_input_returns_empty() { assert!(parse("").unwrap().is_empty()); }
+    fn empty_input_returns_empty() { assert!(parse(b"").unwrap().is_empty()); }
 
     #[test]
     fn rejects_non_utf8() {
-        assert_matches!(parse(&[0xFF, 0xFE]), Err(ParseError::InvalidUtf8));
+        assert!(matches!(parse(&[0xFF, 0xFE]), Err(ParseError::InvalidUtf8)));
     }
 }
 ```
-- Co-located with the code, in the same file, under `#[cfg(test)]`.
-- One logical assertion per `#[test]`; descriptive name = the scenario.
-- Prefer specific macros: `assert_eq!`, `assert_ne!`, `assert_matches!`.
-- No real time / network / filesystem / RNG — inject them.
-- Fast: each test <100ms. Slow setup → `OnceLock`/`OnceCell` shared fixtures.
 
-## 3. Integration tests — `tests/`
+- Same file as the code, under `#[cfg(test)]`.
+- One behaviour per `#[test]`; the name states the scenario.
+- Clock, RNG, filesystem, and network are injected.
+- Each test runs in under 100 ms; share expensive setup through `LazyLock`.
 
-- `tests/foo.rs` exercises the public API via `use your_crate::...`.
-- One file per concern/feature; shared helpers in `tests/common/mod.rs`.
-- These catch: wrong visibility, broken re-exports, API ergonomics, multiple
-  modules interacting.
-- Use realistic but hermetic fixtures: temp dirs (`tempfile`), in-process
-  servers, mock transports.
+## 3. Integration tests
 
-## 4. Doc tests — compile & run
+- `tests/<concern>.rs` uses only the public API; shared helpers in
+  `tests/common/mod.rs`.
+- *Hermetic* fixtures: `tempfile` dirs, in-process servers, mock transports.
 
-- Every public function/type with non-trivial behavior gets a runnable example.
-- ```` ```no_run ```` for examples with side effects you don't want executed;
-  ```` ```ignore ```` for illustrative-only; ```` ```compile_fail ```` to assert
-  an API misuses won't compile.
-- `#` lines hide setup while keeping the example compilable.
-- Run `cargo test --doc` — broken examples are test failures.
+## 4. Doc tests
 
-## 5. Property tests — `proptest` (preferred) / `quickcheck`
+- Every public item with non-trivial behaviour has a runnable example.
+- `no_run` for side effects, `compile_fail` to prove a misuse is rejected;
+  `#`-prefixed lines hide setup.
 
-For any function with a clear input domain and invariant:
+## 5. Property tests
+
+For any function with a clear input domain:
+
 - **Round-trips**: `parse(format(x)) == x`.
 - **Laws**: associativity, identity, monotonicity.
-- **Invariants**: parser never panics, output normalizes, etc.
-- Let `proptest` shrink to find minimal failing cases.
-- Seed deterministically; property tests must be reproducible in CI.
+- **Invariants**: the parser returns `Ok` or `Err` on any input; it never panics.
 
 ```rust
 proptest! {
     #[test]
     fn roundtrip(n in 0u64..) {
-        prop_assert_eq!(parse(&format!("{n}")).unwrap(), n);
+        prop_assert_eq!(parse_u64(&n.to_string()).unwrap(), n);
     }
 }
 ```
 
-## 6. Fuzz tests — `cargo-fuzz` (libFuzzer)
+Commit `proptest-regressions/` so CI replays every shrunk failure.
 
-For parsers/decoders/deserializers/anything accepting bytes from outside:
+## 6. Fuzz tests
+
+Parsers, decoders, and anything accepting outside bytes get a target:
+
 ```rust
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| { let _ = my_crate::parse(data); });
 ```
-- Long-running (minutes to hours); separate from the fast unit-test step.
-- Run in nightly CI or a dedicated fuzz job. File crash repros as regression
-  tests.
 
-## 7. Concurrency & async testing (RfR Ch. 10)
+Each crash becomes a regression unit test.
 
-- Async: `#[tokio::test]` (or your runtime's equivalent). Prefer `.await` over
-  `block_on`.
-- Time: `tokio::time::pause()` + `advance`, or an injected `Clock` — never
-  `std::thread::sleep` in tests.
-- Stress tests: loop N iterations spawning threads/tasks to surface races.
-- Validated concurrency models: `loom` for lock-free structures.
+## 7. Concurrency and async
 
-## 8. Coverage & quality gates
+- `#[tokio::test]` (or the runtime's equivalent) with `.await`.
+- Time: `tokio::time::pause()` + `advance`, or an injected `Clock`.
+- Lock-free structures: model-check with `loom`; otherwise stress-test with
+  many spawned threads or tasks.
 
-- Coverage (`cargo-llvm-cov`/`cargo-tarpaulin`): track trend; aim for new code
-  covered, not a fixed project-wide %.
-- Mutation testing (`cargo-mutants`): detect tests that pass against wrong impls.
-- Snapshot tests (`insta`) for serializable/stable output; review snapshots in PRs.
+## 8. Quality tools
 
-## 9. What to test (beyond happy path)
+- Coverage (`cargo llvm-cov`): every new line covered; track the trend, not a
+  project-wide percentage.
+- Mutation testing (`cargo mutants`) finds tests that pass against a wrong impl.
+- Snapshot tests (`insta`) for stable serialized output; review snapshot diffs.
 
-- Every `Err` arm reachable by a test.
-- Boundaries: empty, single, `usize::MAX`-ish, overflow (`+1`, `*2`).
-- Unicode: ASCII, multibyte, combining chars, invalid UTF-8.
+## 9. What to test
+
+- Every reachable `Err` arm.
+- Boundaries: empty, single, max, overflow.
+- Unicode: multibyte, combining characters, invalid UTF-8.
 - Malformed input for parsers.
 - Concurrency: interleavings, timeouts, cancellation.
-- Regression tests for every fixed bug (cite the issue).
+- A regression test for every fixed bug, citing the issue.
 
-## 10. Determinism & hygiene
+`#[should_panic(expected = "...")]` is for documented panics (`# Panics`) only;
+an expected failure mode returns `Err` and is tested as one.
 
-- Tests must pass on any machine, any timezone, any order (`cargo test -- --test-threads=1` should also pass).
-- No reliance on `now()`, `random()` without a seed, env vars, host filesystem
-  layout, or network.
-- Clean up: temp files, ports, env var mutation (save/restore or use `tempfile`).
-- `#[should_panic(expected = "...")]` only for genuinely unreachable invariants,
-  never to paper over a real failure mode.
+## 10. Hygiene
 
-## 11. CI workflow (Effective 32)
+Tests restore what they mutate: temp files via `tempfile`, env vars saved and
+restored (or avoided), ports bound to `0`. The suite passes under
+`cargo test -- --test-threads=1`.
+
+## 11. Extra gates
+
+The standard gates live in `SKILL.md` step 3. Scheduled or nightly CI adds:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo test --doc
-cargo bench --no-run            # compile benches
-# nightly/periodic:
+cargo bench --no-run
 cargo +nightly fuzz run <target> -- -max_total_time=60
-cargo llvm-cov --workspace      # coverage report
-cargo audit && cargo deny check
+cargo llvm-cov --workspace
 ```
 
-Run on every PR plus a scheduled nightly for fuzz/coverage/audit. Use a matrix
-across target platforms (linux/macos/windows) and stable + MSRV toolchains.
+Matrix across target platforms and both stable and the MSRV toolchain.

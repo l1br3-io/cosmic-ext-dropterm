@@ -1,151 +1,129 @@
-# Rust Security Rule
+# Rust Security
 
-Authority for the security agent and any Rust author handling `unsafe`, FFI,
-untrusted input, or supply-chain concerns. Synthesized from Effective Rust
-Items 16, 33–35 and RfR Chapters 9, 11. **Rust eliminates memory-safety and
-data-race bugs *in safe code*; everything below addresses the residual risk.**
+For `unsafe`, FFI, untrusted input, secrets, and dependency changes. Safe Rust
+removes memory-safety and data-race bugs; this file covers the residual risk.
+Every boundary *fails closed*: invalid input returns an error, never a partial
+result or an abort.
 
-## 1. `unsafe` policy (Effective 16; RfR Ch. 9)
+## 1. `unsafe`
 
-`unsafe` is not forbidden but is held to a high bar.
+### Exhaust safe alternatives first
 
-### Before writing `unsafe`, exhaust alternatives
-- FFI? Use `bindgen` (Effective 35) instead of hand-written bindings.
-- Performance? Measure first (Effective 20); the safe version is often as fast.
-- Bit-pattern conversion? `try_from`/`bytemuck::Pod` over `transmute`.
-- Sharing across threads? Channels / `Arc<Mutex<_>>` / atomics over raw sync.
+| Need | Safe route |
+|------|------------|
+| C bindings | an existing `-sys` crate behind a safe wrapper (§2) |
+| Speed | measure first (`performance §0`); the safe version is often as fast |
+| Bit-pattern conversion | `try_from`, `bytemuck::Pod` |
+| Cross-thread sharing | channels, `Arc<Mutex<_>>`, atomics |
 
-### Mandatory when `unsafe` is used
-1. **Minimal scope**: confine to the smallest block possible, never a whole fn
-   just to call one unsafe op.
-2. **`// SAFETY:` comment** immediately above explaining the invariant relied on
-   and why it holds. The comment must name the specific unsafe precondition.
-3. **Encapsulation**: keep unsafe behind a safe API whose types/visibility make
-   violating the invariant impossible from safe code. Private fields, not pub.
-4. **No `unsafe fn` exposed as safe without a `# Safety` doc** explaining the
-   caller's obligations. Prefer wrapping so callers never touch `unsafe`.
-5. **Audit inputs**: any data crossing into `unsafe` from outside the type must
-   be validated (lengths, nullness, validity of bit patterns).
+### Required when `unsafe` stays
 
-### High-risk unsafe operations (extra scrutiny)
-- `std::mem::transmute` — almost always wrong; use specific conversion APIs.
-- `slice::get_unchecked` / pointer indexing — verify bounds by construction.
-- `str::from_utf8_unchecked` — validate UTF-8 first; or just use `from_utf8`.
-- Manual `Send`/`Sync` impls — justify why cross-thread sharing is sound.
-- Calling C functions — see FFI section.
-- `union` reads — every access must validate the active variant.
+1. **Minimal scope**: the smallest block around the one unsafe operation.
+2. **`// SAFETY:`** directly above, naming the precondition and why it holds.
+3. **Encapsulation**: a safe API whose private fields and types make the
+   invariant impossible to violate from safe code.
+4. **`# Safety` doc** on every `unsafe fn`, stating the caller's obligations;
+   prefer a safe wrapper so callers never write `unsafe`.
+5. **Validate inputs** crossing into the block: lengths, nullness, bit patterns.
 
-### Validity vs. safety (RfR Ch. 9)
-Unsafe code may rely on **validity** (bit pattern is legal for the type) and
-**safety** (logical invariants). Document both. A field the type assumes valid
-must be private with no `&mut` escape route.
+Document both **validity** (the bit pattern is legal) and **safety** (logical
+invariants). A field the type assumes valid stays private with no `&mut` escape.
 
-## 2. FFI boundaries (Effective 34, 35; RfR Ch. 11)
+### Extra scrutiny
 
-Treat the FFI boundary as a security perimeter. Validate **everything**.
+| Operation | Prefer / verify |
+|-----------|-----------------|
+| `mem::transmute` | a specific conversion API |
+| `get_unchecked`, pointer indexing | bounds proven by construction |
+| manual `unsafe impl Send/Sync` | written justification of soundness |
+| `union` reads | validate the active variant on every access |
 
-- Use `bindgen` for C headers (Effective 35); regenerate in CI via `build.rs`.
-- Validate on entry: null pointers, lengths against buffer bounds, enum
-  discriminants, UTF-8, integer ranges. Fail closed (return error, don't abort).
-- **Opaque handles**: expose foreign code a pointer to a boxed Rust type via a
-  `Box::into_raw`/`from_raw` pair; provide an explicit free function. Never let
-  foreign code see Rust generics/Drop types directly.
-- **Ownership**: document who allocates and who frees, and with which allocator.
-  Mismatching `malloc`/free with Rust's allocator is UB.
-- **Callbacks**: functions passed to C must be `extern "C"`. A Rust panic
-  unwinding into C is UB — either `catch_unwind` at the boundary or compile with
-  `panic = "abort"`.
-- **String types**: C strings are not guaranteed UTF-8; use `CString`/`OsStr`
-  conversions explicitly; never `from_utf8_unchecked` foreign input.
-- **Repr**: use `#[repr(C)]` for structs passed across FFI; otherwise layout is
-  unspecified.
+## 2. FFI
 
-## 3. Panics as denial-of-service (Effective 18)
+The boundary is a security perimeter.
 
-Any panic on attacker-influenced input is a DoS vector. In servers a panic kills
-a thread (or, with `panic=abort`, the process).
+- `bindgen` from headers, regenerated in `build.rs`.
+- Validate on entry: null pointers, lengths vs buffers, enum discriminants,
+  UTF-8, integer ranges; *fail closed* with an error code.
+- **Opaque handles**: `Box::into_raw`/`from_raw` plus an explicit free
+  function; foreign code sees only the pointer.
+- **Ownership**: document who allocates and frees, with which allocator; mixing
+  `malloc`/`free` with Rust's allocator is UB.
+- **Callbacks** are `extern "C"`; wrap the body in `catch_unwind` or build with
+  `panic = "abort"`, since unwinding into C is UB.
+- **Strings**: `CStr`/`CString`/`OsStr` with checked conversion.
+- **Layout**: `#[repr(C)]` on every struct crossing the boundary.
 
-Forbidden on untrusted input:
-- `.unwrap()` / `.expect()` / direct indexing `v[i]`
-- integer division `/` `%` (use `checked_*`)
-- `as` truncating casts of sizes/offsets (use `try_into`)
-- `str::from_utf8`, `char::from_u32` unchecked variants
-- array/slice slicing with computed bounds
+## 3. Panics on untrusted input
 
-Replace with `?` / `.get(i)?` / checked arithmetic / `try_from`.
+A panic on attacker-influenced input is a denial-of-service. Hard guardrail:
+on untrusted input, only the checked form is allowed.
 
-## 4. Arithmetic & casts
+| Panicking | Checked |
+|-----------|---------|
+| `.unwrap()`, `.expect()` | `?`, `.ok_or(...)?` |
+| `v[i]`, `&v[a..b]` | `v.get(i)`, `v.get(a..b)` |
+| `a / b`, `a % b`, `+ - *` on sizes | `checked_div`, `checked_rem`, `checked_add`, ... |
+| `x as u32` on sizes/offsets | `u32::try_from(x)?` |
+| `from_utf8_unchecked`, `char::from_u32_unchecked` | `from_utf8`, `char::from_u32` |
 
-- Use `usize` for sizes/indices; never `as` between signed/unsigned on sizes.
-- Sizes and offsets → checked or saturating arithmetic.
-- Money/quantities → `i64`/`u128` with checked math, or a decimal crate.
-- Prefer `u32::try_from(x)?` over `x as u32`.
+Parser and decoder modules add
+`#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]` so the
+clippy gate enforces the table.
 
-## 5. Cryptography & secrets
+Money and quantities: integer minor units (`i64`) with checked math, or a
+decimal crate; never `f64`.
 
-- **Never invent cryptography.** Use `rustls`/`ring`/`RustCrypto`/`aws-lc`.
-- Disable TLS cert verification only behind an explicit `danger_accept_invalid`
-  flag that no production default enables; lint for it.
-- Secrets live in types that:
-  - zeroize on drop (`zeroize::Zeroize` / `Zeroizing<T>`),
-  - derive `Debug`/`Display` that redact (e.g. `"***"`),
-  - are `Clone` only deliberately (consider `Zeroizing<Box<[u8]>>`).
-- Constant-time comparisons for tokens/MACs (`subtle::ConstantTimeEq`).
-- RNG: `rand::rngs::OsRng` / `thread_rng()` (backed by OS) for crypto; never a
-  seeded `SmallRng` for security decisions.
-- Password hashing: `argon2` / `bcrypt` / `scrypt` via dedicated crates.
+## 4. Cryptography and secrets
 
-## 6. Deserialization & untrusted input
+- Cryptography comes from audited crates: `rustls`, `ring`, `RustCrypto`,
+  `aws-lc-rs`. Password hashing: `argon2`.
+- TLS verification can be disabled only behind an explicitly named
+  `danger_*` option that no default enables.
+- Secret types zeroize on drop (`zeroize::Zeroizing<T>`), redact in
+  `Debug`/`Display` (`"***"`), and implement `Clone` only deliberately.
+- Token and MAC comparison is constant-time (`subtle::ConstantTimeEq`).
+- Security randomness comes from `OsRng`/`rand::rng()`; seeded RNGs are for
+  tests and simulations.
 
-- `#[serde(deny_unknown_fields)]` where strict schemas are wanted.
+## 5. Deserialization and untrusted input
+
 - Bound input size before parsing; stream unbounded sources.
-- Prefer typed structs over `serde_json::Value`; `Value` admits unbounded
-  nesting/size and is a common memory-blowup vector.
-- Validate after parse: ranges, enum discriminants, string lengths, UTF-8.
-- Path traversal: canonicalize and check prefix for any filename from input.
-- Format strings (`format!`, `println!`) never take untrusted format strings —
-  that's a format-string injection. Use the data as an argument, not the fmt.
+- Typed structs over `serde_json::Value` (unbounded nesting and size);
+  `#[serde(deny_unknown_fields)]` for strict schemas.
+- Validate after parse: ranges, discriminants, string lengths.
+- Paths from input: canonicalize, then check the allowed prefix.
 
-## 7. Supply chain (Effective 21, 25, 26)
+## 6. Supply chain
 
-- `cargo audit` for known CVEs; run in CI on every PR and nightly.
-- `cargo deny` for advisories, license policy, banned crates, duplicate deps.
-- Check `Cargo.lock` into VCS for binaries; for libraries decide deliberately.
-- Before adding a dependency, review:
-  - maintainer trust + activity, last release date,
-  - download/dependents count, open security issues,
-  - transitive dependency footprint (`cargo tree -d`),
-  - whether a feature flag can scope it (Effective 26).
-- **Build scripts and proc-macros run arbitrary code at build time** with the
-  developer's privileges. Audit them like application code.
-- Pin build-time toolchain with `rust-toolchain.toml` for reproducibility.
-
-## 8. Concurrency safety (Effective 17; RfR Ch. 10)
-
-- Safe Rust prevents data races, but not all concurrency bugs (deadlocks, logic
-  races, torn reads at the API level).
-- Manual `unsafe impl Send/Sync` is a red flag — justify each.
-- Memory ordering for atomics: default `SeqCst` unless you can prove weaker is
-  correct; `Relaxed` only for statistics/flags with no ordering dependency.
-- Prefer message passing (`crossbeam`, `tokio::sync`, std `mpsc`) over shared
-  `Mutex<state>`. Channels localize the critical section.
-- Stress-test concurrent code (`loom`, long-running harnesses) (RfR Ch. 10).
-
-## 9. Logging & error leakage
-
-- Never log secrets, tokens, credentials, full auth headers, or PII.
-- `Display` impls of errors may surface to users — keep them generic; push detail
-  into structured fields or server-only logs.
-- Redact before tracing: wrap secret values in a redacting `Debug`.
-- Scrub `Debug` of request/response loggers for sensitive fields.
-
-## 10. Required CI checks
+After any dependency change, these gates must be green (`cargo deny` only where
+the repo has a `deny.toml`):
 
 ```bash
 cargo audit
 cargo deny check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
 ```
-Gate merges on all of the above. Re-run `cargo audit`/`cargo deny` after any
-dependency change.
+
+Before adding a dependency, check maintainer activity and last release,
+dependents, open security issues, transitive footprint (`cargo tree -d`), and
+whether a feature flag can scope it. Build scripts and
+proc-macros execute at build time with the developer's privileges: audit them
+like application code. Commit `Cargo.lock`; `rust-toolchain.toml` pins the
+toolchain.
+
+## 7. Concurrency
+
+Safe Rust still allows deadlocks and logic races.
+
+- Atomics default to `SeqCst`; `Relaxed` only for counters and flags with no
+  ordering dependency.
+- Message passing (`std::sync::mpsc`, `crossbeam`, `tokio::sync`) over shared
+  `Mutex<State>`: channels localize the critical section.
+- Stress-test with `loom` (`testing §7`).
+
+## 8. Logging and error leakage
+
+- Logs carry identifiers, never secrets, tokens, auth headers, or PII: wrap
+  sensitive values in a redacting `Debug` before tracing.
+- User-facing error `Display` stays generic; detail goes to structured
+  server-side fields.

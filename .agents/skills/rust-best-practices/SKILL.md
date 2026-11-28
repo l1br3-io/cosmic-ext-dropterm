@@ -1,106 +1,136 @@
 ---
 name: rust-best-practices
 description: >
-  Guide for writing idiomatic, safe, and performant Rust, synthesized from
-  Effective Rust and Rust for Rustaceans. Use this skill when:
-  (1) writing new Rust code or functions,
-  (2) reviewing or refactoring existing Rust code,
-  (3) deciding between borrowing vs cloning or ownership patterns,
-  (4) implementing error handling with Result types,
-  (5) touching unsafe, FFI, untrusted input, or dependencies,
-  (6) writing tests or documentation for Rust projects.
+  Idiomatic, safe, performant Rust. Use when writing, reviewing, or refactoring
+  Rust code or its Cargo dependencies.
 license: MIT
-compatibility: Rust 1.85+ (edition 2024), Cargo
+compatibility: Rust edition 2024, Cargo
 metadata:
-  author: opencode-agent-harness
-  version: "2.0.0"
-allowed-tools: Bash(cargo:*) Bash(rustc:*) Bash(rustfmt:*) Bash(clippy:*) Read Write Edit Glob Grep
+  author: https://github.com/kulapoo
+  version: "1.0.0"
+  sources: "Effective Rust (David Drysdale); Rust for Rustaceans (Jon Gjengset)"
+allowed-tools: Bash(cargo:*) Bash(rustc:*) Bash(rustfmt:*) Bash(just:*) Bash(make:*) Read Write Edit Glob Grep
 ---
 
 # Rust Best Practices
 
-Apply these guidelines when writing or reviewing Rust code. Synthesized from
-*Effective Rust* (Dry) and *Rust for Rustaceans* (Nelson); individual rules cite
-their source item/chapter (e.g. Effective 18, RfR Ch. 9).
+Citations like `coding-style §3` name a section in `references/`.
 
-## How to use this skill
+## Steps
 
-Read ONLY the reference files that match the task — never load all of them by
-default. Cite the relevant rule when providing review feedback.
+### 1. Route
 
-| Task | Read |
-|------|------|
-| Writing or reviewing any Rust code | `references/coding-style.md` + `references/patterns.md` |
-| `unsafe`, FFI, untrusted input (PTY output, env vars), secrets, dependency changes | add `references/security.md` |
-| Writing or updating tests | add `references/testing.md` |
-| Performance work (only when performance is explicitly in scope) | add `references/performance.md` |
+Load every reference whose branch the change touches, and only those:
 
-## Quick Reference
+| Branch | Load |
+|--------|------|
+| Any Rust code | `references/coding-style.md` |
+| New types, modules, traits, or public API shape | + `references/patterns.md` |
+| `unsafe`, FFI, untrusted input (network, files, env vars, PTY output), secrets, dependency changes | + `references/security.md` |
+| Tests | + `references/testing.md` |
+| Performance explicitly in scope | + `references/performance.md` |
 
-### Borrowing & Ownership
-- Take the least powerful reference that works: `&T` > `&mut T` > `T`
-- Use `&str` over `String`, `&[T]` over `Vec<T>` in function parameters; own only when storing or mutating
-- Small `Copy` types can be passed by value
-- Use `Cow<'_, T>` when a function sometimes returns borrowed, sometimes owned
-- `clone()` to satisfy the borrow checker usually signals a design issue — restructure ownership; if genuinely needed, comment why
+Done when every matching branch's file is loaded.
 
-### Error Handling
-- Return `Result<T, E>` for fallible operations; never panic to signal expected failure
-- `unwrap()`/`expect()` only when the state is provably unreachable given type invariants, or in tests; prefer `expect("reason")` over `unwrap()`
-- Use `thiserror` for library errors (`#[non_exhaustive]`, `#[from]`), `anyhow` for binaries only
-- Prefer `?` and combinator methods (`map`, `and_then`, `ok_or`) over hand-written `match`
+### 2. Write or review
 
-### Performance
-- Measure before optimizing (`cargo flamegraph`, `samply`, `criterion`) — no performance claim without a benchmark
-- Run `cargo clippy -- -D clippy::perf` for performance hints
-- `.clone()` of `String`/`Vec`/`HashMap` in a loop is a hidden allocation; `Vec::with_capacity(n)` when size is predictable
-- Prefer iterators over manual loops; keep pipelines lazy, `.collect()` once at the end
+Apply the core rules below plus every loaded reference.
 
-### Linting
-Run regularly: `cargo clippy --all-targets --all-features --locked -- -D warnings`
+- **Writing**: done when the code satisfies every loaded rule, or your final
+  report names each departure and why.
+- **Reviewing**: done when every changed item has been checked against every
+  loaded rule. Each finding cites its rule (`security §3`, or a core-rule heading)
+  and names the replacement.
 
-Key lints to watch:
-- `redundant_clone` - unnecessary cloning
-- `large_enum_variant` - oversized variants (consider boxing)
-- `needless_collect` - premature collection
+### 3. Gates
 
-Use `#[expect(clippy::lint)]` over `#[allow(...)]` with justification comment.
+Run the repo's own gate recipe when one exists (`just`, `make`, or the command
+`AGENTS.md` names). Otherwise run:
 
-### Testing
-- Name tests descriptively: `process_should_return_error_when_input_empty()`
-- One logical assertion per test when possible
-- Every public capability needs at least one integration or doc test
-- Consider `cargo insta` for snapshot testing generated output
-
-### Generics & Dispatch
-- Prefer generics (static dispatch) for performance-critical code
-- Use `dyn Trait` only when object safety or heterogeneous collections demand it
-- For a closed set of behaviors, enum dispatch beats `Box<dyn Trait>` (see `references/patterns.md`)
-
-### Type State Pattern
-Encode valid states in the type system to catch invalid operations at compile time:
-```rust
-struct Connection<State> { /* ... */ _state: PhantomData<State> }
-struct Disconnected;
-struct Connected;
-
-impl Connection<Connected> {
-    fn send(&self, data: &[u8]) { /* only connected can send */ }
-}
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo test --doc --all-features
 ```
 
-### Documentation
-- The default is **no comment**. Before writing one, ask: *what does this tell a future reader that the code itself doesn't?* If it restates the code, rename or extract a function instead. A comment earns its place only as a *why* the code can't show, a warning about a non-local consequence, or a pointer to context the repo can't reconstruct
-- `//` comments explain *why* (safety, workarounds, design rationale). Length follows the content: say what needs saying and stop, no em-dashes
-- Change history never goes in source: bug archaeology, dated notes, and "previously did X" narratives belong in commit messages and `docs/research/` records
-- `///` doc comments explain *what* and *how* for public APIs; document `# Panics`, `# Errors`, `# Safety` sections
-- `// SAFETY:` comment is mandatory before every `unsafe` operation
-- Every `TODO` needs a linked issue: `// TODO(#42): ...`
-- Enable `#![deny(missing_docs)]` for libraries
+Done when every gate is green. After a dependency change, also run the
+supply-chain gates in `security §6`.
 
-## Project gates
+## Core rules
 
-Per `AGENTS.md`: `cargo clippy` and `cargo fmt --check` must pass before a
-change counts as done; `cargo test` is the verification gate, use "recipe" if available i.e "just test" or similar. Runtime behavior
-is only testable on real COSMIC hardware — unit tests cover what can be tested
-headless.
+### Ownership
+
+- Take the *least powerful reference* that works: `&T` over `&mut T` over `T`.
+- Parameters take `&str` or `&[T]`; own (`String`, `Vec<T>`) only to store or
+  mutate. Small `Copy` types pass by value. `impl AsRef<_>`/`impl Into<_>` only
+  on public convenience APIs: each caller type compiles its own copy.
+- `Cow<'_, T>` when a function sometimes borrows, sometimes owns.
+- A `clone()` of owned data added to satisfy the borrow checker signals a
+  misshapen ownership model: restructure (borrow, indices, `Rc`/`Arc` for
+  shared reads). The same holds for a lifetime the borrow checker rejects.
+- Graphs, trees with back-edges, and self-references: nodes in a
+  `Vec`/`SlotMap`, linked by index (`patterns §9`).
+
+### Errors and panics
+
+- Fallible operations return `Result<T, E>` and propagate with `?`; reach for
+  `map`/`and_then`/`ok_or` before a hand-written `match`.
+- Libraries: a `thiserror` enum, one variant per actionable failure, sources
+  via `#[from]`. Binaries: `anyhow::Result` with
+  `.context(...)`.
+- Panic (`unwrap`, `expect`, indexing, `/`) only where the state is *provably
+  unreachable* from type invariants, or in tests. Write `expect("why this
+  holds")`; `clippy::unwrap_used` catches bare `unwrap()` (see *Lints*). On *untrusted
+  input*, use the checked forms in `security §3`.
+
+### Types
+
+- Make invalid states *unrepresentable*: a comment like "X is None when Y" is
+  an enum waiting to exist (`patterns §1`).
+- Newtype domain primitives (`UserId(u64)`), enum over `bool` parameters,
+  enum or newtype over stringly-typed identifiers.
+- Public error enums are `#[non_exhaustive]`. Other public enums get it only
+  when variants are expected to grow: it blocks downstream exhaustive `match`.
+
+### Dispatch
+
+Generics (`impl Trait`, `<T: Trait>`) by default. Closed set of behaviours:
+enum + `match` (`patterns §10`). `dyn Trait` when heterogeneous storage or
+object safety demands it.
+
+### Lints
+
+New crates start with
+this baseline in `Cargo.toml` (`[workspace.lints]` plus `lints.workspace = true`
+in a workspace), and `allow-unwrap-in-tests = true` in `clippy.toml`. On an
+existing crate, propose the baseline rather than adding it unasked: it can
+surface many findings at once.
+
+```toml
+[lints.rust]
+missing_docs = "warn"                        # libraries only
+
+[lints.clippy]
+unwrap_used = "warn"
+undocumented_unsafe_blocks = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+```
+
+The `-D warnings` gate turns each `warn` into a failure. Silence a lint at the
+narrowest scope with `#[expect(clippy::lint, reason = "...")]`: it fails once
+the lint stops firing, so the suppression cannot go stale.
+
+### Docs and comments
+
+Before writing or editing any comment, apply `/writing-code-comments`.
+Rust-specific additions:
+
+- Every public item gets `///` with a one-line summary, plus `# Errors`,
+  `# Panics`, `# Safety` sections where they apply, and the type invariants
+  callers or `unsafe` code rely on.
+- `# Examples` run as doc tests (`testing §4`).
+- A `// SAFETY:` comment precedes every `unsafe` block, naming the precondition
+  and why it holds (`security §1`).
+- Every `TODO` links an issue: `// TODO(#42): ...`.
